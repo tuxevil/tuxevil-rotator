@@ -146,8 +146,18 @@ export function buildJudgeRequest(
     strengths: candidate.strengths,
     limitations: candidate.limitations,
   }));
+  // Some local compatibility providers drop OpenAI's response_format while
+  // translating the request to their native protocol. Keep the JSON contract
+  // in the system prompt as well so those providers still have an explicit,
+  // machine-decodable output shape to follow.
+  const shapeHint = JSON.stringify({
+    scores: Object.fromEntries(candidates.map((candidate) => [candidate.model, 0])),
+  });
+  const strictJsonInstruction =
+    `Return only valid JSON, with no markdown or explanation, in exactly this shape: ${shapeHint}. ` +
+    "Score every candidate independently with a number from 0 to 1.";
   const messages = [
-    { role: "system", content: `${contract.systemPrompt}\nCandidates:\n${JSON.stringify(candidateContext)}` },
+    { role: "system", content: `${contract.systemPrompt}\n${strictJsonInstruction}\nCandidates:\n${JSON.stringify(candidateContext)}` },
     ...envelope.messages,
   ];
   return {

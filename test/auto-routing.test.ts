@@ -32,6 +32,16 @@ describe("Switchyard-derived classifier contract", () => {
     assert.equal(judgeRequest.input, "task");
   });
 
+  it("embeds the strict JSON shape for local providers that drop response_format", () => {
+    const request = buildJudgeRequest(
+      { model: "auto", messages: [{ role: "user", content: "task" }] },
+      [{ model: "gemini-3-flash" }, { model: "claude-sonnet-4-6" }],
+    );
+    const system = (request.messages as Array<{ role: string; content: string }>)[0].content;
+    assert.match(system, /Return only valid JSON/);
+    assert.match(system, /\{"scores":\{"gemini-3-flash":0,"claude-sonnet-4-6":0\}\}/);
+  });
+
   it("decodes structured OpenAI judge responses and rejects malformed verdicts", () => {
     const response = decodeJudgeResponse({ choices: [{ message: { content: '{"scores":{"a":0.2,"b":0.8}}' } }] });
     assert.deepEqual(decodeScores(response, ["a", "b"]), [
