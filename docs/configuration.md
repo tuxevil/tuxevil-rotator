@@ -191,6 +191,39 @@ The main configuration file. Created automatically by the `login` command, and e
 | `streamRecoveryMaxRetries` | `2` | Maximum account rotations for upstream failures before the response is flushed |
 | `compressionMode` | `off` | Prompt compression mode: `off`, `lite`, `rtk`, or `rtk+lite`. Can be overridden by the `X-Rotator-Compression` request header |
 
+### Optional automatic model routing
+
+`auto` is disabled unless this object is present. It is resolved before the
+existing account/provider rotation, so the selected candidate still receives
+the normal quotas, circuit breakers, cooldowns, health checks and compression.
+Explicit model requests continue to bypass it.
+
+```json
+{
+  "auto": {
+    "candidates": [
+      { "model": "gemini-3-flash", "stageRole": "efficient" },
+      { "model": "claude-sonnet-4-6", "stageRole": "capable" }
+    ],
+    "fallbackModel": "gemini-3-flash",
+    "sessionPolicy": "sticky-escalation",
+    "escalationMode": "stage",
+    "judge": {
+      "baseUrl": "http://127.0.0.1:9000/v1",
+      "apiKey": "optional"
+    }
+  }
+}
+```
+
+The default judge timeout is 1500 ms with no retry and a 4096-token output
+limit. Stage routing defaults to `efficient_first`, a 0.5 confidence threshold
+and a three-turn signal window. Affinity is in-memory with a six-hour TTL;
+session keys use `X-Rotator-Session-Id` first and `previous_response_id` for
+Responses requests. `fallbackModel` must be one declared candidate and can
+never be `auto`. The dashboard status includes decision sources, targets,
+fallbacks, judge latency/tokens and final-model tokens.
+
 ## Account Fields
 
 | Field | Description |

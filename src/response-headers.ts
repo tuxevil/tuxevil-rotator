@@ -37,6 +37,8 @@ export interface RotatorResponseHeaderOptions {
   idempotencyHit?: boolean;
   retries?: number;
   compression?: CompressionHeaderOptions;
+  selectedModel?: string;
+  routingRationale?: string;
 }
 
 /**
@@ -60,6 +62,13 @@ export function buildRotatorResponseHeaders(
   }
   if (opts.model) {
     headers["X-Rotator-Model"] = opts.model;
+  }
+  if (opts.selectedModel) {
+    headers["X-Model-Router-Selected-Model"] = opts.selectedModel;
+    headers["X-Rotator-Selected-Model"] = opts.selectedModel;
+  }
+  if (opts.routingRationale) {
+    headers["X-Model-Router-Rationale"] = opts.routingRationale.slice(0, 512);
   }
   if (opts.latencyMs !== undefined && opts.latencyMs >= 0) {
     headers["X-Rotator-Latency-Ms"] = String(Math.round(opts.latencyMs));

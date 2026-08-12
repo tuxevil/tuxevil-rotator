@@ -5,6 +5,7 @@ import {
 	type Config,
 } from "./types.js";
 import { getProxyConfigurationError } from "./providers/proxy-dispatcher.js";
+import { validateAutoConfig } from "./auto-routing/config.js";
 
 export interface ValidationResult<T> {
 	ok: boolean;
@@ -194,6 +195,7 @@ export function validateConfig(value: unknown): ValidationResult<Config> {
 			}
 		}
 	}
+	if (value.auto !== undefined) errors.push(...validateAutoConfig(value.auto));
 
 	return errors.length > 0 ? fail(errors) : ok(value as unknown as Config);
 }

@@ -1,0 +1,7 @@
+This project contains TypeScript adaptations of selected Switchyard routing
+algorithms from NVIDIA-NeMo/Switchyard, commit
+48b3b71d3cc629aa9eb011852f5a7da90957ba22.
+
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
+The adapted files retain their SPDX Apache-2.0 attribution headers. The
+original project is distributed under the Apache License, Version 2.0.

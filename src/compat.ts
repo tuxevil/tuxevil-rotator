@@ -88,7 +88,9 @@ import {
   isCodexProviderModelId,
   getCodexModels,
 } from "./providers/openai-codex/catalog.js";
-import { serveCodexChat, serveCodexResponses } from "./providers/openai-codex/compat.js";
+import { parseCodexResponseBody, serveCodexChat, serveCodexResponses } from "./providers/openai-codex/compat.js";
+import { AutoRouter, AutoRouteError } from "./auto-routing/auto-router.js";
+import type { AutoDecision } from "./auto-routing/types.js";
 
 function isCodexModelForRotator(rotator: AccountRotator, model: string): boolean {
   if (isCodexRequestModel(model)) return true;
@@ -136,6 +138,141 @@ export type {
 };
 
 const compatLogger = logger.child("compat");
+
+const autoRouterCache = new WeakMap<AccountRotator, { signature: string; router: AutoRouter }>();
+
+export function isAutoModel(model: string): boolean {
+  return model.trim().toLowerCase() === "auto";
+}
+
+function getAutoRouter(rotator: AccountRotator): AutoRouter | null {
+  if (typeof rotator.getAutoRouter === "function") return rotator.getAutoRouter();
+  const auto = rotator.getConfig?.().auto;
+  if (!auto) return null;
+  const signature = JSON.stringify(auto);
+  const cached = autoRouterCache.get(rotator);
+  if (cached?.signature === signature) return cached.router;
+  const router = new AutoRouter(auto);
+  autoRouterCache.set(rotator, { signature, router });
+  return router;
+}
+
+async function routeAutoRequest(
+  req: IncomingMessage,
+  rotator: AccountRotator,
+  request: OpenAIChatCompletionRequest,
+  authModels: readonly string[] | undefined,
+  previousResponseId?: string | null,
+  excludeModels?: readonly string[],
+): Promise<AutoDecision> {
+  const router = getAutoRouter(rotator);
+  if (!router) throw new AutoRouteError("model=auto requires a valid config.auto section");
+  const sessionHeader = req.headers["x-rotator-session-id"];
+  const sessionId = typeof sessionHeader === "string" ? sessionHeader : null;
+  const envelope = AutoRouter.envelopeFromChat(request, previousResponseId, sessionId);
+  configureLocalAutoJudge(rotator, router);
+  return router.route(envelope, { allowedModels: authModels, excludeModels });
+}
+
+function configureLocalAutoJudge(rotator: AccountRotator, router: AutoRouter): void {
+  const auto = rotator.getConfig?.().auto;
+  const judge = auto?.trajectory?.judge ?? auto?.judge;
+  if (!judge?.model || judge.baseUrl) return;
+  router.setJudgeExecutor(async (request, config, signal) => {
+    const model = config.model;
+    if (!model) throw new Error("local auto judge requires judge.model");
+    const chatRequest = request as unknown as OpenAIChatCompletionRequest;
+    const body: RequestBody = isOpenCodeZenModel(model)
+      ? { project: "", model, request: { ...chatRequest, model } }
+      : (rotator.getOllamaModels?.().includes(model)
+        ? openAIToOllamaBody({ ...chatRequest, model })
+        : openAIToAntigravityBody({ ...chatRequest, model }));
+    const outcome = await withRotation(
+      rotator,
+      model,
+      {},
+      body,
+      async (response, context) => {
+        const raw = await response.text();
+        const completion = isCodexModelForRotator(rotator, model)
+          ? parseCodexResponseBody(raw)
+          : isOpenCodeZenModel(model)
+            ? parseOpenAiJson(raw)
+            : rotator.getOllamaModels?.().includes(model)
+              ? parseOllamaNdjson(raw)
+              : parseAntigravitySse(raw);
+        recordCompatOutcome(
+          rotator,
+          body,
+          context,
+          response.status,
+          completion,
+          undefined,
+          { callType: "auto_judge", rawRequest: request, rawResponse: completion.rawResponse },
+        );
+        return { output_text: completion.text, usage: { output_tokens: completion.outputTokens } };
+      },
+      signal,
+    );
+    if (!outcome.ok) throw new Error(outcome.errorText);
+    return outcome.result;
+  });
+}
+
+function autoHeaders(decision: AutoDecision | undefined): Pick<import("./response-headers.js").RotatorResponseHeaderOptions, "selectedModel" | "routingRationale"> {
+  return decision ? { selectedModel: decision.selectedModel, routingRationale: decision.rationale } : {};
+}
+
+function applyAutoSystemPrompt(
+  request: OpenAIChatCompletionRequest,
+  decision: AutoDecision | undefined,
+): OpenAIChatCompletionRequest {
+  if (!decision?.systemPrompt) return request;
+  return {
+    ...request,
+    messages: [{ role: "system", content: decision.systemPrompt }, ...request.messages],
+  };
+}
+
+function applyAnthropicSystemPrompt(
+  request: AnthropicMessagesRequest,
+  decision: AutoDecision | undefined,
+): AnthropicMessagesRequest {
+  if (!decision?.systemPrompt) return request;
+  const existing = typeof request.system === "string"
+    ? request.system
+    : Array.isArray(request.system)
+      ? extractText(request.system as ChatMessage["content"])
+      : "";
+  return {
+    ...request,
+    system: existing ? `${decision.systemPrompt}\n\n${existing}` : decision.systemPrompt,
+  };
+}
+
+function isTrajectoryDecision(rotator: AccountRotator, decision: AutoDecision | undefined): boolean {
+  return decision?.source === "trajectory-efficient" &&
+    rotator.getConfig?.().auto?.escalationMode === "trajectory";
+}
+
+function autoSessionId(req: IncomingMessage): string | null {
+  const value = req.headers["x-rotator-session-id"];
+  return typeof value === "string" ? value : null;
+}
+
+async function evaluateTrajectory(
+  req: IncomingMessage,
+  rotator: AccountRotator,
+  request: OpenAIChatCompletionRequest,
+  completion: CompatCompletion,
+  allowedModels: readonly string[] | undefined,
+): Promise<AutoDecision | undefined> {
+  const router = getAutoRouter(rotator);
+  if (!router) return undefined;
+  const envelope = AutoRouter.envelopeFromChat(request, null, autoSessionId(req));
+  configureLocalAutoJudge(rotator, router);
+  return router.evaluateTrajectory(envelope, completion.text, { allowedModels });
+}
 
 const VALIDATION_LOG_MAX_CHARS = 200;
 
@@ -567,6 +704,7 @@ async function streamCompatSse(
   rotator?: AccountRotator,
   compressionStats?: CompressionStats | null,
   upstream: "google" | "ollama" | "opencode-zen" = "google",
+  routing?: AutoDecision,
 ): Promise<CompatCompletion> {
   const nodeStream = Readable.fromWeb(
     body as import("node:stream/web").ReadableStream,
@@ -599,6 +737,7 @@ async function streamCompatSse(
     routingPolicy: rotator?.getConfig?.()?.routingPolicy || "timer-first",
     retries: context?.retries,
     compression: getCompressionHeaderOpts(compressionStats),
+    ...autoHeaders(routing),
   });
 
   res.writeHead(200, {
@@ -1199,10 +1338,12 @@ async function streamResponsesSse(
   rotator?: AccountRotator,
   compressionStats?: CompressionStats | null,
   upstream: "google" | "ollama" = "google",
+  routing?: AutoDecision,
 ): Promise<CompatCompletion> {
   const nodeStream = Readable.fromWeb(
     body as import("node:stream/web").ReadableStream,
   );
+  const responseRequest = routing ? { ...request, model: "auto" } : request;
   let text = "";
   let thinkingText = "";
   let inputTokens = 0;
@@ -1232,12 +1373,13 @@ async function streamResponsesSse(
 
   const rotatorHeaders = buildRotatorResponseHeaders({
     accountLabel: context?.label,
-    model: request.model,
+    model: routing ? "auto" : request.model,
     ttfbMs: Date.now() - (context?.requestStartMs ?? streamStartMs),
     healthScore: context?.account?.healthScore,
     routingPolicy: rotator?.getConfig?.()?.routingPolicy || "timer-first",
     retries: context?.retries,
     compression: getCompressionHeaderOpts(compressionStats),
+    ...autoHeaders(routing),
   });
 
   res.writeHead(200, {
@@ -1257,7 +1399,7 @@ async function streamResponsesSse(
   writeResponsesEvent(res, {
     type: "response.created",
     response: buildResponsesResponse(
-      request,
+      responseRequest,
       responseId,
       createdAt,
       emptyCompletion,
@@ -1268,7 +1410,7 @@ async function streamResponsesSse(
   writeResponsesEvent(res, {
     type: "response.in_progress",
     response: buildResponsesResponse(
-      request,
+      responseRequest,
       responseId,
       createdAt,
       emptyCompletion,
@@ -1704,6 +1846,7 @@ async function completeResponsesViaRotator(
     rawRequest?: unknown;
     rawResponse?: unknown;
     compressionStats?: CompressionStats | null;
+    autoDecision?: AutoDecision;
   },
 ): Promise<{
   completion: CompatCompletion;
@@ -1734,6 +1877,7 @@ async function completeResponsesViaRotator(
         (rotator?.getOllamaModels?.() ?? []).includes(body.model)
           ? "ollama"
           : "google",
+        options?.autoDecision,
       );
       if (completion.inputTokens > 0 || completion.outputTokens > 0) {
         rotator.recordTokenUsage(
@@ -1741,6 +1885,11 @@ async function completeResponsesViaRotator(
           completion.inputTokens,
           completion.outputTokens,
         );
+        if (options?.autoDecision) {
+          getAutoRouter(rotator)?.recordModelTokens(
+            completion.inputTokens + completion.outputTokens,
+          );
+        }
       }
       recordCompatOutcome(
         rotator,
@@ -1794,6 +1943,7 @@ async function completeViaRotator(
     rawRequest?: unknown;
     rawResponse?: unknown;
     compressionStats?: CompressionStats | null;
+    autoDecision?: AutoDecision;
   },
 ): Promise<{
   completion: CompatCompletion;
@@ -1831,6 +1981,11 @@ async function completeViaRotator(
               completion.inputTokens,
               completion.outputTokens,
             );
+            if (options?.autoDecision) {
+              getAutoRouter(rotator)?.recordModelTokens(
+                completion.inputTokens + completion.outputTokens,
+              );
+            }
           }
           recordCompatOutcome(
             rotator,
@@ -1847,7 +2002,7 @@ async function completeViaRotator(
             response.body,
             req,
             res,
-            body.displayModel || body.model,
+            options?.autoDecision ? "auto" : body.displayModel || body.model,
             streamMode,
             context,
             rotator,
@@ -1857,6 +2012,7 @@ async function completeViaRotator(
               : isOllamaUpstream(body.model)
                 ? "ollama"
                 : "google",
+            options?.autoDecision,
           );
           if (completion.inputTokens > 0 || completion.outputTokens > 0) {
             rotator.recordTokenUsage(
@@ -1864,6 +2020,11 @@ async function completeViaRotator(
               completion.inputTokens,
               completion.outputTokens,
             );
+            if (options?.autoDecision) {
+              getAutoRouter(rotator)?.recordModelTokens(
+                completion.inputTokens + completion.outputTokens,
+              );
+            }
           }
           recordCompatOutcome(
             rotator,
@@ -2060,6 +2221,22 @@ export function serveOpenAIModels(
   );
   const hasActiveProvider = (providerId: string): boolean =>
     rotator?.hasActiveProvider(providerId) ?? false;
+  const autoConfig = rotator?.getConfig?.().auto;
+  if (autoConfig) {
+    catalog.unshift({
+      id: "auto",
+      object: "model",
+      created: 0,
+      owned_by: "tuxevil-rotator",
+      context_window: 0,
+      max_model_len: 0,
+      meta: {
+        family: "automatic-router",
+        candidates: autoConfig.candidates.map((candidate) => candidate.model),
+        selection_policy: autoConfig.selectionPolicy ?? "highest_score",
+      },
+    });
+  }
   const ollamaModels = hasActiveProvider("ollama")
     ? rotator?.getOllamaModels?.() ?? []
     : [];
@@ -2276,14 +2453,15 @@ export async function handleOpenAIChatCompletions(
       },
     });
 
-  const auth = await authenticateVirtualKey(req, validation.value.model);
+  const requestedModel = validation.value.model;
+  const auth = await authenticateVirtualKey(req, isAutoModel(requestedModel) ? undefined : requestedModel);
   if (!auth.authenticated) {
     sendAuthErrorResponse(res, auth);
     return;
   }
   const apiKeyHash = auth.key?.tokenHash || (auth.rawKey ? hashKey(auth.rawKey) : null);
 
-  if (isCodexModelForRotator(rotator, validation.value.model)) {
+  if (isCodexModelForRotator(rotator, requestedModel)) {
     await serveCodexChat(req, res, rotator, validation.value, {
       callType: "chat_completion",
       apiKeyHash,
@@ -2293,38 +2471,153 @@ export async function handleOpenAIChatCompletions(
     return;
   }
 
+  let autoDecision: AutoDecision | undefined;
+  let effectiveRequest = validation.value;
+  if (isAutoModel(requestedModel)) {
+    try {
+      autoDecision = await routeAutoRequest(req, rotator, validation.value, auth.key?.models);
+      effectiveRequest = applyAutoSystemPrompt(
+        { ...validation.value, model: autoDecision.selectedModel },
+        autoDecision,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "auto routing failed";
+      return writeJson(res, 503, { error: { message, type: "routing_error" } });
+    }
+  }
+
+  if (isCodexModelForRotator(rotator, effectiveRequest.model)) {
+    await serveCodexChat(req, res, rotator, effectiveRequest, {
+      callType: "chat_completion",
+      apiKeyHash,
+      requesterIp: req.socket?.remoteAddress || null,
+      rawRequest: validation.value,
+      selectedModel: autoDecision?.selectedModel,
+      routingRationale: autoDecision?.rationale,
+      responseModel: autoDecision ? requestedModel : undefined,
+    });
+    return;
+  }
+
   const compMode = parseCompressionMode(
     req.headers["x-rotator-compression"],
     rotator?.getConfig?.()?.compressionMode,
   );
   const compRes = applyPromptCompression(
-    validation.value.messages,
+    effectiveRequest.messages,
     compMode,
-    { model: validation.value.model },
+    { model: effectiveRequest.model },
   );
   const chatReq = compRes.stats
-    ? { ...validation.value, messages: compRes.messages }
-    : validation.value;
+    ? { ...effectiveRequest, messages: compRes.messages }
+    : effectiveRequest;
 
   const started = Date.now();
   const streamMode = validation.value.stream ? "openai" : "none";
   const bodyToForward: RequestBody = isOpenCodeZenModel(chatReq.model)
     ? { project: "", model: chatReq.model, request: chatReq }
     : (rotator?.getOllamaModels?.().includes(chatReq.model) ? openAIToOllamaBody(chatReq) : openAIToAntigravityBody(chatReq));
-  const result = await completeViaRotator(
+  let result = await completeViaRotator(
     req,
     res,
     rotator,
     bodyToForward,
     streamMode,
     {
-      callType: "chat_completion",
+    callType: "chat_completion",
       apiKeyHash,
       requesterIp: req.socket?.remoteAddress || null,
       rawRequest: validation.value,
       compressionStats: compRes.stats,
+      autoDecision,
     },
   );
+  if (
+    result.status === 200 &&
+    !validation.value.stream &&
+    isTrajectoryDecision(rotator, autoDecision)
+  ) {
+    const trajectoryDecision = await evaluateTrajectory(
+      req,
+      rotator,
+      validation.value,
+      result.completion,
+      auth.key?.models,
+    );
+    if (trajectoryDecision) {
+      autoDecision = trajectoryDecision;
+      if (trajectoryDecision.selectedModel !== chatReq.model) {
+        const capableRequest = { ...chatReq, model: trajectoryDecision.selectedModel };
+        const capableBody: RequestBody = isOpenCodeZenModel(capableRequest.model)
+          ? { project: "", model: capableRequest.model, request: capableRequest }
+          : (rotator?.getOllamaModels?.().includes(capableRequest.model)
+            ? openAIToOllamaBody(capableRequest)
+            : openAIToAntigravityBody(capableRequest));
+        result = await completeViaRotator(
+          req,
+          res,
+          rotator,
+          capableBody,
+          "none",
+          {
+            callType: "chat_completion",
+            apiKeyHash,
+            requesterIp: req.socket?.remoteAddress || null,
+            rawRequest: validation.value,
+            compressionStats: compRes.stats,
+            autoDecision,
+          },
+        );
+      }
+    }
+  }
+  if (result.status !== 200 && autoDecision && !validation.value.stream) {
+    try {
+      const reroutedDecision = await routeAutoRequest(
+        req,
+        rotator,
+        validation.value,
+        auth.key?.models,
+        undefined,
+        [autoDecision.selectedModel],
+      );
+      const reroutedRequest = applyAutoSystemPrompt(
+        { ...validation.value, model: reroutedDecision.selectedModel },
+        reroutedDecision,
+      );
+      const reroutedCompression = applyPromptCompression(
+        reroutedRequest.messages,
+        compMode,
+        { model: reroutedRequest.model },
+      );
+      const reroutedChatRequest = reroutedCompression.stats
+        ? { ...reroutedRequest, messages: reroutedCompression.messages }
+        : reroutedRequest;
+      const reroutedBody: RequestBody = isOpenCodeZenModel(reroutedChatRequest.model)
+        ? { project: "", model: reroutedChatRequest.model, request: reroutedChatRequest }
+        : (rotator?.getOllamaModels?.().includes(reroutedChatRequest.model)
+          ? openAIToOllamaBody(reroutedChatRequest)
+          : openAIToAntigravityBody(reroutedChatRequest));
+      autoDecision = reroutedDecision;
+      result = await completeViaRotator(
+        req,
+        res,
+        rotator,
+        reroutedBody,
+        "none",
+        {
+          callType: "chat_completion",
+          apiKeyHash,
+          requesterIp: req.socket?.remoteAddress || null,
+          rawRequest: validation.value,
+          compressionStats: reroutedCompression.stats,
+          autoDecision,
+        },
+      );
+    } catch (error) {
+      compatLogger.warn(`OpenAI auto re-evaluation failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   if (result.status !== 200) {
     compatLogger.warn(
       `OpenAI compat upstream failed status=${result.status} model=${validation.value.model}`,
@@ -2348,7 +2641,7 @@ export async function handleOpenAIChatCompletions(
   const ttfbMs = result.completion.firstByteMs ?? totalMs;
   const rotatorHeaders = buildRotatorResponseHeaders({
     accountLabel: result.context?.label,
-    model: validation.value.model,
+    model: requestedModel,
     latencyMs: totalMs,
     ttfbMs,
     inputTokens: result.completion.inputTokens,
@@ -2357,12 +2650,13 @@ export async function handleOpenAIChatCompletions(
     routingPolicy: rotator?.getConfig?.()?.routingPolicy || "timer-first",
     idempotencyHit: result.isDeduplicated,
     retries: result.context?.retries,
+    ...autoHeaders(autoDecision),
   });
   writeJson(res, 200, {
     id: `chatcmpl-${started.toString(36)}`,
     object: "chat.completion",
     created: Math.floor(started / 1000),
-    model: validation.value.model,
+    model: requestedModel,
     choices: [
       {
         index: 0,
@@ -2415,14 +2709,15 @@ export async function handleOpenAIResponsesCreate(
       },
     });
 
-  const auth = await authenticateVirtualKey(req, validation.value.model);
+  const requestedModel = validation.value.model;
+  const auth = await authenticateVirtualKey(req, isAutoModel(requestedModel) ? undefined : requestedModel);
   if (!auth.authenticated) {
     sendAuthErrorResponse(res, auth);
     return;
   }
   const apiKeyHash = auth.key?.tokenHash || (auth.rawKey ? hashKey(auth.rawKey) : null);
 
-  if (isCodexModelForRotator(rotator, validation.value.model)) {
+  if (isCodexModelForRotator(rotator, requestedModel)) {
     await serveCodexResponses(req, res, rotator, validation.value, {
       callType: "responses",
       apiKeyHash,
@@ -2444,20 +2739,55 @@ export async function handleOpenAIResponsesCreate(
     });
   }
 
+  let autoDecision: AutoDecision | undefined;
+  let effectiveChatRequest = converted.chatRequest;
+  if (isAutoModel(requestedModel)) {
+    try {
+      autoDecision = await routeAutoRequest(
+        req,
+        rotator,
+        converted.chatRequest,
+        auth.key?.models,
+        converted.previousResponseId,
+      );
+      effectiveChatRequest = applyAutoSystemPrompt(
+        { ...converted.chatRequest, model: autoDecision.selectedModel },
+        autoDecision,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "auto routing failed";
+      return writeJson(res, 503, { error: { message, type: "routing_error" } });
+    }
+  }
+
+  if (isCodexModelForRotator(rotator, effectiveChatRequest.model)) {
+    await serveCodexResponses(req, res, rotator, { ...validation.value, model: effectiveChatRequest.model }, {
+      callType: "responses",
+      apiKeyHash,
+      requesterIp: req.socket?.remoteAddress || null,
+      rawRequest: validation.value,
+      selectedModel: autoDecision?.selectedModel,
+      routingRationale: autoDecision?.rationale,
+      responseModel: autoDecision ? requestedModel : undefined,
+    });
+    return;
+  }
+
   const responseId = makeCompatId("resp");
+  if (autoDecision) getAutoRouter(rotator)?.linkResponseId(responseId, autoDecision);
   const createdAt = Math.floor(Date.now() / 1000);
   const compMode = parseCompressionMode(
     req.headers["x-rotator-compression"],
     rotator?.getConfig?.()?.compressionMode,
   );
   const compRes = applyPromptCompression(
-    converted.chatRequest.messages,
+    effectiveChatRequest.messages,
     compMode,
-    { model: converted.chatRequest.model },
+    { model: effectiveChatRequest.model },
   );
   const chatRequest = compRes.stats
-    ? { ...converted.chatRequest, messages: compRes.messages }
-    : converted.chatRequest;
+    ? { ...effectiveChatRequest, messages: compRes.messages }
+    : effectiveChatRequest;
 
   const requestBody: RequestBody = isOpenCodeZenModel(chatRequest.model)
     ? { project: "", model: chatRequest.model, request: chatRequest }
@@ -2498,6 +2828,7 @@ export async function handleOpenAIResponsesCreate(
         apiKeyHash,
         requesterIp: req.socket?.remoteAddress || null,
         compressionStats: compRes.stats,
+        autoDecision,
       },
     );
     if (result.status !== 200) {
@@ -2530,7 +2861,7 @@ export async function handleOpenAIResponsesCreate(
     return;
   }
 
-  const result = await completeViaRotator(
+  let result = await completeViaRotator(
     req,
     res,
     rotator,
@@ -2542,8 +2873,96 @@ export async function handleOpenAIResponsesCreate(
       requesterIp: req.socket?.remoteAddress || null,
       rawRequest: validation.value,
       compressionStats: compRes.stats,
+      autoDecision,
     },
   );
+  if (
+    result.status === 200 &&
+    isTrajectoryDecision(rotator, autoDecision)
+  ) {
+    const trajectoryDecision = await evaluateTrajectory(
+      req,
+      rotator,
+      converted.chatRequest,
+      result.completion,
+      auth.key?.models,
+    );
+    if (trajectoryDecision) {
+      autoDecision = trajectoryDecision;
+      if (trajectoryDecision.selectedModel !== chatRequest.model) {
+        const capableRequest = { ...chatRequest, model: trajectoryDecision.selectedModel };
+        const capableBody: RequestBody = isOpenCodeZenModel(capableRequest.model)
+          ? { project: "", model: capableRequest.model, request: capableRequest }
+          : (rotator?.getOllamaModels?.().includes(capableRequest.model)
+            ? openAIToOllamaBody(capableRequest)
+            : openAIToAntigravityBody(capableRequest));
+        capableBody.requestId = responseId;
+        result = await completeViaRotator(
+          req,
+          res,
+          rotator,
+          capableBody,
+          "none",
+          {
+            callType: "responses",
+            apiKeyHash,
+            requesterIp: req.socket?.remoteAddress || null,
+            rawRequest: validation.value,
+            compressionStats: compRes.stats,
+            autoDecision,
+          },
+        );
+      }
+    }
+  }
+  if (result.status !== 200 && autoDecision && !validation.value.stream) {
+    try {
+      const reroutedDecision = await routeAutoRequest(
+        req,
+        rotator,
+        converted.chatRequest,
+        auth.key?.models,
+        converted.previousResponseId,
+        [autoDecision.selectedModel],
+      );
+      const reroutedRequest = applyAutoSystemPrompt(
+        { ...converted.chatRequest, model: reroutedDecision.selectedModel },
+        reroutedDecision,
+      );
+      const reroutedCompression = applyPromptCompression(
+        reroutedRequest.messages,
+        compMode,
+        { model: reroutedRequest.model },
+      );
+      const reroutedChatRequest = reroutedCompression.stats
+        ? { ...reroutedRequest, messages: reroutedCompression.messages }
+        : reroutedRequest;
+      const reroutedBody: RequestBody = isOpenCodeZenModel(reroutedChatRequest.model)
+        ? { project: "", model: reroutedChatRequest.model, request: reroutedChatRequest }
+        : (rotator?.getOllamaModels?.().includes(reroutedChatRequest.model)
+          ? openAIToOllamaBody(reroutedChatRequest)
+          : openAIToAntigravityBody(reroutedChatRequest));
+      reroutedBody.requestId = responseId;
+      autoDecision = reroutedDecision;
+      result = await completeViaRotator(
+        req,
+        res,
+        rotator,
+        reroutedBody,
+        "none",
+        {
+          callType: "responses",
+          apiKeyHash,
+          requesterIp: req.socket?.remoteAddress || null,
+          rawRequest: validation.value,
+          compressionStats: reroutedCompression.stats,
+          autoDecision,
+        },
+      );
+    } catch (error) {
+      compatLogger.warn(`Responses auto re-evaluation failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   if (result.status !== 200) {
     responsesStore.delete(responseId);
     return writeJson(res, result.status, {
@@ -2585,6 +3004,7 @@ export async function handleOpenAIResponsesCreate(
     routingPolicy: rotator?.getConfig?.()?.routingPolicy || "timer-first",
     idempotencyHit: result.isDeduplicated,
     retries: result.context?.retries,
+    ...autoHeaders(autoDecision),
   });
   writeJson(res, 200, responseObject, rotatorHeaders);
 }
@@ -2688,35 +3108,56 @@ export async function handleAnthropicMessages(
       },
     });
 
-  const auth = await authenticateVirtualKey(req, validation.value.model);
+  const requestedModel = validation.value.model;
+  const auth = await authenticateVirtualKey(req, isAutoModel(requestedModel) ? undefined : requestedModel);
   if (!auth.authenticated) {
     sendAuthErrorResponse(res, auth);
     return;
   }
   const apiKeyHash = auth.key?.tokenHash || (auth.rawKey ? hashKey(auth.rawKey) : null);
 
+  let autoDecision: AutoDecision | undefined;
+  let effectiveAnthropicRequest = validation.value;
+  if (isAutoModel(requestedModel)) {
+    try {
+      autoDecision = await routeAutoRequest(
+        req,
+        rotator,
+        anthropicToOpenAIChatRequest(validation.value),
+        auth.key?.models,
+      );
+      effectiveAnthropicRequest = applyAnthropicSystemPrompt(
+        { ...validation.value, model: autoDecision.selectedModel },
+        autoDecision,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "auto routing failed";
+      return writeJson(res, 503, { type: "error", error: { type: "routing_error", message } });
+    }
+  }
+
   const compMode = parseCompressionMode(
     req.headers["x-rotator-compression"],
     rotator?.getConfig?.()?.compressionMode,
   );
   const compRes = applyPromptCompression(
-    validation.value.messages as ChatMessage[],
+    effectiveAnthropicRequest.messages as ChatMessage[],
     compMode,
-    { model: validation.value.model },
+    { model: effectiveAnthropicRequest.model },
   );
   const anthropicReq = compRes.stats
     ? {
-        ...validation.value,
+        ...effectiveAnthropicRequest,
         messages: compRes.messages as typeof validation.value.messages,
       }
-    : validation.value;
+    : effectiveAnthropicRequest;
 
   const started = Date.now();
   const streamMode = validation.value.stream ? "anthropic" : "none";
   const bodyToForward: RequestBody = isOpenCodeZenModel(anthropicReq.model)
     ? { project: "", model: anthropicReq.model, request: anthropicToOpenAIChatRequest(anthropicReq) }
     : (rotator?.getOllamaModels?.().includes(anthropicReq.model) ? anthropicToOllamaBody(anthropicReq) : anthropicToAntigravityBody(anthropicReq));
-  const result = await completeViaRotator(
+  let result = await completeViaRotator(
     req,
     res,
     rotator,
@@ -2728,8 +3169,97 @@ export async function handleAnthropicMessages(
       requesterIp: req.socket?.remoteAddress || null,
       rawRequest: validation.value,
       compressionStats: compRes.stats,
+      autoDecision,
     },
   );
+  if (
+    result.status === 200 &&
+    !validation.value.stream &&
+    isTrajectoryDecision(rotator, autoDecision)
+  ) {
+    const trajectoryDecision = await evaluateTrajectory(
+      req,
+      rotator,
+      anthropicToOpenAIChatRequest(validation.value),
+      result.completion,
+      auth.key?.models,
+    );
+    if (trajectoryDecision) {
+      autoDecision = trajectoryDecision;
+      if (trajectoryDecision.selectedModel !== anthropicReq.model) {
+        const capableRequest = { ...anthropicReq, model: trajectoryDecision.selectedModel };
+        const capableBody: RequestBody = isOpenCodeZenModel(capableRequest.model)
+          ? { project: "", model: capableRequest.model, request: anthropicToOpenAIChatRequest(capableRequest) }
+          : (rotator?.getOllamaModels?.().includes(capableRequest.model)
+            ? anthropicToOllamaBody(capableRequest)
+            : anthropicToAntigravityBody(capableRequest));
+        result = await completeViaRotator(
+          req,
+          res,
+          rotator,
+          capableBody,
+          "none",
+          {
+            callType: "anthropic",
+            apiKeyHash,
+            requesterIp: req.socket?.remoteAddress || null,
+            rawRequest: validation.value,
+            compressionStats: compRes.stats,
+            autoDecision,
+          },
+        );
+      }
+    }
+  }
+  if (result.status !== 200 && autoDecision && !validation.value.stream) {
+    try {
+      const reroutedDecision = await routeAutoRequest(
+        req,
+        rotator,
+        anthropicToOpenAIChatRequest(validation.value),
+        auth.key?.models,
+        undefined,
+        [autoDecision.selectedModel],
+      );
+      const reroutedRequest = {
+        ...applyAnthropicSystemPrompt(
+          { ...validation.value, model: reroutedDecision.selectedModel },
+          reroutedDecision,
+        ),
+      };
+      const reroutedCompression = applyPromptCompression(
+        reroutedRequest.messages as ChatMessage[],
+        compMode,
+        { model: reroutedRequest.model },
+      );
+      const reroutedAnthropicRequest = reroutedCompression.stats
+        ? { ...reroutedRequest, messages: reroutedCompression.messages as typeof validation.value.messages }
+        : reroutedRequest;
+      const reroutedBody: RequestBody = isOpenCodeZenModel(reroutedAnthropicRequest.model)
+        ? { project: "", model: reroutedAnthropicRequest.model, request: anthropicToOpenAIChatRequest(reroutedAnthropicRequest) }
+        : (rotator?.getOllamaModels?.().includes(reroutedAnthropicRequest.model)
+          ? anthropicToOllamaBody(reroutedAnthropicRequest)
+          : anthropicToAntigravityBody(reroutedAnthropicRequest));
+      autoDecision = reroutedDecision;
+      result = await completeViaRotator(
+        req,
+        res,
+        rotator,
+        reroutedBody,
+        "none",
+        {
+          callType: "anthropic",
+          apiKeyHash,
+          requesterIp: req.socket?.remoteAddress || null,
+          rawRequest: validation.value,
+          compressionStats: reroutedCompression.stats,
+          autoDecision,
+        },
+      );
+    } catch (error) {
+      compatLogger.warn(`Anthropic auto re-evaluation failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   if (result.status !== 200) {
     compatLogger.warn(
       `Anthropic compat upstream failed status=${result.status} model=${validation.value.model}`,
@@ -2777,7 +3307,7 @@ export async function handleAnthropicMessages(
   const ttfbMs = result.completion.firstByteMs ?? totalMs;
   const rotatorHeaders = buildRotatorResponseHeaders({
     accountLabel: result.context?.label,
-    model: validation.value.model,
+    model: requestedModel,
     latencyMs: totalMs,
     ttfbMs,
     inputTokens: result.completion.inputTokens,
@@ -2786,6 +3316,7 @@ export async function handleAnthropicMessages(
     routingPolicy: rotator?.getConfig?.()?.routingPolicy || "timer-first",
     idempotencyHit: result.isDeduplicated,
     retries: result.context?.retries,
+    ...autoHeaders(autoDecision),
   });
   writeJson(res, 200, {
     id: `msg_${started.toString(36)}`,

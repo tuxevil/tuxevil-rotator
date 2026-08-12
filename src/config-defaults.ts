@@ -1,5 +1,6 @@
 import { rotatorEnv } from "./env.js";
 import { normalizeAccountConfig } from "./config-normalize.js";
+import { applyAutoConfigDefaults } from "./auto-routing/config.js";
 import {
 	DEFAULT_QUOTA_POLL_INTERVAL_MS,
 	MAX_QUOTA_POLL_INTERVAL_MS,
@@ -25,6 +26,7 @@ function safeStreamRecoveryMaxRetries(value: number | undefined): number {
 }
 
 export function applyConfigDefaults(config: Config): Config {
+	const auto = config.auto ? applyAutoConfigDefaults(config.auto) : undefined;
 	return {
 		proxyPort: config.proxyPort || 51200,
 		bindHost: config.bindHost || rotatorEnv("BIND_HOST") || "0.0.0.0",
@@ -55,10 +57,11 @@ export function applyConfigDefaults(config: Config): Config {
 		idempotencyWindowMs: config.idempotencyWindowMs ?? 2000,
 		streamRecoveryMaxRetries: safeStreamRecoveryMaxRetries(config.streamRecoveryMaxRetries),
 		compressionMode: config.compressionMode ?? "off",
-accounts: config.accounts ? config.accounts.map((account) => ({
+		accounts: config.accounts ? config.accounts.map((account) => ({
 			...normalizeAccountConfig(account),
 			tier: account.tier || "unknown",
 		})) : [],
+		auto,
 	};
 }
 

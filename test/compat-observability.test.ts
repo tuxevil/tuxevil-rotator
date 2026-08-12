@@ -645,7 +645,178 @@ describe("compat observability", () => {
         assert.ok(res.headersCaptured["X-Rotator-Cost-Usd"], testCase.name);
         assert.equal(res.headersCaptured["X-Rotator-Health-Score"], "1.00", testCase.name);
         assert.equal(res.headersCaptured["X-Rotator-Routing-Policy"], "timer-first", testCase.name);
+        assert.equal(res.headersCaptured["X-Model-Router-Selected-Model"], undefined, testCase.name);
+        assert.equal(res.headersCaptured["X-Rotator-Selected-Model"], undefined, testCase.name);
       }
+    } finally {
+      await closeServer(upstream.server);
+    }
+  });
+
+  it("routes OpenAI auto through a local judge, preserves auto response metadata, and logs judge separately", async () => {
+    const upstream = await listenServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk.toString(); });
+      req.on("end", () => {
+        const parsed = JSON.parse(body) as { model?: string };
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        if (parsed.model === "judge-model") {
+          res.end(
+            'data: {"response":{"candidates":[{"content":{"parts":[{"text":"{\\"scores\\":{\\"efficient-model\\":0.2,\\"capable-model\\":0.9}}"}]}}]}}\n\n',
+          );
+        } else {
+          res.end(
+            'data: {"response":{"candidates":[{"content":{"parts":[{"text":"chosen"}]}}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":2}}}\n\n',
+          );
+        }
+      });
+    });
+    endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
+
+    try {
+      const tracking = createTracking();
+      const rotator = createRotatorStub(tracking);
+      (rotator as unknown as { getConfig: () => unknown }).getConfig = () => ({
+        streamRecoveryMaxRetries: 0,
+        maxConcurrentRequestsPerAccount: 1,
+        auto: {
+          candidates: [{ model: "efficient-model" }, { model: "capable-model" }],
+          fallbackModel: "efficient-model",
+          judge: { model: "judge-model" },
+        },
+      });
+      const req = requestStream("POST", "/v1/chat/completions", {
+        model: "auto",
+        messages: [{ role: "user", content: "choose" }],
+      });
+      const res = responseStub();
+      await handleOpenAIChatCompletions(req, res, rotator);
+
+      assert.equal(res.statusCodeCaptured, 200);
+      assert.equal(JSON.parse(res.body).model, "auto");
+      assert.match(res.body, /chosen/);
+      assert.equal(res.headersCaptured["X-Model-Router-Selected-Model"], "capable-model");
+      assert.equal(res.headersCaptured["X-Rotator-Selected-Model"], "capable-model");
+      assert.match(res.headersCaptured["X-Model-Router-Rationale"] ?? "", /judge/);
+      assert.equal(tracking.recordRequests, 2);
+      assert.equal(tracking.requestLogs.length, 2);
+    } finally {
+      await closeServer(upstream.server);
+    }
+  });
+
+  it("routes auto through Responses and Anthropic while retaining the requested model", async () => {
+    const upstream = await listenServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk.toString(); });
+      req.on("end", () => {
+        const parsed = JSON.parse(body) as { model?: string };
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        if (parsed.model === "judge-model") {
+          res.end(
+            'data: {"response":{"candidates":[{"content":{"parts":[{"text":"{\\"scores\\":{\\"efficient-model\\":0.1,\\"capable-model\\":0.9}}"}]}}]}}\n\n',
+          );
+        } else {
+          res.end(
+            'data: {"response":{"candidates":[{"content":{"parts":[{"text":"chosen"}]}}]}}\n\n',
+          );
+        }
+      });
+    });
+    endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
+
+    try {
+      const cases = [
+        {
+          name: "responses",
+          payload: { model: "auto", input: "choose" },
+          run: handleOpenAIResponsesCreate,
+          getModel: (body: string) => (JSON.parse(body) as { model?: string }).model,
+        },
+        {
+          name: "anthropic",
+          payload: { model: "auto", max_tokens: 32, messages: [{ role: "user", content: "choose" }] },
+          run: handleAnthropicMessages,
+          getModel: (body: string) => (JSON.parse(body) as { model?: string }).model,
+        },
+      ] as const;
+
+      for (const testCase of cases) {
+        const tracking = createTracking();
+        const rotator = createRotatorStub(tracking);
+        (rotator as unknown as { getConfig: () => unknown }).getConfig = () => ({
+          streamRecoveryMaxRetries: 0,
+          maxConcurrentRequestsPerAccount: 1,
+          auto: {
+            candidates: [{ model: "efficient-model" }, { model: "capable-model" }],
+            fallbackModel: "efficient-model",
+            judge: { model: "judge-model" },
+          },
+        });
+        const req = requestStream("POST", `/v1/${testCase.name}`, testCase.payload);
+        const res = responseStub();
+        await testCase.run(req, res, rotator);
+
+        assert.equal(res.statusCodeCaptured, 200, testCase.name);
+        assert.equal(testCase.getModel(res.body), "auto", testCase.name);
+        assert.match(res.body, /chosen/, testCase.name);
+        assert.equal(res.headersCaptured["X-Model-Router-Selected-Model"], "capable-model", testCase.name);
+        assert.equal(res.headersCaptured["X-Rotator-Selected-Model"], "capable-model", testCase.name);
+        assert.equal(tracking.recordRequests, 2, testCase.name);
+      }
+    } finally {
+      await closeServer(upstream.server);
+    }
+  });
+
+  it("reevaluates once with the failed model excluded", async () => {
+    const seenModels: string[] = [];
+    const upstream = await listenServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk.toString(); });
+      req.on("end", () => {
+        const parsed = JSON.parse(body) as { model?: string };
+        seenModels.push(parsed.model || "");
+        if (parsed.model === "judge-model") {
+          res.writeHead(200, { "Content-Type": "text/event-stream" });
+          res.end(
+            'data: {"response":{"candidates":[{"content":{"parts":[{"text":"{\\"scores\\":{\\"efficient-model\\":0.1,\\"capable-model\\":0.9}}"}]}}]}}\n\n',
+          );
+        } else if (parsed.model === "capable-model") {
+          res.writeHead(503, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "capable model unavailable" }));
+        } else {
+          res.writeHead(200, { "Content-Type": "text/event-stream" });
+          res.end('data: {"response":{"candidates":[{"content":{"parts":[{"text":"recovered"}]}}]}}\n\n');
+        }
+      });
+    });
+    endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
+
+    try {
+      const tracking = createTracking();
+      const rotator = createRotatorStub(tracking);
+      (rotator as unknown as { getConfig: () => unknown }).getConfig = () => ({
+        streamRecoveryMaxRetries: 0,
+        maxConcurrentRequestsPerAccount: 1,
+        auto: {
+          candidates: [{ model: "efficient-model" }, { model: "capable-model" }],
+          fallbackModel: "efficient-model",
+          judge: { model: "judge-model" },
+        },
+      });
+      const req = requestStream("POST", "/v1/chat/completions", {
+        model: "auto",
+        messages: [{ role: "user", content: "recover" }],
+      });
+      const res = responseStub();
+      await handleOpenAIChatCompletions(req, res, rotator);
+
+      assert.equal(res.statusCodeCaptured, 200);
+      assert.match(res.body, /recovered/);
+      assert.equal(res.headersCaptured["X-Model-Router-Selected-Model"], "efficient-model");
+      assert.deepEqual(seenModels, ["judge-model", "capable-model", "efficient-model"]);
+      assert.equal(tracking.requestLogs.length, 3);
     } finally {
       await closeServer(upstream.server);
     }

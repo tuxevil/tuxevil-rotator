@@ -641,6 +641,8 @@ contentHtml: `
 
 <div class="routing-panel state-stopped" id="routingHealth"></div>
 
+<div class="routing-panel" id="autoRoutingPanel" style="margin-top:12px;display:none"></div>
+
 <div class="routing-panel" id="tokenUsagePanel" style="margin-top:12px">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
     <strong style="min-width:max-content">Token Usage</strong>

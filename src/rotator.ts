@@ -74,6 +74,7 @@ import { getUpdateInfo } from "./version-check.js";
 import { getNotifications } from "./notification-poller.js";
 import { getConfiguredAdminToken } from "./admin-auth.js";
 import { getProxyExposureWarning } from "./exposure.js";
+import { AutoRouter } from "./auto-routing/auto-router.js";
 import {
   getCachedState,
   setCachedState,
@@ -133,6 +134,7 @@ export class AccountRotator {
   private codexModels = new Set<string>(getCodexModels().map((model) => model.id));
   private readonly usagePredictor = new UsagePredictor();
   private lastOllamaCatalogFetch = 0;
+  private autoRouter: AutoRouter | null = null;
 
   setOllamaModels(models: string[]): void {
     this.ollamaModels = new Set(models.map((m) => m.trim()).filter(Boolean));
@@ -250,6 +252,7 @@ export class AccountRotator {
 
   constructor(private config: Config) {
     this.config = applyConfigDefaults(config);
+    this.autoRouter = this.config.auto ? new AutoRouter(this.config.auto) : null;
     this.initAccounts();
     this.loadState();
     this.startQuotaPolling();
@@ -3133,6 +3136,7 @@ export class AccountRotator {
       hostedOAuthConfigured: isHostedOAuthConfigured(),
       ollamaModels: this.getOllamaModels(),
       codexModels: this.getCodexModels(),
+      autoRouting: this.autoRouter?.getStats() ?? null,
       modelTierAccess: this.accounts.some((a) =>
         hasCredential(a.config, "ollama"),
       )
@@ -3146,12 +3150,17 @@ export class AccountRotator {
     return applyConfigDefaults(structuredClone(this.config));
   }
 
+  getAutoRouter(): AutoRouter | null {
+    return this.autoRouter;
+  }
+
   async replaceConfig(nextConfig: Config): Promise<void> {
     const normalized = applyConfigDefaults(nextConfig);
     const previous = new Map(
       this.accounts.map((account) => [account.config.email, account]),
     );
     this.config = normalized;
+    this.autoRouter = normalized.auto ? new AutoRouter(normalized.auto) : null;
     this.accounts = normalized.accounts.map((config) => {
       const existing = previous.get(config.email);
       if (existing) {

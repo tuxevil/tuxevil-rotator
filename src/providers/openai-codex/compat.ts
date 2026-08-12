@@ -32,6 +32,9 @@ export interface CodexCompatOptions {
   apiKeyHash?: string | null;
   requesterIp?: string | null;
   rawRequest?: unknown;
+  selectedModel?: string;
+  routingRationale?: string;
+  responseModel?: string;
 }
 
 function recordCodexTokenUsage(
@@ -352,18 +355,25 @@ function codexResponseJson(
   };
 }
 
-function upstreamHeaders(response: Response, context: { account?: { healthScore: number }; requestStartMs: number; label: string; retries: number }, model: string): Record<string, string> {
+function upstreamHeaders(
+  response: Response,
+  context: { account?: { healthScore: number }; requestStartMs: number; label: string; retries: number },
+  model: string,
+  options?: CodexCompatOptions,
+): Record<string, string> {
   const headers: Record<string, string> = {};
   response.headers.forEach((value, key) => {
     if (key !== "connection" && key !== "transfer-encoding" && key !== "content-length") headers[key] = value;
   });
   Object.assign(headers, buildRotatorResponseHeaders({
     accountLabel: context.label,
-    model,
+    model: options?.selectedModel ?? model,
     ttfbMs: Date.now() - context.requestStartMs,
     healthScore: context.account?.healthScore,
     retries: context.retries,
     routingPolicy: "timer-first",
+    selectedModel: options?.selectedModel,
+    routingRationale: options?.routingRationale,
   }));
   return headers;
 }
@@ -374,8 +384,9 @@ async function pipeNativeResponses(
   res: ServerResponse,
   context: { account?: { healthScore: number }; requestStartMs: number; label: string; retries: number },
   model: string,
+  options?: CodexCompatOptions,
 ): Promise<CompatCompletion> {
-  res.writeHead(response.status, upstreamHeaders(response, context, model));
+  res.writeHead(response.status, upstreamHeaders(response, context, model, options));
   if (!response.body) {
     res.end();
     return { text: "", inputTokens: 0, outputTokens: 0 };
@@ -415,8 +426,9 @@ async function pipeCodexAsChat(
   res: ServerResponse,
   model: string,
   context: { account?: { healthScore: number }; requestStartMs: number; label: string; retries: number },
+  options?: CodexCompatOptions,
 ): Promise<CompatCompletion> {
-  res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive", ...upstreamHeaders(response, context, model) });
+  res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive", ...upstreamHeaders(response, context, model, options) });
   const id = `chatcmpl-${Date.now().toString(36)}`;
   emitChatChunk(res, model, id, { role: "assistant" });
   if (!response.body) {
@@ -486,18 +498,22 @@ export async function serveCodexResponses(
   res.once("close", abort);
   try {
     const outcome = await withRotation(rotator, request.model, flattenHeaders(req.headers), body, async (response, context) => {
+      const responseModel = options?.responseModel ?? request.model;
       if (request.stream) {
-        const completion = await pipeNativeResponses(response, req, res, context, request.model);
+        const completion = await pipeNativeResponses(response, req, res, context, responseModel, options);
         recordCodexTokenUsage(rotator, request.model, completion);
         recordCodexOutcome(rotator, body, context, response.status, completion, options);
         return completion;
       }
       const raw = await response.text();
-      const headers = upstreamHeaders(response, context, request.model);
+      const headers = upstreamHeaders(response, context, request.model, options);
       const completion = parseCodexResponseBody(raw);
-      const responseBody = raw.trim().startsWith("{")
+      const parsedBody = raw.trim().startsWith("{")
         ? JSON.parse(raw) as unknown
         : codexResponseJson(completion, request.model);
+      const responseBody = options?.responseModel && isRecord(parsedBody)
+        ? { ...parsedBody, model: responseModel }
+        : parsedBody;
       writeJson(res, response.status, responseBody, headers);
       recordCodexTokenUsage(rotator, request.model, completion);
       recordCodexOutcome(rotator, body, context, response.status, completion, options);
@@ -520,6 +536,7 @@ export async function serveCodexChat(
 ): Promise<void> {
   const codexRequest = chatToCodexResponsesRequest(request);
   const body: RequestBody = { project: "", model: request.model, request: codexRequest };
+  const responseModel = options?.responseModel ?? request.model;
   const controller = new AbortController();
   const abort = (): void => controller.abort();
   req.once("aborted", abort);
@@ -527,7 +544,7 @@ export async function serveCodexChat(
   try {
     const outcome = await withRotation(rotator, request.model, flattenHeaders(req.headers), body, async (response, context) => {
       if (request.stream) {
-        const completion = await pipeCodexAsChat(response, req, res, request.model, context);
+        const completion = await pipeCodexAsChat(response, req, res, responseModel, context, options);
         recordCodexTokenUsage(rotator, request.model, completion);
         recordCodexOutcome(rotator, body, context, response.status, completion, options);
         return completion;
@@ -539,10 +556,10 @@ export async function serveCodexChat(
         id: `chatcmpl-${Date.now().toString(36)}`,
         object: "chat.completion",
         created: Math.floor(Date.now() / 1000),
-        model: request.model,
+        model: options?.responseModel ?? request.model,
         choices: [{ index: 0, message: { role: "assistant", content: hasTools ? null : completion.text, ...(hasTools ? { tool_calls: completion.toolCalls } : {}), ...(completion.thinkingText ? { reasoning_content: completion.thinkingText } : {}) }, finish_reason: hasTools ? "tool_calls" : "stop" }],
         usage: { prompt_tokens: completion.inputTokens, completion_tokens: completion.outputTokens, total_tokens: completion.inputTokens + completion.outputTokens },
-      }, upstreamHeaders(response, context, request.model));
+      }, upstreamHeaders(response, context, request.model, options));
       recordCodexTokenUsage(rotator, request.model, completion);
       recordCodexOutcome(rotator, body, context, response.status, completion, options);
       return completion;

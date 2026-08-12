@@ -308,6 +308,7 @@ function renderAccounts(data) {
   renderNotifications(data.notifications);
   renderAttentionPanel(data);
   renderRoutingInspector(data);
+  renderAutoRouting(data.autoRouting);
   renderTokenChart(data.tokenUsage);
   renderHeatmap(data.tokenUsage);
   renderLatencyPanel(data.latencyStats);
@@ -524,6 +525,47 @@ function renderAccounts(data) {
       );
     })
     .join("");
+}
+
+function renderAutoRouting(stats) {
+  var panel = document.getElementById("autoRoutingPanel");
+  if (!panel) return;
+  if (!stats) {
+    panel.style.display = "none";
+    panel.innerHTML = "";
+    return;
+  }
+  panel.style.display = "block";
+  var targets = Object.keys(stats.byTarget || {}).sort(function (a, b) {
+    return (stats.byTarget[b] || 0) - (stats.byTarget[a] || 0);
+  });
+  var sources = Object.keys(stats.bySource || {}).sort(function (a, b) {
+    return (stats.bySource[b] || 0) - (stats.bySource[a] || 0);
+  });
+  var targetText = targets.length
+    ? targets.map(function (target) { return escapeHtml(target) + " (" + stats.byTarget[target] + ")"; }).join(", ")
+    : "--";
+  var sourceText = sources.length
+    ? sources.map(function (source) { return escapeHtml(source) + " (" + stats.bySource[source] + ")"; }).join(", ")
+    : "--";
+  panel.innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
+    '<strong>Auto Routing</strong>' +
+    '<span style="font-family:JetBrains Mono,monospace;color:var(--text-dim);font-size:0.8rem">' +
+    escapeHtml(String(stats.decisions || 0)) + " decisions</span></div>" +
+    '<div class="health-grid" style="margin-top:10px">' +
+    renderHealthPill("Fallbacks", stats.fallbacks || 0) +
+    renderHealthPill("Judge calls", stats.judgeCalls || 0) +
+    renderHealthPill("Judge failures", stats.judgeFailures || 0) +
+    renderHealthPill("Escalations", stats.escalations || 0) +
+    "</div>" +
+    '<div style="margin-top:10px;color:var(--text-dim);font-size:0.8rem;line-height:1.7">' +
+    "Targets: <span style=\"color:var(--text)\">" + targetText + "</span><br>" +
+    "Sources: <span style=\"color:var(--text)\">" + sourceText + "</span><br>" +
+    "Judge latency: <span style=\"color:var(--text)\">" + Math.round(stats.judgeLatencyMs || 0) + " ms</span> · " +
+    "Judge tokens: <span style=\"color:var(--text)\">" + (stats.judgeTokens || 0) + "</span> · " +
+    "Model tokens: <span style=\"color:var(--text)\">" + (stats.modelTokens || 0) + "</span>" +
+    "</div>";
 }
 
 // ── List View ─────────────────────────────────────────────────────────────

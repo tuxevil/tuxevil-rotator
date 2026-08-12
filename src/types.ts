@@ -2,6 +2,7 @@
 
 import { rotatorEnv } from "./env.js";
 import type { ExhaustionPrediction } from "./providers/ollama/prediction.js";
+import type { AutoConfig, AutoRoutingStats } from "./auto-routing/types.js";
 
 export type AccountType = "pro" | "free";
 export type AccountTier =
@@ -98,6 +99,8 @@ export interface AccountConfig {
 
 export interface Config {
   accounts: AccountConfig[];
+  /** Optional Switchyard-derived automatic model routing. Explicit models bypass it. */
+  auto?: AutoConfig;
   requestsPerRotation: number;
   proxyPort: number;
   bindHost?: string;
@@ -505,6 +508,7 @@ export interface StatusResponse {
   routingDiagnostics: Record<string, RoutingModelDiagnostics>;
   ollamaModels: string[];
   codexModels?: string[];
+  autoRouting?: AutoRoutingStats | null;
   // Present only when at least one account carries an ollama credential.
   modelTierAccess?: Record<string, ModelTierAccess>;
   predictions: Record<string, ExhaustionPrediction>;
