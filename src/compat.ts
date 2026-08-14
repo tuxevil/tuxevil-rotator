@@ -2010,6 +2010,14 @@ const MODEL_CATALOG = [
     tools: true,
   },
   {
+    id: "gemini-3.7-flash-tiered",
+    family: "gemini-3.7-flash",
+    ctx: 1048576,
+    quotaPool: "gemini",
+    multimodal: true,
+    tools: true,
+  },
+  {
     id: "gemini-3.1-pro-low",
     family: "gemini-3.1-pro",
     ctx: 1048576,

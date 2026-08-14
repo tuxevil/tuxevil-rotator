@@ -836,6 +836,38 @@ export function convertResponsesToChatRequest(
   };
 }
 
+/**
+ * Canonical model ID whose thinking level follows an OpenAI-style
+ * reasoning_effort. Matched case-insensitively against the exact ID only;
+ * virtual siblings (e.g. `gemini-3.7-flash-tiered-high`) are excluded.
+ */
+export const TIERED_EFFORT_MODEL_ID = "gemini-3.7-flash-tiered";
+
+/**
+ * Map an OpenAI Chat `reasoning_effort` to a Gemini `thinkingLevel` for
+ * `gemini-3.7-flash-tiered` only. Accepts exactly low/medium/high
+ * (case-insensitive); anything else returns undefined so the caller falls
+ * back to the existing adaptive/fixed-budget semantics and never emits an
+ * invalid upstream enum.
+ */
+export function mapTieredReasoningEffortToThinkingLevel(
+  effort: string | undefined,
+  modelId: string,
+): "LOW" | "MEDIUM" | "HIGH" | undefined {
+  if (modelId.toLowerCase() !== TIERED_EFFORT_MODEL_ID) return undefined;
+  if (!isNonEmptyString(effort)) return undefined;
+  switch (effort.toLowerCase()) {
+    case "low":
+      return "LOW";
+    case "medium":
+      return "MEDIUM";
+    case "high":
+      return "HIGH";
+    default:
+      return undefined;
+  }
+}
+
 export function openAIToAntigravityBody(
   input: OpenAIChatCompletionRequest,
 ): RequestBody {
@@ -1155,10 +1187,28 @@ export function openAIToAntigravityBody(
     }
   } else if (isThinking && modelFamily !== "claude") {
     const tb = modelSpec.thinkingBudget;
-    thinkingConfigObj =
+    // Only the exact tiered model selects its thinking level from an
+    // OpenAI-style reasoning_effort, and only while its spec stays adaptive
+    // (thinkingBudget === -1). A fixed budget — bundled or set by an operator
+    // modelSpecs override — deterministically wins and is never combined
+    // with thinkingLevel.
+    const tieredThinkingLevel =
       tb === -1
-        ? { includeThoughts: true }
-        : { includeThoughts: true, thinkingBudget: tb };
+        ? mapTieredReasoningEffortToThinkingLevel(
+            input.reasoning_effort,
+            input.model,
+          )
+        : undefined;
+    if (tieredThinkingLevel) {
+      thinkingConfigObj = {
+        includeThoughts: true,
+        thinkingLevel: tieredThinkingLevel,
+      };
+    } else if (tb === -1) {
+      thinkingConfigObj = { includeThoughts: true };
+    } else {
+      thinkingConfigObj = { includeThoughts: true, thinkingBudget: tb };
+    }
     if (tb !== -1 && (!maxOutputTokens || maxOutputTokens <= tb)) {
       maxOutputTokens = Math.min(tb + 8192, modelSpec.maxOutputTokens);
       compatLogger.debug(

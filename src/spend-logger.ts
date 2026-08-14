@@ -223,6 +223,8 @@ export function calculateCost(model: string, promptTokens: number, completionTok
       pricing = MODEL_PRICING["claude-opus-4-6-thinking"];
     } else if (lower.includes("sonnet")) {
       pricing = MODEL_PRICING["claude-sonnet-4-6"];
+    } else if (lower.includes("3.7-flash")) {
+      pricing = MODEL_PRICING["gemini-3.7-flash-tiered"];
     } else if (lower.includes("3.6-flash")) {
       pricing = MODEL_PRICING["gemini-3.6-flash-high"];
     } else if (lower.includes("3.5-flash")) {

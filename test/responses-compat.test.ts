@@ -342,6 +342,79 @@ describe("responses compat", () => {
 		}
 	});
 
+	it("maps Responses reasoning.effort to tiered thinkingLevel upstream", async () => {
+		const captures: Capture[] = [];
+		const upstream = await listenServer((req, res) => {
+			let body = "";
+			req.on("data", (chunk) => { body += chunk.toString(); });
+			req.on("end", () => {
+				captures.push({ url: req.url || "", headers: req.headers, body });
+				res.writeHead(200, { "Content-Type": "text/event-stream" });
+				res.end('data: {"response":{"candidates":[{"content":{"parts":[{"text":"pong"}]}}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2}}}\n\n');
+			});
+		});
+		endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
+
+		try {
+			const rotator = createRotatorStub(createAccount());
+			const req = requestStream("POST", "/v1/responses", {
+				model: "gemini-3.7-flash-tiered",
+				input: "ping",
+				reasoning: { effort: "medium" },
+			});
+			const res = responseStub();
+			await handleOpenAIResponsesCreate(req, res, rotator);
+			assert.equal(res.statusCodeCaptured, 200);
+
+			const payload = JSON.parse(res.body) as { reasoning: { effort: string | null } };
+			assert.equal(payload.reasoning.effort, "medium");
+
+			const upstreamBody = JSON.parse(captures[0].body) as {
+				request: { generationConfig: { thinkingConfig?: Record<string, unknown> } };
+			};
+			assert.deepEqual(upstreamBody.request.generationConfig.thinkingConfig, {
+				includeThoughts: true,
+				thinkingLevel: "MEDIUM",
+			});
+		} finally {
+			await closeServer(upstream.server);
+		}
+	});
+
+	it("keeps tiered Responses requests adaptive when reasoning.effort is absent", async () => {
+		const captures: Capture[] = [];
+		const upstream = await listenServer((req, res) => {
+			let body = "";
+			req.on("data", (chunk) => { body += chunk.toString(); });
+			req.on("end", () => {
+				captures.push({ url: req.url || "", headers: req.headers, body });
+				res.writeHead(200, { "Content-Type": "text/event-stream" });
+				res.end('data: {"response":{"candidates":[{"content":{"parts":[{"text":"pong"}]}}]}}\n\n');
+			});
+		});
+		endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
+
+		try {
+			const rotator = createRotatorStub(createAccount());
+			const req = requestStream("POST", "/v1/responses", {
+				model: "gemini-3.7-flash-tiered",
+				input: "ping",
+			});
+			const res = responseStub();
+			await handleOpenAIResponsesCreate(req, res, rotator);
+			assert.equal(res.statusCodeCaptured, 200);
+
+			const upstreamBody = JSON.parse(captures[0].body) as {
+				request: { generationConfig: { thinkingConfig?: Record<string, unknown> } };
+			};
+			assert.deepEqual(upstreamBody.request.generationConfig.thinkingConfig, {
+				includeThoughts: true,
+			});
+		} finally {
+			await closeServer(upstream.server);
+		}
+	});
+
 	it("streams Responses SSE events and keeps cancel coherent", async () => {
 		const upstream = await listenServer((req, res) => {
 			req.resume();

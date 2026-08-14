@@ -277,6 +277,7 @@ export const QUOTA_MODEL_KEYS: Record<
       "gemini-3.6-flash-medium",
       "gemini-3.6-flash-low",
       "gemini-3.6-flash-tiered",
+      "gemini-3.7-flash-tiered",
     ],
     display: "Gemini",
   },
@@ -344,6 +345,17 @@ export function resolveDisplayModelKey(requestModel: string): string {
     if (lower.includes("-tiered")) return "gemini-3.6-flash-tiered";
     if (lower.includes("-high")) return "gemini-3.6-flash-high";
     return "gemini-3.6-flash-high"; // unspecified variant
+  }
+  // Gemini 3.7 Flash — only the tiered variant exists. Unsupported
+  // virtual variants (low/medium/high) intentionally fall through to the
+  // generic Flash fallback below instead of resolving as supported models.
+  if (
+    lower.includes("gemini") &&
+    lower.includes("3.7") &&
+    lower.includes("flash") &&
+    lower.includes("-tiered")
+  ) {
+    return "gemini-3.7-flash-tiered";
   }
   // Gemini 3.5 Flash — distinguish medium vs high
   if (
@@ -752,6 +764,18 @@ export const MODEL_PRICING: Record<
     outputPer1M: 7.5,
     cachingPer1M: 0.15,
     cachingStoragePer1MPerHour: 1.0,
+  },
+  // Gemini 3.7 Flash tiered — public Gemini API equivalent-value pricing,
+  // verified on the official Gemini API / Google Cloud pricing pages
+  // 2026-08-13. Introductory rates through 2026-12-31. From 2027-01-01
+  // these double to: input 1.50, output 7.50, cached input 0.15, cache
+  // storage 1.00 (USD per 1M tokens / per 1M tokens/hour) — update this
+  // static entry when the introductory period ends.
+  "gemini-3.7-flash-tiered": {
+    inputPer1M: 0.75,
+    outputPer1M: 3.75,
+    cachingPer1M: 0.075,
+    cachingStoragePer1MPerHour: 0.5,
   },
   "gpt-oss-120b-medium": { inputPer1M: 2.0, outputPer1M: 10.0 },
 

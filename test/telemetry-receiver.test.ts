@@ -182,6 +182,45 @@ describe("telemetry receiver", () => {
 		assert.equal(stats.savings.byModel["gemini-3.6-flash"].totalUsd, 9.00);
 	});
 
+	it("calculates estimated savings for gemini 3.7 flash tiered in /v1/stats", async () => {
+		const payload = {
+			event: "heartbeat",
+			installId: "gemini37-savings-test-install",
+			version: "3.1.0",
+			nodeVersion: process.version,
+			os: process.platform,
+			arch: process.arch,
+			ts: new Date().toISOString(),
+			accountCount: 1,
+			modelsUsed: ["gemini-3.7-flash-tiered"],
+			totalRequests: 10,
+			uptimeSeconds: 300,
+			routingHealthState: "healthy",
+			tokensByModel: {
+				"gemini-3.7-flash-tiered": { input: 1_000_000, output: 1_000_000, requests: 10 },
+				"google/gemini-3.7-flash-tiered": { input: 1_000_000, output: 1_000_000, requests: 5 },
+			},
+		};
+
+		const postRes = await fetch(`http://127.0.0.1:${port}/v1/events`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(payload),
+		});
+		assert.equal(postRes.status, 202);
+
+		const statsRes = await fetch(`http://127.0.0.1:${port}/v1/stats`, {
+			headers: { Authorization: "Bearer secret-token" },
+		});
+		assert.equal(statsRes.status, 200);
+		const stats = (await statsRes.json()) as any;
+		assert.ok(stats.savings);
+		// Exact entry: 0.75 + 3.75 = 4.50 — not the gemini-3-flash 3.50 rates.
+		assert.equal(stats.savings.byModel["gemini-3.7-flash-tiered"].totalUsd, 4.50);
+		// Provider-prefixed id resolves through the 3.7-flash fallback.
+		assert.equal(stats.savings.byModel["google/gemini-3.7-flash-tiered"].totalUsd, 4.50);
+	});
+
 	it("calculates estimated savings for Ollama Cloud models in /v1/stats", async () => {
 		const payload = {
 			event: "heartbeat",

@@ -226,6 +226,69 @@ describe("dashboard", () => {
     assert.equal(savings.byModel["gpt-5.6-luna"].totalUsd, 1.4);
   });
 
+  it("prices gemini-3.7-flash-tiered with its own rates and never falls through to gemini-3-flash", () => {
+    const js = readDashboardJs();
+    const sandbox: Record<string, unknown> = {
+      window: { location: { search: "" } } as Record<string, unknown>,
+      URLSearchParams: globalThis.URLSearchParams,
+      EventSource: function () {},
+      fetch: () => Promise.resolve(),
+      setInterval: () => {},
+      clearInterval: () => {},
+      setTimeout: () => {},
+      clearTimeout: () => {},
+      localStorage: { getItem: () => null, setItem: () => {} },
+      document: {
+        getElementById: () => null,
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        addEventListener: () => {},
+      },
+    };
+    const script = new Script(
+      js +
+        "\nthis.getModelPricingClient = getModelPricingClient;" +
+        "\nthis.calcSavingsFromBuckets = calcSavingsFromBuckets;",
+    );
+    script.runInNewContext(sandbox);
+
+    const getModelPricingClient = sandbox.getModelPricingClient as (
+      m: string,
+    ) => { input: number; output: number } | null;
+    const calcSavingsFromBuckets = sandbox.calcSavingsFromBuckets as (
+      buckets: Array<Record<string, unknown>>,
+    ) => { byModel: Record<string, { totalUsd: number }> };
+
+    // Exact entry
+    const exact = getModelPricingClient("gemini-3.7-flash-tiered");
+    assert.ok(exact);
+    assert.equal(exact.input, 0.75);
+    assert.equal(exact.output, 3.75);
+    // Provider-prefixed id resolves via the 3.7-flash fallback...
+    const prefixed = getModelPricingClient("google/gemini-3.7-flash-tiered");
+    assert.ok(prefixed);
+    assert.equal(prefixed.input, 0.75);
+    assert.equal(prefixed.output, 3.75);
+    // ...and never collapses to the generic gemini-3-flash rates.
+    const legacy = getModelPricingClient("gemini-3-flash");
+    assert.ok(legacy);
+    assert.equal(legacy.input, 0.5);
+    assert.equal(legacy.output, 3.0);
+    assert.notEqual(prefixed.input, legacy.input);
+
+    const savings = calcSavingsFromBuckets([
+      {
+        byModel: {
+          "gemini-3.7-flash-tiered": {
+            inputTokens: 1_000_000,
+            outputTokens: 1_000_000,
+          },
+        },
+      },
+    ]);
+    assert.equal(savings.byModel["gemini-3.7-flash-tiered"].totalUsd, 4.5);
+  });
+
   it("does not offer kickstart controls for Codex quota pools", () => {
     const js = readDashboardJs();
     const sandbox: Record<string, unknown> = {

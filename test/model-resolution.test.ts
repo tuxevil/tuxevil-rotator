@@ -6,6 +6,7 @@ import {
 	resolveDisplayModelKey,
 	resolveQuotaModelKey,
 } from "../src/types.js";
+import { extractQuotas } from "../src/providers/google-antigravity/quota.js";
 
 describe("model resolution", () => {
 	it("maps Gemini variants to the shared Gemini quota pool", () => {
@@ -116,9 +117,68 @@ describe("model resolution", () => {
 		assert.equal(p.cachingStoragePer1MPerHour, 1.00);
 	});
 
+	it("uses the official Gemini 3.7 Flash introductory pricing", () => {
+		assert.deepEqual(MODEL_PRICING["gemini-3.7-flash-tiered"], {
+			inputPer1M: 0.75,
+			outputPer1M: 3.75,
+			cachingPer1M: 0.075,
+			cachingStoragePer1MPerHour: 0.5,
+		});
+	});
+
 	it("keeps quota model keys unique", () => {
 		const keys = Object.values(QUOTA_MODEL_KEYS).map((entry) => entry.key);
 		assert.equal(new Set(keys).size, keys.length);
+	});
+
+	it("resolves gemini-3.7-flash-tiered to the shared gemini quota pool", () => {
+		assert.equal(resolveQuotaModelKey("gemini-3.7-flash-tiered"), "gemini");
+		assert.equal(resolveQuotaModelKey("google/gemini-3.7-flash-tiered"), "gemini");
+	});
+
+	it("keeps gemini-3.7-flash-tiered as its exact display key", () => {
+		assert.equal(
+			resolveDisplayModelKey("gemini-3.7-flash-tiered"),
+			"gemini-3.7-flash-tiered",
+		);
+		// Provider-prefixed requests resolve to the same canonical display key.
+		assert.equal(
+			resolveDisplayModelKey("google/gemini-3.7-flash-tiered"),
+			"gemini-3.7-flash-tiered",
+		);
+	});
+
+	it("does not treat gemini-3.7-flash low/medium/high as supported virtual models", () => {
+		for (const variant of ["low", "medium", "high"]) {
+			const id = `gemini-3.7-flash-${variant}`;
+			// Falls back to the generic Flash display key, never a 3.7 virtual key.
+			assert.equal(resolveDisplayModelKey(id), "gemini-3-flash");
+			// No quota alt-key or alias entry is created for the virtual variant.
+			assert.ok(!QUOTA_MODEL_KEYS.gemini.altKeys.includes(id));
+		}
+	});
+
+	it("appends gemini-3.7-flash-tiered exactly once to the gemini quota altKeys", () => {
+		const altKeys = QUOTA_MODEL_KEYS.gemini.altKeys;
+		const matches = altKeys.filter((k) => k === "gemini-3.7-flash-tiered");
+		assert.equal(matches.length, 1);
+	});
+
+	it("extracts gemini pool quota via the gemini-3.7-flash-tiered alt key", () => {
+		const data = {
+			models: {
+				"gemini-3.7-flash-tiered": {
+					quotaInfo: { remainingFraction: 0.42 },
+				},
+			},
+		};
+		const quotas = extractQuotas(data, []);
+		const gemini = quotas.find((q) => q.modelKey === "gemini");
+		assert.ok(gemini, "alt-key extraction should surface the shared gemini pool");
+		assert.equal(gemini.displayName, "Gemini");
+		assert.equal(gemini.percentRemaining, 42);
+		// No other pool key present in the stub response.
+		assert.equal(quotas.length, 1);
 	});
 
 it("orders quota model keys: claude, gemini", () => {

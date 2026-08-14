@@ -258,6 +258,7 @@ var FALLBACK_MODEL_CATALOG = [
   { id: "gemini-3.6-flash-medium", owned_by: "tuxevil-rotator" },
   { id: "gemini-3.6-flash-high", owned_by: "tuxevil-rotator" },
   { id: "gemini-3.6-flash-tiered", owned_by: "tuxevil-rotator" },
+  { id: "gemini-3.7-flash-tiered", owned_by: "tuxevil-rotator" },
   { id: "claude-sonnet-4-6", owned_by: "tuxevil-rotator" },
   { id: "claude-opus-4-6-thinking", owned_by: "tuxevil-rotator" },
   { id: "gpt-oss-120b-medium", owned_by: "tuxevil-rotator" },

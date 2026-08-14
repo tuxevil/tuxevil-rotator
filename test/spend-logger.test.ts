@@ -14,6 +14,26 @@ test("calculateCost uses the official Codex GPT-5.6 rates", () => {
 	assert.equal(calculateCost("gpt-5.6-luna", 1_000_000, 1_000_000), 1.4);
 });
 
+test("calculateCost uses the official Gemini 3.7 Flash tiered rates", () => {
+	// 1M input (0.75) + 1M output (3.75) = 4.50
+	assert.equal(
+		calculateCost("gemini-3.7-flash-tiered", 1_000_000, 1_000_000),
+		4.5,
+	);
+	// Provider-prefixed ids resolve through the 3.7-flash fallback.
+	assert.equal(
+		calculateCost("google/gemini-3.7-flash-tiered", 1_000_000, 1_000_000),
+		4.5,
+	);
+});
+
+test("calculateCost never falls 3.7-flash through to gemini-3-flash rates", () => {
+	const tiered = calculateCost("gemini-3.7-flash-tiered", 1_000_000, 1_000_000);
+	const legacy = calculateCost("gemini-3-flash", 1_000_000, 1_000_000);
+	assert.equal(legacy, 3.5); // 0.50 + 3.00
+	assert.notEqual(tiered, legacy);
+});
+
 test("generateRequestId produces unique prefixed strings", () => {
   const id1 = generateRequestId();
   const id2 = generateRequestId();

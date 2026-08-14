@@ -901,6 +901,65 @@ describe("proxy e2e: 5xx (non-503)", () => {
 	});
 });
 
+describe("proxy e2e: native Gemini thinkingLevel passthrough", () => {
+	it("forwards generationConfig.thinkingConfig.thinkingLevel unchanged to upstream", async () => {
+		const captures: Capture[] = [];
+		const upstream = await listen((req, res) => {
+			let body = "";
+			req.on("data", (chunk) => { body += chunk.toString(); });
+			req.on("end", () => {
+				captures.push({ url: req.url || "", headers: req.headers, body });
+				res.writeHead(200, { "Content-Type": "text/event-stream" });
+				res.end('data: {"response":{"candidates":[{"content":{"parts":[{"text":"tiered ok"}]}}]}}\n\n');
+			});
+		});
+		endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
+
+		const proxy = startProxy(makeRotator(makeAccount("tiered@example.com")), 0, "127.0.0.1");
+		await once(proxy, "listening");
+		const address = proxy.address();
+		if (!address || typeof address === "string") throw new Error("proxy did not bind");
+
+		try {
+			const response = await fetch(`http://127.0.0.1:${address.port}/v1internal:streamGenerateContent?alt=sse`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					project: "test-project",
+					model: "gemini-3.7-flash-tiered",
+					request: {
+						contents: [{ role: "user", parts: [{ text: "hello" }] }],
+						generationConfig: {
+							maxOutputTokens: 512,
+							thinkingConfig: { includeThoughts: true, thinkingLevel: "HIGH" },
+						},
+					},
+				}),
+			});
+
+			assert.equal(response.status, 200);
+			assert.match(await response.text(), /tiered ok/);
+
+			const forwarded = JSON.parse(captures[0].body) as {
+				model: string;
+				request: {
+					generationConfig: {
+						thinkingConfig?: { thinkingLevel?: string; includeThoughts?: boolean };
+					};
+				};
+			};
+			assert.equal(forwarded.model, "gemini-3.7-flash-tiered");
+			assert.deepEqual(forwarded.request.generationConfig.thinkingConfig, {
+				includeThoughts: true,
+				thinkingLevel: "HIGH",
+			});
+		} finally {
+			await new Promise<void>((resolve, reject) => proxy.close((err) => (err ? reject(err) : resolve())));
+			await upstream.close();
+		}
+	});
+});
+
 describe("proxy e2e: endpoint cascade", () => {
 	it("falls back from daily to prod endpoint when daily returns 404", async () => {
 		const dailyHits: Capture[] = [];
