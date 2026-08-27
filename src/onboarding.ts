@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { getConfiguredAdminToken } from "./admin-auth.js";
 import { addAccountToConfig } from "./account-store.js";
 import { PayloadTooLargeError, readLimitedBody } from "./body-limit.js";
 import {
@@ -231,11 +232,17 @@ function renderPage(title: string, body: string): string {
 export function serveLoginLanding(res: ServerResponse): void {
   const hostedReady = isHostedOAuthConfigured();
   const oauth = hostedReady ? getOAuthClientConfig() : null;
+  // The start route is admin-gated, so carry the token through — the page
+  // itself is only reachable with a valid token anyway.
+  const adminToken = getConfiguredAdminToken();
+  const startHref = adminToken
+    ? `/auth/antigravity/start?token=${encodeURIComponent(adminToken)}`
+    : "/auth/antigravity/start";
   const message = hostedReady
     ? `<p>This page starts the Antigravity sign-in flow and returns here automatically so the account can be added to this rotator.</p>
 <p class="mono">Configured callback: ${escapeHtml(oauth?.redirectUri)}</p>
 <div class="note">Signing in here grants this server a refresh token for the selected Google account. That allows the rotator to keep using that account until access is revoked.</div>
-<a class="cta" href="/auth/antigravity/start">Continue With Google</a>`
+<a class="cta" href="${startHref}">Continue With Google</a>`
     : `<p>This server is not yet configured for hosted OAuth.</p>
 <p class="mono">Set ANTIGRAVITY_REDIRECT_URI, and usually ANTIGRAVITY_CLIENT_ID plus ANTIGRAVITY_CLIENT_SECRET, to a public callback URL registered with the OAuth client.</p>
 <div class="note error">The current redirect is still loopback-only, so the transparent public callback cannot complete yet.</div>`;
