@@ -170,6 +170,10 @@ import {
   serveGeminiModels,
   serveOpenAIModels,
 } from "./compat.js";
+import {
+  handleOpenAIAudioTranscriptions,
+  handleAudioWebSocket,
+} from "./audio-transcription.js";
 import { applyConfigDefaults } from "./account-store.js";
 import {
   classifyRateLimitReason,
@@ -1229,8 +1233,13 @@ export async function withRotation<T>(
     );
 
     try {
-      const jitterMs = rotator.getSafetyJitterMs(account);
-      const globalDelayMs = rotator.getGlobalDelayMs();
+      const skipJitter = Boolean(
+        originalHeaders &&
+          (originalHeaders["x-skip-safety-jitter"] === "true" ||
+            originalHeaders["x-live-request"] === "true"),
+      );
+      const jitterMs = skipJitter ? 0 : rotator.getSafetyJitterMs(account);
+      const globalDelayMs = skipJitter ? 0 : rotator.getGlobalDelayMs();
       const totalDelayMs = jitterMs + globalDelayMs;
       if (totalDelayMs > 0) {
         if (jitterMs > 0) {
@@ -1682,8 +1691,9 @@ async function handleProxyRequest(
     };
 
     try {
-      const jitterMs = rotator.getSafetyJitterMs(account);
-      const globalDelayMs = rotator.getGlobalDelayMs();
+      const skipJitter = req.headers["x-skip-safety-jitter"] === "true" || req.headers["x-live-request"] === "true";
+      const jitterMs = skipJitter ? 0 : rotator.getSafetyJitterMs(account);
+      const globalDelayMs = skipJitter ? 0 : rotator.getGlobalDelayMs();
       const totalDelayMs = jitterMs + globalDelayMs;
       if (totalDelayMs > 0) {
         if (jitterMs > 0) {
@@ -2057,6 +2067,17 @@ export function startProxy(
     const method = req.method?.toUpperCase();
     const url = req.url || "";
     const pathname = url.split("?")[0];
+
+    // CORS headers for API consumers (e.g. MindWhisperAI, local frontends)
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "*");
+
+    if (method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
 
     if (method === "GET" && (pathname === "/" || pathname === "/dashboard")) {
       if (!requireAdmin(req, res)) return;
@@ -2475,6 +2496,23 @@ export function startProxy(
       return;
     }
 
+    if (method === "POST" && pathname === "/v1/audio/transcriptions") {
+      handleOpenAIAudioTranscriptions(req, res).catch((err) => {
+        log(`Audio transcription error: ${err}`, rotator, "error");
+        if (!res.headersSent)
+          res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: {
+              message: "Internal audio transcription error",
+              type: "server_error",
+            },
+          }),
+        );
+      });
+      return;
+    }
+
     if (method === "POST" && pathname === "/v1/responses") {
       handleOpenAIResponsesCreate(req, res, rotator).catch((err) => {
         log(`OpenAI responses compat error: ${err}`, rotator, "error");
@@ -2597,9 +2635,26 @@ export function startProxy(
     res.end(JSON.stringify({ error: "Not found" }));
   });
 
+  server.on("upgrade", (req, socket) => {
+    const url = req.url || "";
+    const pathname = url.split("?")[0];
+    if (
+      pathname === "/ws" ||
+      pathname === "/ws/audio" ||
+      pathname === "/v1/audio/transcriptions/stream" ||
+      pathname === "/v1/listen" ||
+      pathname.startsWith("/ws/")
+    ) {
+      handleAudioWebSocket(req, socket).catch(() => socket.destroy());
+      return;
+    }
+    socket.destroy();
+  });
+
   server.listen(port, bindHost, () => {
     log(`Listening on ${bindHost}:${port}`, rotator);
     log(`Dashboard: http://localhost:${port}/dashboard`, rotator);
+    log(`Audio Stream WS: ws://localhost:${port}/ws`, rotator);
     log(`Hosted login: http://localhost:${port}/login`, rotator);
   });
   return server;

@@ -290,3 +290,24 @@ Route a client-facing alias model (such as `gemini-3.8-flash`) to concrete Antig
 - **Non-Google provider collision constraint**: aliases and targets must be Google Antigravity-dispatchable models. Statically known Codex, OpenCode Zen, or Ollama catalog IDs may not be used as effort-routing aliases or targets. If an alias or target later matches a dynamically discovered Ollama model, the proxy logs a runtime warning and keeps the existing provider precedence.
 - **Catalog visibility**: when configured, `/v1/models` advertises the alias and soft-hides its configured concrete targets. The alias inherits catalog metadata from its default effort target. The native `/v1beta/models` catalog retains concrete models and does not substitute effort aliases, because native `/v1beta` and `/v1internal` requests forward model IDs unchanged. Direct requests to concrete targets remain functional.
 - **Virtual key scoping**: virtual key authorization runs on the raw request model pre-translation. A virtual key scoped to `gemini-3.8-flash` authorizes the bare alias and all suffixed concrete variants through substring matching. A key scoped specifically to a concrete variant such as `gemini-3.8-flash-high` will reject requests specifying the bare alias. Once an alias is configured, the dashboard picker hides concrete targets. Create or update virtual keys scoped to concrete targets through the API.
+
+## Audio Transcription & Live Streaming
+
+The rotator provides OpenAI-compatible audio transcription and bidirectional live streaming powered by the local Antigravity Language Server observer model (`models/proactive-observer-v10`).
+
+### Endpoints
+
+- `POST /v1/audio/transcriptions`: OpenAI-compatible multipart audio transcription.
+  - Form fields: `file` (audio file), `model` (default: `models/proactive-observer-v10` or alias `whisper-1`), `response_format` (`json`, `text`, `verbose_json`), `prompt`, `language`.
+  - Supported audio formats: `.wav`, `.mp3`, `.m4a`, `.webm`, `.ogg`, `.flac`, `.pcm`.
+- `GET /ws`, `/ws/audio`, `/v1/listen`, `/v1/audio/transcriptions/stream`: Bidirectional WebSocket streaming endpoint (RFC 6455).
+  - Streams binary 16kHz PCM audio chunks in real-time.
+  - Emits JSON events: `system_status`, `antigravity_ready`, `antigravity_transcript` (with TTFT and interim/final text), and `antigravity_complete`.
+
+### Low-Latency Headers
+
+For real-time voice and streaming applications, client requests can bypass artificial safety jitter delays:
+
+- `X-Skip-Safety-Jitter: true`
+- `X-Live-Request: true`
+

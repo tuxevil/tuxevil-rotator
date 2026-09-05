@@ -171,6 +171,9 @@ export const MAX_QUOTA_POLL_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MODEL_ALIASES: Record<string, string> = {
   "gemini-3.1-pro-high": "gemini-pro-agent",
   "gpt-oss-120b": "gpt-oss-120b-medium",
+  "whisper-1": "models/proactive-observer-v10",
+  "proactive-observer": "models/proactive-observer-v10",
+  "proactive-observer-v10": "models/proactive-observer-v10",
 };
 let modelAliasesOverride: Record<string, string> | null = null;
 type StoredEffortRoutingRule = {
