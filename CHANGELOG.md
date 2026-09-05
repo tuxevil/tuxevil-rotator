@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [3.6.1] - 2026-09-05
+
+### Added
+
+- **Effort-based model routing**: Optional aliases can dispatch requests to concrete model variants based on `reasoning_effort`, while preserving the alias in client-facing responses and tracking quotas against the concrete target ([#32](https://github.com/tuxevil/tuxevil-rotator/pull/32) by [@CyR1en](https://github.com/CyR1en)).
+
+### Fixed
+
+- **Partial Google quota snapshots**: Reset-only quota entries are now treated as exhausted instead of being discarded, while omitted pools remain available from the last known-good snapshot.
+- **Model-scoped cooldown reconciliation**: Shared Claude and Gemini pools now reconcile cooldowns independently, preventing one exhausted pool from blocking its sibling and honoring fresh provider reset deadlines.
+
 ## [3.6.0] - 2026-09-04
 
 ### Added

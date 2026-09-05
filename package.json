@@ -1,6 +1,6 @@
 {
   "name": "tuxevil-rotator",
-  "version": "3.6.0",
+  "version": "3.6.1",
   "description": "Multi-provider, multi-account AI proxy rotator with per-model routing, real-time quota tracking, and infringement detection (Google Antigravity, Ollama Cloud)",
   "license": "MIT",
   "type": "module",
