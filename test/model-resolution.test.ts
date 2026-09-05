@@ -8,6 +8,8 @@ import {
 	resolveQuotaModelKey,
 } from "../src/types.js";
 import { extractQuotas } from "../src/providers/google-antigravity/quota.js";
+import { parseGoogleQuotaResponse } from "../src/providers/google-antigravity/dynamic-catalog.js";
+import { readFileSync } from "node:fs";
 
 describe("model resolution", () => {
 	it("maps Gemini variants to the shared Gemini quota pool", () => {
@@ -232,6 +234,46 @@ describe("model resolution", () => {
 			modelKey,
 			percentRemaining,
 		})), [{ modelKey: "gemini", percentRemaining: 0 }]);
+	});
+
+	it("uses the most exhausted sibling for a shared quota pool", () => {
+		const quotas = extractQuotas({
+			models: {
+				"gemini-3.1-pro": { quotaInfo: { remainingFraction: 1 } },
+				"gemini-3-flash": { quotaInfo: { remainingFraction: 0 } },
+			},
+		}, []);
+
+		assert.equal(quotas.find((q) => q.modelKey === "gemini")?.percentRemaining, 0);
+	});
+
+	it("keeps legacy reset-only Claude and Gemini entries visible", () => {
+		const fixture = JSON.parse(
+			readFileSync(new URL("./fixtures/google-quota-partial.json", import.meta.url), "utf8"),
+		);
+		const parsed = parseGoogleQuotaResponse(fixture);
+		assert.ok(parsed);
+		const quotas = extractQuotas(parsed, []);
+
+		assert.deepEqual(
+			quotas.map(({ modelKey, percentRemaining, resetTime }) => ({
+				modelKey,
+				percentRemaining,
+				resetTime,
+			})),
+			[
+				{
+					modelKey: "claude",
+					percentRemaining: 0,
+					resetTime: "2099-09-06T19:15:02Z",
+				},
+				{
+					modelKey: "gemini",
+					percentRemaining: 0,
+					resetTime: "2099-09-10T18:36:32Z",
+				},
+			],
+		);
 	});
 
 	it("ignores malformed canonical quota and uses a valid family sibling", () => {

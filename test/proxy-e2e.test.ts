@@ -968,7 +968,6 @@ describe("native Code Assist passthrough", () => {
 				gemini: {
 					quotaInfo: {
 						remainingFraction: 2,
-						resetTime: "2099-01-01T00:00:00Z",
 					},
 				},
 			},

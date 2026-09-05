@@ -1443,23 +1443,12 @@ export class AccountRotator {
   ): AccountStatus["status"] {
     const defaultCooldownActive =
       (account.cooldownsByModel.__default__ ?? 0) > now;
-    const knownPools = new Set(account.quota.map((quota) => quota.modelKey));
-    for (const [modelKey, cooldownUntil] of Object.entries(
-      account.cooldownsByModel,
-    )) {
-      if (modelKey !== "__default__" && cooldownUntil > now) {
-        knownPools.add(modelKey);
-      }
-    }
-    const allKnownPoolsCooling =
-      knownPools.size > 0 &&
-      [...knownPools].every(
-        (modelKey) => (account.cooldownsByModel[modelKey] ?? 0) > now,
-      );
     if (account.flagged) return "flagged";
     if (account.disabled) return "disabled";
     if (account.consecutiveErrors > 0 && !account.disabled) return "error";
-    if (defaultCooldownActive || allKnownPoolsCooling) return "cooldown";
+    // Pool cooldowns stay visible in cooldownsByModel but must not make the
+    // whole account unavailable for unrelated quota pools.
+    if (defaultCooldownActive) return "cooldown";
     if (this.isDailySafetyStopped(account, now)) return "exhausted";
     if (activeForModels.length > 0) return "active";
     return "ready";
@@ -2991,6 +2980,21 @@ export class AccountRotator {
     account.cooldownsByModel[modelKey] = now + cooldownMs;
     account.quotaExhaustedAt = now;
 
+    // Keep the dashboard aligned with provider truth. The quota endpoint can
+    // report an untouched 100% pool while generation has already exhausted it.
+    if (modelKey !== "__default__" && cooldownMs > 0) {
+      const quota = account.quota.find(
+        (candidate) =>
+          candidate.modelKey === modelKey &&
+          candidate.providerId === DEFAULT_PROVIDER,
+      );
+      if (quota) {
+        quota.percentRemaining = 0;
+        quota.resetTime = new Date(now + cooldownMs).toISOString();
+        quota.timerType = cooldownMs < 6 * 60 * 60 * 1000 ? "5h" : "7d";
+      }
+    }
+
     const errorDetail = errorText ? ` | ${errorText}` : "";
     this.log(
       `${account.config.label || account.config.email} [${modelKey}]: EXHAUSTED, cooldown ${Math.ceil(cooldownMs / 1000)}s${errorDetail}`,
@@ -4465,6 +4469,19 @@ export class AccountRotator {
 
     const upstreamModel = target.upstreamModel;
     const poolKey = target.poolKey;
+
+    const activeCooldown = Math.max(
+      account.cooldownsByModel[poolKey] ?? 0,
+      account.cooldownsByModel.__default__ ?? 0,
+    );
+    if (activeCooldown > Date.now()) {
+      return {
+        ok: false,
+        status: 429,
+        upstreamModel,
+        error: `quota cooldown active for ${Math.ceil((activeCooldown - Date.now()) / 1000)}s`,
+      };
+    }
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15_000);

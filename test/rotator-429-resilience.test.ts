@@ -182,7 +182,143 @@ describe("429 RESOURCE_EXHAUSTED resilience and in-flight lifecycle", () => {
     const fullyCooling = rotator
       .getStatus()
       .accounts.find((candidate) => candidate.email === account.config.email);
-    assert.equal(fullyCooling?.status, "cooldown", "all known pools cooling is a global account cooldown");
+    assert.notEqual(fullyCooling?.status, "cooldown", "pool cooldowns must not become a global account cooldown");
+  });
+
+  it("publishes an exhausted Antigravity pool as zero quota", () => {
+    const account = makeAccount("visible-exhaustion@example.com", "visible-project", "gemini", 100);
+    const rotator = new AccountRotator({
+      proxyPort: 51225,
+      rotateOnQuotaDrop: 20,
+      routingPolicy: "timer-first",
+      quotaPollIntervalMs: 300000,
+      requestsPerRotation: 5,
+      accounts: [account.config],
+    });
+    rotator.stopQuotaPolling();
+    (rotator as any).accounts = [account];
+
+    const cooldownMs = 125 * 60 * 60 * 1000;
+    const before = Date.now();
+    rotator.markExhausted(account, "gemini-3-flash", cooldownMs, "QUOTA_EXHAUSTED");
+
+    const quota = account.quota.find((candidate) => candidate.modelKey === "gemini");
+    assert.equal(quota?.percentRemaining, 0);
+    assert.equal(quota?.timerType, "7d");
+    assert.ok(new Date(quota?.resetTime ?? 0).getTime() >= before + cooldownMs);
+    rotator.stopQuotaPolling();
+  });
+
+  it("preserves a Google pool when a partial response omits it", async () => {
+    const originalFetch = globalThis.fetch;
+    let rotator: InstanceType<typeof AccountRotator> | undefined;
+    dynamicCatalog.reset();
+    await setCachedState({ modelAccounts: {}, accounts: {} });
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      models: {
+        gemini: { quotaInfo: { remainingFraction: 0.8 } },
+      },
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    })) as typeof fetch;
+
+    try {
+      const config = {
+        proxyPort: 51226,
+        rotateOnQuotaDrop: 20,
+        routingPolicy: "timer-first" as const,
+        quotaPollIntervalMs: 300000,
+        requestsPerRotation: 5,
+        accounts: [{
+          email: "partial-quota@example.com",
+          projectId: "partial-quota-project",
+          refreshToken: "partial-quota-refresh",
+        }],
+      };
+      rotator = new AccountRotator(config);
+      rotator.stopQuotaPolling();
+      const account = (rotator as any).accounts[0] as AccountRuntime;
+      account.accessToken = "partial-quota-access";
+      account.tokenExpires = Date.now() + 60_000;
+      account.quota = [
+        {
+          modelKey: "claude",
+          displayName: "Claude",
+          providerId: "google-antigravity",
+          percentRemaining: 42,
+          resetTime: "2099-09-06T19:15:02Z",
+          timerType: "7d",
+        },
+        {
+          modelKey: "gemini",
+          displayName: "Gemini",
+          providerId: "google-antigravity",
+          percentRemaining: 20,
+          resetTime: "2099-09-10T18:36:32Z",
+          timerType: "7d",
+        },
+      ];
+
+      await rotator.pollAccountQuota(account);
+
+      assert.equal(account.quota.find((q) => q.modelKey === "claude")?.percentRemaining, 42);
+      assert.equal(account.quota.find((q) => q.modelKey === "gemini")?.percentRemaining, 80);
+    } finally {
+      rotator?.stopQuotaPolling();
+      dynamicCatalog.reset();
+      globalThis.fetch = originalFetch;
+      await setCachedState({ modelAccounts: {}, accounts: {} });
+    }
+  });
+
+  it("does not let a nominal 100% poll erase an active pool cooldown", async () => {
+    const originalFetch = globalThis.fetch;
+    let rotator: InstanceType<typeof AccountRotator> | undefined;
+    const deadline = Date.now() + 2 * 60 * 60 * 1000;
+    dynamicCatalog.reset();
+    await setCachedState({ modelAccounts: {}, accounts: {} });
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      models: {
+        gemini: { quotaInfo: { remainingFraction: 1 } },
+      },
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    })) as typeof fetch;
+
+    try {
+      const config = {
+        proxyPort: 51227,
+        rotateOnQuotaDrop: 20,
+        routingPolicy: "timer-first" as const,
+        quotaPollIntervalMs: 300000,
+        requestsPerRotation: 5,
+        accounts: [{
+          email: "cooldown-poll@example.com",
+          projectId: "cooldown-poll-project",
+          refreshToken: "cooldown-poll-refresh",
+        }],
+      };
+      rotator = new AccountRotator(config);
+      rotator.stopQuotaPolling();
+      const account = (rotator as any).accounts[0] as AccountRuntime;
+      account.accessToken = "cooldown-poll-access";
+      account.tokenExpires = deadline;
+      account.cooldownsByModel.gemini = deadline;
+
+      await rotator.pollAccountQuota(account);
+
+      const quota = account.quota.find((q) => q.modelKey === "gemini");
+      assert.equal(quota?.percentRemaining, 0);
+      assert.equal(quota?.resetTime, new Date(deadline).toISOString());
+      assert.equal(quota?.timerType, "5h");
+    } finally {
+      rotator?.stopQuotaPolling();
+      dynamicCatalog.reset();
+      globalThis.fetch = originalFetch;
+      await setCachedState({ modelAccounts: {}, accounts: {} });
+    }
   });
 
   it("preserves persisted Antigravity pool deadlines beyond 30 minutes", async () => {

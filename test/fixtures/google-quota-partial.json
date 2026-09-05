@@ -1,0 +1,39 @@
+{
+  "models": {
+    "gemini-3.6-flash-tiered": {
+      "quotaInfo": {
+        "resetTime": "2099-09-10T18:36:32Z"
+      }
+    },
+    "claude-opus-4-6-thinking": {
+      "quotaInfo": {
+        "resetTime": "2099-09-06T19:15:02Z"
+      }
+    },
+    "gemini-3-flash": {
+      "quotaInfo": {
+        "resetTime": "2099-09-10T18:36:32Z"
+      }
+    },
+    "claude-sonnet-4-6": {
+      "quotaInfo": {
+        "resetTime": "2099-09-06T19:15:02Z"
+      }
+    },
+    "gpt-oss-120b-medium": {
+      "quotaInfo": {
+        "resetTime": "2099-09-06T19:15:02Z"
+      }
+    },
+    "chat_20706": {
+      "quotaInfo": {
+        "remainingFraction": 1
+      }
+    },
+    "tab_flash_lite_preview": {
+      "quotaInfo": {
+        "remainingFraction": 1
+      }
+    }
+  }
+}

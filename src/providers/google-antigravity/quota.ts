@@ -29,9 +29,7 @@ import {
 
 type GoogleModelInfo = GoogleQuotaResponse["models"][string];
 type GoogleModelInfoWithQuota = GoogleModelInfo & {
-  quotaInfo: NonNullable<GoogleModelInfo["quotaInfo"]> & {
-    remainingFraction: number;
-  };
+  quotaInfo: NonNullable<GoogleModelInfo["quotaInfo"]>;
 };
 
 function hasUsableQuotaInfo(
@@ -39,10 +37,58 @@ function hasUsableQuotaInfo(
 ): info is GoogleModelInfoWithQuota {
   if (!info?.quotaInfo) return false;
   const remaining = info.quotaInfo.remainingFraction;
-  return typeof remaining === "number" &&
-    Number.isFinite(remaining) &&
-    remaining >= 0 &&
-    remaining <= 1;
+  if (remaining === undefined) {
+    // Google omits remainingFraction for active quota windows. A resetTime
+    // without a fraction is the partial shape used by the legacy parser.
+    return typeof info.quotaInfo.resetTime === "string" &&
+      info.quotaInfo.resetTime.trim().length > 0;
+  }
+  return typeof remaining === "number" && Number.isFinite(remaining) &&
+    remaining >= 0 && remaining <= 1;
+}
+
+function getRemainingFraction(info: GoogleModelInfoWithQuota): number {
+  const remaining = info.quotaInfo.remainingFraction;
+  return typeof remaining === "number" && Number.isFinite(remaining) &&
+      remaining >= 0 && remaining <= 1
+    ? remaining
+    : 0;
+}
+
+function applyActiveCooldown(
+  quota: ModelQuota,
+  cooldownUntil: number | undefined,
+  now: number,
+): void {
+  if (!cooldownUntil || !Number.isFinite(cooldownUntil) || cooldownUntil <= now) {
+    return;
+  }
+  const advertisedReset = quota.resetTime
+    ? new Date(quota.resetTime).getTime()
+    : 0;
+  const resetAt = Math.max(
+    cooldownUntil,
+    Number.isFinite(advertisedReset) && advertisedReset > now ? advertisedReset : 0,
+  );
+  quota.percentRemaining = 0;
+  quota.resetTime = new Date(resetAt).toISOString();
+  quota.timerType = resetAt - now < 6 * 60 * 60 * 1000 ? "5h" : "7d";
+}
+
+function getActiveCooldownForPool(
+  account: AccountRuntime,
+  poolKey: string,
+): number | undefined {
+  let cooldownUntil = account.cooldownsByModel[poolKey] ?? 0;
+  for (const [modelKey, deadline] of Object.entries(account.cooldownsByModel)) {
+    if (
+      modelKey !== poolKey &&
+      dynamicCatalog.resolveQuotaPool(modelKey) === poolKey
+    ) {
+      cooldownUntil = Math.max(cooldownUntil, deadline);
+    }
+  }
+  return cooldownUntil || undefined;
 }
 
 /**
@@ -57,29 +103,33 @@ export function extractQuotas(
   const now = Date.now();
 
   for (const [, config] of Object.entries(QUOTA_MODEL_KEYS)) {
-    let modelInfo: GoogleModelInfoWithQuota | undefined;
+    const candidates: GoogleModelInfoWithQuota[] = [];
     for (const candidate of [config.key, ...config.altKeys]) {
       const info = data.models[candidate];
       if (hasUsableQuotaInfo(info)) {
-        modelInfo = info;
-        break;
+        candidates.push(info);
       }
     }
 
-    if (!modelInfo) {
-      for (const [modelKey, info] of Object.entries(data.models)) {
-        if (
-          DynamicModelRegistry.inferFamilyAndPool(modelKey).quotaPool === config.key &&
-          hasUsableQuotaInfo(info)
-        ) {
-          modelInfo = info;
-          break;
-        }
+    for (const [modelKey, info] of Object.entries(data.models)) {
+      if (
+        ![config.key, ...config.altKeys].includes(modelKey) &&
+        DynamicModelRegistry.inferFamilyAndPool(modelKey).quotaPool === config.key &&
+        hasUsableQuotaInfo(info)
+      ) {
+        candidates.push(info);
       }
     }
 
+    // A shared pool is usable only as far as its most exhausted model. Google
+    // may report one sibling at 100% while the model we route to is exhausted.
+    const modelInfo = candidates.sort(
+      (a, b) => getRemainingFraction(a) - getRemainingFraction(b) ||
+        Number(Boolean(b.quotaInfo.resetTime)) -
+          Number(Boolean(a.quotaInfo.resetTime)),
+    )[0];
     if (modelInfo?.quotaInfo) {
-      const remainingFraction = modelInfo.quotaInfo.remainingFraction;
+      const remainingFraction = getRemainingFraction(modelInfo);
       // Google can publish a nominal reset for an untouched pool; no usage means
       // there is no active quota window yet.
       const resetTime =
@@ -207,7 +257,32 @@ export async function fetchProviderQuota(
     fresh.forEach(
       (q) => ((q as { providerId?: string }).providerId = "google-antigravity"),
     );
-    account.quota = sortQuotaPools([...otherProviders, ...fresh]);
+    const freshKeys = new Set(fresh.map((quota) => quota.modelKey));
+    const previousGooglePools = oldQuota.filter(
+      (q) => (q as { providerId?: string }).providerId === DEFAULT_PROVIDER &&
+        !freshKeys.has(q.modelKey),
+    );
+    for (const quota of [...previousGooglePools, ...fresh]) {
+      if (
+        freshKeys.has(quota.modelKey) &&
+        quota.percentRemaining === 0 &&
+        quota.resetTime
+      ) {
+        // A newly reported exhausted window is authoritative; the poll
+        // reconciler will persist its reset time instead of stale local state.
+        continue;
+      }
+      applyActiveCooldown(
+        quota,
+        getActiveCooldownForPool(account, quota.modelKey),
+        Date.now(),
+      );
+    }
+    account.quota = sortQuotaPools([
+      ...otherProviders,
+      ...previousGooglePools,
+      ...fresh,
+    ]);
     account.lastQuotaPoll = Date.now();
 
     // Stash the provider-local poll log for the rotator to emit as a
