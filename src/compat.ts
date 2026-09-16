@@ -1488,6 +1488,19 @@ export async function streamResponsesSse(
         if (typeof usage.completion_tokens === "number") outputTokens = usage.completion_tokens;
         if (typeof usage.input_tokens === "number") inputTokens = usage.input_tokens;
         if (typeof usage.output_tokens === "number") outputTokens = usage.output_tokens;
+        if (
+          isRecord(usage.input_tokens_details) &&
+          typeof usage.input_tokens_details.cached_tokens === "number"
+        ) {
+          cachedTokens = usage.input_tokens_details.cached_tokens;
+        } else if (
+          isRecord(usage.prompt_tokens_details) &&
+          typeof usage.prompt_tokens_details.cached_tokens === "number"
+        ) {
+          cachedTokens = usage.prompt_tokens_details.cached_tokens;
+        } else if (typeof usage.cached_tokens === "number") {
+          cachedTokens = usage.cached_tokens;
+        }
       }
       if (!Array.isArray(parsed.choices) || parsed.choices.length === 0) return;
       const choice = parsed.choices[0];
@@ -2824,6 +2837,9 @@ export async function handleGeminiGenerateContent(
       candidatesTokenCount: result.completion.outputTokens,
       totalTokenCount:
         result.completion.inputTokens + result.completion.outputTokens,
+      ...(result.completion.cachedTokens !== undefined
+        ? { cachedContentTokenCount: result.completion.cachedTokens }
+        : {}),
     },
   }, rotatorHeaders);
 }

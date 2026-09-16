@@ -653,6 +653,38 @@ describe("compat observability", () => {
     }
   });
 
+  it("preserves cached token counts in native Gemini responses", async () => {
+    const upstream = await listenServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        res.end(
+          'data: {"response":{"candidates":[{"content":{"parts":[{"text":"pong"}]}}],"usageMetadata":{"promptTokenCount":1200,"candidatesTokenCount":50,"cachedContentTokenCount":1000}}}\n\n',
+        );
+      });
+    });
+    endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
+
+    try {
+      const res = responseStub();
+      await handleGeminiGenerateContent(
+        requestStream("POST", "/v1beta/models/gemini-3-flash:generateContent", {
+          contents: [{ role: "user", parts: [{ text: "ping" }] }],
+        }),
+        res,
+        createRotatorStub(createTracking()),
+      );
+
+      assert.equal(res.statusCodeCaptured, 200);
+      const payload = JSON.parse(res.body) as {
+        usageMetadata?: { cachedContentTokenCount?: number };
+      };
+      assert.equal(payload.usageMetadata?.cachedContentTokenCount, 1000);
+    } finally {
+      await closeServer(upstream.server);
+    }
+  });
+
   it("records failed compat upstream responses without token double-counting", async () => {
     const upstream = await listenServer((req, res) => {
       req.resume();
@@ -995,6 +1027,34 @@ describe("compat observability", () => {
     assert.match(responsesCompletion.streamError ?? "", /idle timeout/);
     assert.equal(responsesRes.writableEnded, true);
     assert.match(responsesRes.body, /stream_error/);
+  });
+
+  it("preserves OpenCode cached tokens in Responses streaming usage", async () => {
+    const body = new Response([
+      'data: {"choices":[{"delta":{"content":"hello"}}]}',
+      'data: {"choices":[],"usage":{"prompt_tokens":500,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":400}}}',
+      "data: [DONE]",
+      "",
+    ].join("\n")).body;
+    assert.ok(body);
+
+    const res = responseStub();
+    const completion = await streamResponsesSse(
+      body,
+      new PassThrough() as unknown as IncomingMessage,
+      res,
+      { model: "muse-spark-1.3-contributor-free", input: "ping", stream: true },
+      "resp_opencode_cache",
+      null,
+      Math.floor(Date.now() / 1000),
+      undefined,
+      undefined,
+      undefined,
+      "opencode-zen",
+    );
+
+    assert.equal(completion.cachedTokens, 400);
+    assert.match(res.body, /"cached_tokens":400/);
   });
 
   it("cancels a queued non-stream compat request before it can be admitted", async () => {

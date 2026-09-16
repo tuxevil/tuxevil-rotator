@@ -409,6 +409,7 @@ function responseCompletionFromRecord(
     thinkingText: thinkingText || undefined,
     inputTokens: usage?.inputTokens ?? 0,
     outputTokens: usage?.outputTokens ?? 0,
+    cachedTokens: usage?.cachedTokens,
     responseId: typeof value.id === "string" ? value.id : undefined,
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
     rawResponse,
@@ -486,6 +487,7 @@ export class OpenCodeZenResponsesStreamParser {
       thinkingText: this.thinkingText || undefined,
       inputTokens: this.usage?.inputTokens ?? 0,
       outputTokens: this.usage?.outputTokens ?? 0,
+      cachedTokens: this.usage?.cachedTokens,
       responseId: this.responseId,
       toolCalls: this.toolCalls.size > 0 ? Array.from(this.toolCalls.values()) : undefined,
       streamError: this.streamError,
@@ -499,6 +501,9 @@ export class OpenCodeZenResponsesStreamParser {
               input_tokens: this.usage.inputTokens,
               output_tokens: this.usage.outputTokens,
               total_tokens: this.usage.inputTokens + this.usage.outputTokens,
+              ...(this.usage.cachedTokens !== undefined
+                ? { input_tokens_details: { cached_tokens: this.usage.cachedTokens } }
+                : {}),
             }
           : undefined,
       },
@@ -644,7 +649,7 @@ function openCodeZenChatChunk(
   id: string,
   model: string,
   delta: Record<string, unknown>,
-  usage?: Record<string, number>,
+  usage?: Record<string, unknown>,
 ): string {
   return `data: ${JSON.stringify({
     id,
@@ -684,6 +689,9 @@ function updateToOpenCodeZenChatSse(
         prompt_tokens: update.usage.inputTokens,
         completion_tokens: update.usage.outputTokens,
         total_tokens: update.usage.inputTokens + update.usage.outputTokens,
+        ...(update.usage.cachedTokens !== undefined
+          ? { prompt_tokens_details: { cached_tokens: update.usage.cachedTokens } }
+          : {}),
       });
     case "finish":
       return "";
@@ -777,6 +785,9 @@ function openCodeZenResponsesToChatJson(
       prompt_tokens: completion.inputTokens,
       completion_tokens: completion.outputTokens,
       total_tokens: completion.inputTokens + completion.outputTokens,
+      ...(completion.cachedTokens !== undefined
+        ? { prompt_tokens_details: { cached_tokens: completion.cachedTokens } }
+        : {}),
     },
   };
 }
@@ -795,9 +806,27 @@ function extractUsageFromRecord(record: Record<string, unknown>): TokenUsage | n
       : typeof usage.output_tokens === "number"
         ? usage.output_tokens
         : 0;
+  const inputTokenDetails = isRecord(usage.input_tokens_details)
+    ? usage.input_tokens_details
+    : null;
+  const promptTokenDetails = isRecord(usage.prompt_tokens_details)
+    ? usage.prompt_tokens_details
+    : null;
+  const cachedTokens =
+    typeof inputTokenDetails?.cached_tokens === "number"
+      ? inputTokenDetails.cached_tokens
+      : typeof promptTokenDetails?.cached_tokens === "number"
+        ? promptTokenDetails.cached_tokens
+        : typeof usage.cached_tokens === "number"
+          ? usage.cached_tokens
+          : undefined;
 
   return inputTokens > 0 || outputTokens > 0
-    ? { inputTokens, outputTokens }
+    ? {
+        inputTokens,
+        outputTokens,
+        ...(cachedTokens !== undefined ? { cachedTokens } : {}),
+      }
     : null;
 }
 
