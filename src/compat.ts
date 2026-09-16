@@ -217,6 +217,7 @@ export function parseOpenAiJson(raw: string): CompatCompletion {
   let thinkingText = "";
   let inputTokens = 0;
   let outputTokens = 0;
+  let cachedTokens: number | undefined;
   let responseId: string | undefined;
   const toolCallsMap = new Map<string, OpenAIToolCall>();
   let toolCallIndex = 0;
@@ -234,6 +235,11 @@ export function parseOpenAiJson(raw: string): CompatCompletion {
         if (isRecord(parsed.usage)) {
           if (typeof parsed.usage.prompt_tokens === "number") inputTokens = parsed.usage.prompt_tokens;
           if (typeof parsed.usage.completion_tokens === "number") outputTokens = parsed.usage.completion_tokens;
+          if (isRecord(parsed.usage.prompt_tokens_details) && typeof parsed.usage.prompt_tokens_details.cached_tokens === "number") {
+            cachedTokens = parsed.usage.prompt_tokens_details.cached_tokens;
+          } else if (typeof parsed.usage.cached_tokens === "number") {
+            cachedTokens = parsed.usage.cached_tokens;
+          }
         }
         if (Array.isArray(parsed.choices) && parsed.choices.length > 0) {
           const choice = parsed.choices[0];
@@ -285,6 +291,11 @@ export function parseOpenAiJson(raw: string): CompatCompletion {
       if (isRecord(parsed.usage)) {
         if (typeof parsed.usage.prompt_tokens === "number") inputTokens = parsed.usage.prompt_tokens;
         if (typeof parsed.usage.completion_tokens === "number") outputTokens = parsed.usage.completion_tokens;
+        if (isRecord(parsed.usage.prompt_tokens_details) && typeof parsed.usage.prompt_tokens_details.cached_tokens === "number") {
+          cachedTokens = parsed.usage.prompt_tokens_details.cached_tokens;
+        } else if (typeof parsed.usage.cached_tokens === "number") {
+          cachedTokens = parsed.usage.cached_tokens;
+        }
       }
       if (Array.isArray(parsed.choices) && parsed.choices.length > 0) {
         const choice = parsed.choices[0];
@@ -323,6 +334,7 @@ export function parseOpenAiJson(raw: string): CompatCompletion {
     thinkingText,
     inputTokens,
     outputTokens,
+    cachedTokens,
     responseId,
     toolCalls: Array.from(toolCallsMap.values()),
   };
@@ -333,6 +345,7 @@ export function parseAntigravitySse(raw: string): CompatCompletion {
   let thinkingText = "";
   let inputTokens = 0;
   let outputTokens = 0;
+  let cachedTokens: number | undefined;
   let responseId: string | undefined;
   let upstreamFinishReason: string | undefined;
   const toolCallsMap = new Map<string, OpenAIToolCall>();
@@ -404,6 +417,10 @@ export function parseAntigravitySse(raw: string): CompatCompletion {
           inputTokens = usage.promptTokenCount;
         if (typeof usage.candidatesTokenCount === "number")
           outputTokens = usage.candidatesTokenCount;
+        if (typeof usage.cachedContentTokenCount === "number")
+          cachedTokens = usage.cachedContentTokenCount;
+        if (typeof usage.cached_tokens === "number")
+          cachedTokens = usage.cached_tokens;
         if (typeof usage.input_tokens === "number")
           inputTokens = usage.input_tokens;
         if (typeof usage.output_tokens === "number")
@@ -454,6 +471,7 @@ export function parseAntigravitySse(raw: string): CompatCompletion {
     thinkingText: thinkingText || undefined,
     inputTokens,
     outputTokens,
+    cachedTokens,
     responseId,
     toolCalls,
     finishReason: upstreamFinishReason,
@@ -619,6 +637,7 @@ export async function streamCompatSse(
   let text = "";
   let inputTokens = 0;
   let outputTokens = 0;
+  let cachedTokens: number | undefined;
   const streamStartMs = Date.now();
   let firstByteMs: number | undefined;
   let responseId: string | undefined;
@@ -764,6 +783,11 @@ export async function streamCompatSse(
       if (isRecord(parsed.usage)) {
         if (typeof parsed.usage.prompt_tokens === "number") inputTokens = parsed.usage.prompt_tokens;
         if (typeof parsed.usage.completion_tokens === "number") outputTokens = parsed.usage.completion_tokens;
+        if (isRecord(parsed.usage.prompt_tokens_details) && typeof parsed.usage.prompt_tokens_details.cached_tokens === "number") {
+          cachedTokens = parsed.usage.prompt_tokens_details.cached_tokens;
+        } else if (typeof parsed.usage.cached_tokens === "number") {
+          cachedTokens = parsed.usage.cached_tokens;
+        }
       }
 
       if (!Array.isArray(parsed.choices) || parsed.choices.length === 0) return;
@@ -1120,6 +1144,10 @@ export async function streamCompatSse(
               inputTokens = usage.promptTokenCount;
             if (typeof usage.candidatesTokenCount === "number")
               outputTokens = usage.candidatesTokenCount;
+            if (typeof usage.cachedContentTokenCount === "number")
+              cachedTokens = usage.cachedContentTokenCount;
+            if (typeof usage.cached_tokens === "number")
+              cachedTokens = usage.cached_tokens;
             if (typeof usage.input_tokens === "number")
               inputTokens = usage.input_tokens;
             if (typeof usage.output_tokens === "number")
@@ -1163,7 +1191,21 @@ export async function streamCompatSse(
       // Emit a usage chunk so agents (hermes, openwebui, etc.) can display token statistics
       if (inputTokens > 0 || outputTokens > 0) {
         res.write(
-          `data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model, choices: [], usage: { prompt_tokens: inputTokens, completion_tokens: outputTokens, total_tokens: inputTokens + outputTokens } })}\n\n`,
+          `data: ${JSON.stringify({
+            id,
+            object: "chat.completion.chunk",
+            created,
+            model,
+            choices: [],
+            usage: {
+              prompt_tokens: inputTokens,
+              completion_tokens: outputTokens,
+              total_tokens: inputTokens + outputTokens,
+              ...(cachedTokens !== undefined
+                ? { prompt_tokens_details: { cached_tokens: cachedTokens } }
+                : {}),
+            },
+          })}\n\n`,
         );
       }
       res.write("data: [DONE]\n\n");
@@ -1188,7 +1230,17 @@ export async function streamCompatSse(
             : "end_turn";
       // message_delta carries output_tokens; also include input_tokens so Hermes shows full context count
       res.write(
-        `event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: anthropicStopReason, stop_sequence: null }, usage: { input_tokens: inputTokens, output_tokens: outputTokens } })}\n\n`,
+        `event: message_delta\ndata: ${JSON.stringify({
+          type: "message_delta",
+          delta: { stop_reason: anthropicStopReason, stop_sequence: null },
+          usage: {
+            input_tokens: inputTokens,
+            output_tokens: outputTokens,
+            ...(cachedTokens !== undefined
+              ? { cache_read_input_tokens: cachedTokens }
+              : {}),
+          },
+        })}\n\n`,
       );
       res.write(
         `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`,
@@ -1232,6 +1284,9 @@ export async function streamCompatSse(
             prompt_tokens: inputTokens,
             completion_tokens: outputTokens,
             total_tokens: inputTokens + outputTokens,
+            ...(cachedTokens !== undefined
+              ? { prompt_tokens_details: { cached_tokens: cachedTokens } }
+              : {}),
           },
         }
       : {
@@ -1255,13 +1310,20 @@ export async function streamCompatSse(
             : upstreamFinishReason === "MAX_TOKENS"
               ? "max_tokens"
               : "end_turn",
-          usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+          usage: {
+            input_tokens: inputTokens,
+            output_tokens: outputTokens,
+            ...(cachedTokens !== undefined
+              ? { cache_read_input_tokens: cachedTokens }
+              : {}),
+          },
         };
 
   return {
     text,
     inputTokens,
     outputTokens,
+    cachedTokens,
     firstByteMs,
     responseId,
     toolCalls: collectedToolCalls,
@@ -1292,6 +1354,7 @@ export async function streamResponsesSse(
   let thinkingText = "";
   let inputTokens = 0;
   let outputTokens = 0;
+  let cachedTokens: number | undefined;
   const streamStartMs = Date.now();
   let firstByteMs: number | undefined;
   const toolCalls: OpenAIToolCall[] = [];
@@ -1873,6 +1936,10 @@ export async function streamResponsesSse(
               inputTokens = usage.promptTokenCount;
             if (typeof usage.candidatesTokenCount === "number")
               outputTokens = usage.candidatesTokenCount;
+            if (typeof usage.cachedContentTokenCount === "number")
+              cachedTokens = usage.cachedContentTokenCount;
+            if (typeof usage.cached_tokens === "number")
+              cachedTokens = usage.cached_tokens;
             if (typeof usage.input_tokens === "number")
               inputTokens = usage.input_tokens;
             if (typeof usage.output_tokens === "number")
@@ -1903,6 +1970,7 @@ export async function streamResponsesSse(
     thinkingText: thinkingText || undefined,
     inputTokens,
     outputTokens,
+    cachedTokens,
     firstByteMs,
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
     streamError,
@@ -1916,6 +1984,9 @@ export async function streamResponsesSse(
         prompt_tokens: inputTokens,
         completion_tokens: outputTokens,
         total_tokens: inputTokens + outputTokens,
+        ...(cachedTokens !== undefined
+          ? { prompt_tokens_details: { cached_tokens: cachedTokens } }
+          : {}),
       },
     },
   };
@@ -2906,6 +2977,9 @@ export async function handleOpenAIChatCompletions(
       completion_tokens: result.completion.outputTokens,
       total_tokens:
         result.completion.inputTokens + result.completion.outputTokens,
+      ...(result.completion.cachedTokens !== undefined
+        ? { prompt_tokens_details: { cached_tokens: result.completion.cachedTokens } }
+        : {}),
     },
   }, rotatorHeaders);
 }
@@ -3326,6 +3400,9 @@ export async function handleAnthropicMessages(
     usage: {
       input_tokens: result.completion.inputTokens,
       output_tokens: result.completion.outputTokens,
+      ...(result.completion.cachedTokens !== undefined
+        ? { cache_read_input_tokens: result.completion.cachedTokens }
+        : {}),
     },
   }, rotatorHeaders);
 }

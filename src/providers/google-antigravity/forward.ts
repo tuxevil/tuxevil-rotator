@@ -56,8 +56,14 @@ function findUsageInJson(
         : typeof usageMetadata.outputTokenCount === "number"
           ? usageMetadata.outputTokenCount
           : 0;
+    const cached =
+      typeof usageMetadata.cachedContentTokenCount === "number"
+        ? usageMetadata.cachedContentTokenCount
+        : typeof usageMetadata.cached_tokens === "number"
+          ? usageMetadata.cached_tokens
+          : undefined;
     if (input > 0 || output > 0)
-      return { inputTokens: input, outputTokens: output };
+      return { inputTokens: input, outputTokens: output, cachedTokens: cached };
   }
   // OpenAI / Anthropic format
   const usage = value.usage;
@@ -74,8 +80,17 @@ function findUsageInJson(
         : typeof usage.output_tokens === "number"
           ? usage.output_tokens
           : 0;
+    const cached =
+      isRecord(usage.prompt_tokens_details) &&
+      typeof usage.prompt_tokens_details.cached_tokens === "number"
+        ? usage.prompt_tokens_details.cached_tokens
+        : typeof usage.cached_tokens === "number"
+          ? usage.cached_tokens
+          : typeof usage.cache_read_input_tokens === "number"
+            ? usage.cache_read_input_tokens
+            : undefined;
     if (input > 0 || output > 0)
-      return { inputTokens: input, outputTokens: output };
+      return { inputTokens: input, outputTokens: output, cachedTokens: cached };
   }
   // Recurse into common nesting locations.
   for (const key of ["candidates", "output", "response", "message"]) {
