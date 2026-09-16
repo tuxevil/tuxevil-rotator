@@ -25,6 +25,18 @@ describe("extractUsageFromSseEvent", () => {
 		assert.deepEqual(result, { inputTokens: 42, outputTokens: 17 });
 	});
 
+	it("extracts Gemini usageMetadata with cachedContentTokenCount", () => {
+		const event = `data: {"candidates":[{"content":{"parts":[{"text":"hi"}]}}],"usageMetadata":{"promptTokenCount":1200,"candidatesTokenCount":50,"cachedContentTokenCount":1000}}`;
+		const result = extractUsageFromSseEvent(event);
+		assert.deepEqual(result, { inputTokens: 1200, outputTokens: 50, cachedTokens: 1000 });
+	});
+
+	it("extracts OpenAI usage with prompt_tokens_details.cached_tokens", () => {
+		const event = `data: {"choices":[{"delta":{"content":"hi"}}],"usage":{"prompt_tokens":500,"completion_tokens":20,"total_tokens":520,"prompt_tokens_details":{"cached_tokens":400}}}`;
+		const result = extractUsageFromSseEvent(event);
+		assert.deepEqual(result, { inputTokens: 500, outputTokens: 20, cachedTokens: 400 });
+	});
+
 	it("extracts OpenAI usage with prompt_tokens/completion_tokens", () => {
 		const event = `data: {"choices":[{"delta":{"content":"hi"}}],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150}}`;
 		const result = extractUsageFromSseEvent(event);

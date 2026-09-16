@@ -63,7 +63,11 @@ function findUsageInJson(
           ? usageMetadata.cached_tokens
           : undefined;
     if (input > 0 || output > 0)
-      return { inputTokens: input, outputTokens: output, cachedTokens: cached };
+      return {
+        inputTokens: input,
+        outputTokens: output,
+        ...(cached !== undefined ? { cachedTokens: cached } : {}),
+      };
   }
   // OpenAI / Anthropic format
   const usage = value.usage;
@@ -90,7 +94,11 @@ function findUsageInJson(
             ? usage.cache_read_input_tokens
             : undefined;
     if (input > 0 || output > 0)
-      return { inputTokens: input, outputTokens: output, cachedTokens: cached };
+      return {
+        inputTokens: input,
+        outputTokens: output,
+        ...(cached !== undefined ? { cachedTokens: cached } : {}),
+      };
   }
   // Recurse into common nesting locations.
   for (const key of ["candidates", "output", "response", "message"]) {
