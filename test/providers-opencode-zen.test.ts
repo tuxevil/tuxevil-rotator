@@ -181,19 +181,25 @@ describe("OpenCode Zen Provider Adapter", () => {
         content: [{ type: "output_text", text: "Hello from Muse" }],
       }],
       output_text: "Hello from Muse",
-      usage: { input_tokens: 11, output_tokens: 4, total_tokens: 15 },
+      usage: {
+        input_tokens: 11,
+        output_tokens: 4,
+        total_tokens: 15,
+        input_tokens_details: { cached_tokens: 7 },
+      },
     });
     const parsed = parseOpenCodeZenResponsesJson(raw);
     assert.equal(parsed.text, "Hello from Muse");
     assert.equal(parsed.inputTokens, 11);
     assert.equal(parsed.outputTokens, 4);
+    assert.equal(parsed.cachedTokens, 7);
     assert.equal(parsed.responseId, "resp_muse");
 
     const upstream = new Response([
       'event: response.output_text.delta\n',
       'data: {"type":"response.output_text.delta","delta":"Hello"}\n\n',
       'event: response.completed\n',
-      'data: {"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":3}}}\n\n',
+      'data: {"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":3,"input_tokens_details":{"cached_tokens":1}}}}\n\n',
     ].join("")).body;
     assert.ok(upstream);
     const chatStream = transformOpenCodeZenResponsesStream(
@@ -204,6 +210,7 @@ describe("OpenCode Zen Provider Adapter", () => {
     assert.match(chatSse, /"content":"Hello"/);
     assert.match(chatSse, /"prompt_tokens":2/);
     assert.match(chatSse, /"completion_tokens":3/);
+    assert.match(chatSse, /"cached_tokens":1/);
   });
 
   it("parses Responses stream events and tracks tool calls", () => {
@@ -238,7 +245,11 @@ describe("OpenCode Zen Provider Adapter", () => {
         object: "response",
         status: "completed",
         output: [{ type: "message", content: [{ type: "output_text", text: "OK" }] }],
-        usage: { input_tokens: 1, output_tokens: 1 },
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          input_tokens_details: { cached_tokens: 1 },
+        },
       }), { status: 200, headers: { "content-type": "application/json" } });
     }) as typeof fetch;
 
@@ -265,9 +276,14 @@ describe("OpenCode Zen Provider Adapter", () => {
       assert.equal(input?.[0]?.role, "user");
       assert.equal(capturedBody.max_output_tokens, 16);
       assert.match(capturedHeaders?.get("x-opencode-session") ?? "", /^zen-session-/);
-      const chatResponse = await forwarded.response.json() as { object: string; choices: Array<{ message: { content: string } }> };
+      const chatResponse = await forwarded.response.json() as {
+        object: string;
+        choices: Array<{ message: { content: string } }>;
+        usage: { prompt_tokens_details?: { cached_tokens?: number } };
+      };
       assert.equal(chatResponse.object, "chat.completion");
       assert.equal(chatResponse.choices[0].message.content, "OK");
+      assert.equal(chatResponse.usage.prompt_tokens_details?.cached_tokens, 1);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -283,7 +299,7 @@ describe("OpenCode Zen Provider Adapter", () => {
         'event: response.output_text.delta\n',
         'data: {"type":"response.output_text.delta","delta":"streamed"}\n\n',
         'event: response.completed\n',
-        'data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":2}}}\n\n',
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":2,"input_tokens_details":{"cached_tokens":2}}}}\n\n',
       ].join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
     }) as typeof fetch;
 
@@ -309,6 +325,7 @@ describe("OpenCode Zen Provider Adapter", () => {
       assert.match(chatSse, /"content":"streamed"/);
       assert.match(chatSse, /"prompt_tokens":3/);
       assert.match(chatSse, /"completion_tokens":2/);
+      assert.match(chatSse, /"cached_tokens":2/);
     } finally {
       globalThis.fetch = originalFetch;
     }
