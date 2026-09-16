@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [3.7.2] - 2026-09-16
+
+### Added
+
+- **Cached token usage propagation**: Google Antigravity cached prompt usage is now preserved as OpenAI `prompt_tokens_details.cached_tokens` and Anthropic `cache_read_input_tokens` across the compatibility layer ([#34](https://github.com/tuxevil/tuxevil-rotator/pull/34) by [@toRolex](https://github.com/toRolex)).
+
+### Fixed
+
+- **Native Gemini usage reporting**: Native `generateContent` responses now expose `cachedContentTokenCount` when Google reports cached prompt tokens.
+- **OpenCode Zen Responses usage**: Cached input tokens now survive JSON and SSE translation through Chat and Responses compatibility paths, with regression coverage.
+
 ## [3.7.1] - 2026-09-12
 
 ### Added
