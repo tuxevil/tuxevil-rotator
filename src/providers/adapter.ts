@@ -14,6 +14,7 @@ import type { AccountConfig } from "../types.js";
 export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
+  cachedTokens?: number;
 }
 
 /**

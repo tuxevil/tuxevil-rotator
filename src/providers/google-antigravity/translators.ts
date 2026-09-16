@@ -178,6 +178,7 @@ export interface CompatCompletion {
   thinkingText?: string; // Gemini thought blocks (thought: true), emitted as reasoning_content
   inputTokens: number;
   outputTokens: number;
+  cachedTokens?: number;
   firstByteMs?: number;
   responseId?: string;
   toolCalls?: OpenAIToolCall[];
@@ -1683,7 +1684,7 @@ export function responseUsageFromCompletion(
 ): Record<string, unknown> {
   return {
     input_tokens: completion.inputTokens,
-    input_tokens_details: { cached_tokens: 0 },
+    input_tokens_details: { cached_tokens: completion.cachedTokens ?? 0 },
     output_tokens: completion.outputTokens,
     output_tokens_details: { reasoning_tokens: 0 },
     total_tokens: completion.inputTokens + completion.outputTokens,
