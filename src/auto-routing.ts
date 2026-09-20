@@ -72,6 +72,8 @@ const PROVIDER_ORDER: Record<string, number> = {
 };
 
 const DEFAULT_MAX_CANDIDATES = 32;
+const DEFAULT_SHORTLIST_SIZE = 12;
+const MAX_SHORTLIST_SIZE = 32;
 const DEFAULT_MAX_EXCERPT_CHARS = 12_000;
 const DEFAULT_MIN_CONFIDENCE = 0.45;
 
@@ -173,6 +175,46 @@ function deterministicCompare(a: AutoRoutingCandidate, b: AutoRoutingCandidate):
   return a.modelId.localeCompare(b.modelId);
 }
 
+/**
+ * Keep Jev's question small without allowing the best operational provider to
+ * crowd every other provider/family out of the semantic decision. Candidates
+ * arrive sorted by operational health, so round-robin buckets preserve that
+ * ordering inside each provider/family group while still showing Jev variety.
+ */
+function diverseShortlist(
+  candidates: AutoRoutingCandidate[],
+  limit: number,
+): AutoRoutingCandidate[] {
+  if (candidates.length <= limit) return candidates;
+
+  const buckets = new Map<string, { items: AutoRoutingCandidate[]; index: number }>();
+  for (const candidate of candidates) {
+    const family = candidate.family?.trim() || candidate.modelId;
+    const key = `${candidate.providerId}\u0000${family}`;
+    const bucket = buckets.get(key);
+    if (bucket) {
+      bucket.items.push(candidate);
+    } else {
+      buckets.set(key, { items: [candidate], index: 0 });
+    }
+  }
+
+  const selected: AutoRoutingCandidate[] = [];
+  let progressed = true;
+  while (selected.length < limit && progressed) {
+    progressed = false;
+    for (const bucket of buckets.values()) {
+      const candidate = bucket.items[bucket.index];
+      if (!candidate) continue;
+      bucket.index += 1;
+      selected.push(candidate);
+      progressed = true;
+      if (selected.length >= limit) break;
+    }
+  }
+  return selected;
+}
+
 export function buildAutoRoutingCandidates(
   rotator: AutoRoutingRotator,
   catalog: AutoRoutingCatalogEntry[],
@@ -202,11 +244,24 @@ export function buildAutoRoutingCandidates(
     });
   }
   candidates.sort(deterministicCompare);
+  const routingConfig = rotator.getConfig?.().typesafeRouting;
   const maxCandidates = Math.max(
     1,
-    Math.min(128, rotator.getConfig?.().typesafeRouting?.maxCandidates ?? DEFAULT_MAX_CANDIDATES),
+    Math.min(128, routingConfig?.maxCandidates ?? DEFAULT_MAX_CANDIDATES),
   );
-  return { candidates: candidates.slice(0, maxCandidates), requirements };
+  const shortlistSize = Math.max(
+    1,
+    Math.min(
+      MAX_SHORTLIST_SIZE,
+      maxCandidates,
+      routingConfig?.shortlistSize ?? DEFAULT_SHORTLIST_SIZE,
+    ),
+  );
+  const candidatePool = diverseShortlist(candidates, maxCandidates);
+  return {
+    candidates: diverseShortlist(candidatePool, shortlistSize),
+    requirements,
+  };
 }
 
 function deterministicSelection(
@@ -237,13 +292,13 @@ export async function selectAutoRoutingTarget(
 
   const criteria: Record<string, string | null> = {};
   for (const candidate of candidates) {
-    criteria[candidate.id] = `${candidate.providerId}/${candidate.modelId}; context=${candidate.contextWindow}; multimodal=${candidate.multimodal}; tools=${candidate.tools}; reasoning=${candidate.reasoning}; operational_score=${candidate.operationalScore.toFixed(2)}`;
+    criteria[candidate.id] = `${candidate.providerId}/${candidate.modelId}; family=${candidate.family ?? "unknown"}; context=${candidate.contextWindow}; multimodal=${candidate.multimodal}; tools=${candidate.tools}; reasoning=${candidate.reasoning}; operational_score=${candidate.operationalScore.toFixed(2)}`;
   }
-  criteria.none = "No listed candidate is suitable; use deterministic fallback.";
 
   const state = {
     route: request.route,
     requested_model: request.requestedModel ?? "auto",
+    selection_policy: "Choose exactly one listed candidate. Hard capability requirements have already been filtered; use operational_score as a tie-breaker.",
     requirements: {
       has_images: requirements.hasImages,
       has_tools: requirements.hasTools,
@@ -277,25 +332,33 @@ export async function selectAutoRoutingTarget(
       state,
       questions: {
         selected_model: choice(
-          "Choose the best candidate for this request. Prefer a capable model with a strong operational score; choose none if no candidate is appropriate.",
+          "Choose exactly one of the listed candidates for this request. Prefer the candidate that best fits the request; use operational score as a tie-breaker.",
           criteria,
         ),
       },
     });
-    const selected = answer.answers.selected_model;
-    const selectedId = String(selected.choice);
-    const confidence = Number(selected.confidence);
+    const selected = asRecord(answer.answers.selected_model);
+    const selectedId = typeof selected?.choice === "string" ? selected.choice : String(selected?.choice ?? "");
+    const confidence = Number(selected?.confidence);
     const minConfidence = Math.max(0, Math.min(1, config?.minConfidence ?? DEFAULT_MIN_CONFIDENCE));
-    if (selectedId === "none" || !Number.isFinite(confidence) || confidence < minConfidence) {
-      return deterministic(selectedId === "none" ? "typesafe-no-match" : "typesafe-low-confidence");
+    if (selectedId === "none") return deterministic("typesafe-no-match");
+    if (!candidates.some((candidate) => candidate.id === selectedId)) {
+      return deterministic("typesafe-invalid-choice");
     }
-    const probabilities = selected.probabilities as Record<string, number>;
+    if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1 || confidence < minConfidence) {
+      return deterministic("typesafe-low-confidence");
+    }
+    const probabilities = asRecord(selected?.probabilities) ?? {};
+    const probabilityFor = (candidate: AutoRoutingCandidate): number => {
+      const probability = Number(probabilities[candidate.id]);
+      return Number.isFinite(probability) && probability >= 0 && probability <= 1 ? probability : 0;
+    };
     const ranked = [...candidates].sort((a, b) => {
-      const aScore = 0.7 * (Number(probabilities[a.id]) || 0) + 0.3 * a.operationalScore;
-      const bScore = 0.7 * (Number(probabilities[b.id]) || 0) + 0.3 * b.operationalScore;
-      return bScore - aScore;
+      const aScore = 0.7 * probabilityFor(a) + 0.3 * a.operationalScore;
+      const bScore = 0.7 * probabilityFor(b) + 0.3 * b.operationalScore;
+      return bScore - aScore || deterministicCompare(a, b);
     });
-    const chosen = ranked.find((candidate) => candidate.id === selectedId);
+    const chosen = ranked[0];
     return chosen
       ? { candidate: chosen, mode: "typesafe", confidence, reason: "typesafe-selected" }
       : deterministic("typesafe-invalid-choice");

@@ -29,6 +29,9 @@ describe("response headers", () => {
       const headers = buildRotatorResponseHeaders({
         accountLabel: "dev-account@gmail.com",
         model: "claude-sonnet-4-6",
+        modelSelection: "typesafe",
+        selectionConfidence: 0.92,
+        selectionReason: "typesafe-selected",
         latencyMs: 1250,
         ttfbMs: 320,
         inputTokens: 1000,
@@ -40,6 +43,9 @@ describe("response headers", () => {
 
       assert.equal(headers["X-Rotator-Account"], "de***t@gmail.com");
       assert.equal(headers["X-Rotator-Model"], "claude-sonnet-4-6");
+      assert.equal(headers["X-Rotator-Model-Selection"], "typesafe");
+      assert.equal(headers["X-Rotator-Selection-Confidence"], "0.920");
+      assert.equal(headers["X-Rotator-Selection-Reason"], "typesafe-selected");
       assert.equal(headers["X-Rotator-Latency-Ms"], "1250");
       assert.equal(headers["X-Rotator-TTFB-Ms"], "320");
       assert.equal(headers["X-Rotator-Tokens-Input"], "1000");

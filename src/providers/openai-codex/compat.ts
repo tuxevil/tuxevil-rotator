@@ -41,6 +41,7 @@ export interface CodexCompatOptions {
   requestedModel?: string;
   selectionMode?: "typesafe" | "deterministic" | "disabled";
   selectionConfidence?: number;
+  selectionReason?: string;
 }
 
 function recordCodexTokenUsage(
@@ -373,6 +374,7 @@ function upstreamHeaders(response: Response, context: RotationAttemptContext, mo
     selectedProvider: context.providerId,
     modelSelection: context.selectionMode,
     selectionConfidence: context.selectionConfidence,
+    selectionReason: context.selectionReason,
     ttfbMs: Date.now() - context.requestStartMs,
     healthScore: context.account?.healthScore,
     retries: context.retries,
@@ -536,6 +538,7 @@ export async function serveCodexResponses(
     ...(options?.requestedModel ? { displayModel: options.requestedModel } : {}),
     ...(options?.selectionMode ? { selectionMode: options.selectionMode } : {}),
     ...(options?.selectionConfidence !== undefined ? { selectionConfidence: options.selectionConfidence } : {}),
+    ...(options?.selectionReason ? { selectionReason: options.selectionReason } : {}),
   };
   const controller = new AbortController();
   const abort = (): void => controller.abort();
@@ -591,6 +594,7 @@ export async function serveCodexChat(
     ...(options?.requestedModel ? { displayModel: options.requestedModel } : {}),
     ...(options?.selectionMode ? { selectionMode: options.selectionMode } : {}),
     ...(options?.selectionConfidence !== undefined ? { selectionConfidence: options.selectionConfidence } : {}),
+    ...(options?.selectionReason ? { selectionReason: options.selectionReason } : {}),
   };
   const controller = new AbortController();
   const abort = (): void => controller.abort();

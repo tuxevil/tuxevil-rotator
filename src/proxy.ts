@@ -243,6 +243,7 @@ export interface RequestBody {
   providerId?: string;
   selectionMode?: "typesafe" | "deterministic" | "disabled";
   selectionConfidence?: number;
+  selectionReason?: string;
   [key: string]: unknown;
 }
 
@@ -288,6 +289,7 @@ export interface RotationAttemptContext {
   selectedModel?: string;
   selectionMode?: "typesafe" | "deterministic" | "disabled";
   selectionConfidence?: number;
+  selectionReason?: string;
 }
 
 export type RotationOutcome<T> =
@@ -1336,6 +1338,7 @@ export async function withRotation<T>(
         selectedModel: model,
         selectionMode: body.selectionMode,
         selectionConfidence: body.selectionConfidence,
+        selectionReason: body.selectionReason,
       };
 
       const action = await classifyUpstreamResponse(
@@ -1819,6 +1822,12 @@ async function handleProxyRequest(
         requestStartMs,
         endpoint,
         retries: attempt,
+        providerId: provider.id,
+        requestedModel: body.displayModel || body.model,
+        selectedModel: body.model,
+        selectionMode: body.selectionMode,
+        selectionConfidence: body.selectionConfidence,
+        selectionReason: body.selectionReason,
       };
 
       const action = await classifyUpstreamResponse(
@@ -1871,6 +1880,11 @@ async function handleProxyRequest(
         healthScore: account.healthScore,
         routingPolicy: rotator?.getConfig?.()?.routingPolicy || "timer-first",
         retries: attempt,
+        requestedModel: body.displayModel || body.model,
+        selectedProvider: provider.id,
+        modelSelection: body.selectionMode,
+        selectionConfidence: body.selectionConfidence,
+        selectionReason: body.selectionReason,
       });
       Object.assign(responseHeaders, rotatorHeaders);
 

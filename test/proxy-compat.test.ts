@@ -261,8 +261,15 @@ describe("proxy compat integration", () => {
 		});
 
 		try {
-			const forwarded = await forwardRequest(account, { ...body }, { "user-agent": "OpenAI/1.0.0" });
+			const forwarded = await forwardRequest(account, {
+				...body,
+				displayModel: "auto",
+				selectionMode: "typesafe",
+				selectionConfidence: 0.9,
+				selectionReason: "typesafe-selected",
+			}, { "user-agent": "OpenAI/1.0.0" });
 			assert.equal(forwarded.endpoint, daily.url);
+			assert.doesNotMatch(capturesDaily[0].body, /selectionReason/);
 
 			const outcome = await withRotation(
 				createRotatorStub(account),

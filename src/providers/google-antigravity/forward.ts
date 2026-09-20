@@ -335,6 +335,7 @@ export async function forwardRequest(
     providerId: _providerId,
     selectionMode: _selectionMode,
     selectionConfidence: _selectionConfidence,
+    selectionReason: _selectionReason,
     ...bodyToForward
   } = body;
   const requestBody = JSON.stringify(bodyToForward);

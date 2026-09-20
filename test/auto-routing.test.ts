@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { afterEach, describe, it } from "node:test";
 import {
+  buildAutoRoutingCandidates,
   selectAutoRoutingTarget,
   type AutoRoutingCatalogEntry,
   type AutoRoutingRequest,
@@ -157,5 +158,88 @@ describe("TypeSafe Jev auto-routing", () => {
     });
     assert.equal(result?.mode, "deterministic");
     assert.equal(called, false);
+  });
+
+  it("sends a bounded provider/family-diverse shortlist without an artificial abstain option", async () => {
+    let received: Record<string, unknown> | null = null;
+    const baseURL = await startServer((body) => {
+      received = body;
+      return {
+        status: 200,
+        body: {
+          answers: {
+            selected_model: {
+              choice: "candidate_0",
+              confidence: 0.8,
+              probabilities: { candidate_0: 0.8 },
+            },
+          },
+        },
+      };
+    });
+    const rotator = fakeRotator(baseURL);
+    rotator.getConfig().typesafeRouting!.shortlistSize = 4;
+    const expandedCatalog: AutoRoutingCatalogEntry[] = [
+      ...Array.from({ length: 8 }, (_, index) => ({
+        providerId: "google-antigravity",
+        modelId: `gemini-family-${index}`,
+        contextWindow: 1_000_000,
+        multimodal: true,
+        tools: true,
+        reasoning: true,
+        family: `gemini-family-${index}`,
+      })),
+      ...Array.from({ length: 4 }, (_, index) => ({
+        providerId: "ollama",
+        modelId: `local-${index}`,
+        contextWindow: 128_000,
+        multimodal: false,
+        tools: true,
+        reasoning: false,
+        family: "ollama",
+      })),
+    ];
+
+    const built = buildAutoRoutingCandidates(rotator, expandedCatalog, {
+      route: "openai-chat",
+      input: "pick a suitable text model",
+    });
+    assert.equal(built.candidates.length, 4);
+    assert.equal(new Set(built.candidates.map((candidate) => candidate.providerId)).size, 2);
+    assert.equal(new Set(built.candidates.map((candidate) => candidate.family)).size, 4);
+
+    const result = await selectAutoRoutingTarget(rotator, expandedCatalog, {
+      route: "openai-chat",
+      input: "pick a suitable text model",
+    });
+    assert.equal(result?.mode, "typesafe");
+    const captured: Record<string, unknown> = received ?? (() => {
+      throw new Error("TypeSafe test server did not receive a request");
+    })();
+    const state = captured.state as Record<string, unknown>;
+    assert.equal((state.candidates as unknown[]).length, 4);
+    assert.doesNotMatch(JSON.stringify(captured), /none/);
+  });
+
+  it("uses Jev probabilities with operational health as the tie-breaker", async () => {
+    const baseURL = await startServer(() => ({
+      status: 200,
+      body: {
+        answers: {
+          selected_model: {
+            choice: "candidate_0",
+            confidence: 0.51,
+            probabilities: { candidate_0: 0.51, candidate_1: 0.5 },
+          },
+        },
+      },
+    }));
+    const result = await selectAutoRoutingTarget(
+      fakeRotator(baseURL),
+      catalog,
+      { route: "openai-chat", input: "hello" },
+    );
+    assert.equal(result?.mode, "typesafe");
+    assert.equal(result?.candidate.modelId, "local-fast");
   });
 });

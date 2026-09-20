@@ -32,6 +32,7 @@ export interface RotatorResponseHeaderOptions {
   selectedProvider?: string;
   modelSelection?: "typesafe" | "deterministic" | "disabled";
   selectionConfidence?: number;
+  selectionReason?: string;
   latencyMs?: number;
   ttfbMs?: number;
   inputTokens?: number;
@@ -76,6 +77,10 @@ export function buildRotatorResponseHeaders(
   }
   if (opts.selectionConfidence !== undefined && Number.isFinite(opts.selectionConfidence)) {
     headers["X-Rotator-Selection-Confidence"] = opts.selectionConfidence.toFixed(3);
+  }
+  if (opts.selectionReason) {
+    const reason = opts.selectionReason.replace(/[^a-zA-Z0-9._-]/g, "").slice(0, 64);
+    if (reason) headers["X-Rotator-Selection-Reason"] = reason;
   }
   if (opts.latencyMs !== undefined && opts.latencyMs >= 0) {
     headers["X-Rotator-Latency-Ms"] = String(Math.round(opts.latencyMs));

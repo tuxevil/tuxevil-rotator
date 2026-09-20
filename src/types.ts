@@ -171,6 +171,8 @@ export interface TypeSafeRoutingConfig {
   minConfidence?: number;
   /** Maximum candidate models sent to Jev per request. */
   maxCandidates?: number;
+  /** Maximum diverse candidate models included in Jev's final decision. */
+  shortlistSize?: number;
   /** Maximum prompt excerpt characters sent to Jev. */
   maxExcerptChars?: number;
 }

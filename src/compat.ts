@@ -206,6 +206,7 @@ async function resolveAutoModel(
   providerId: string;
   mode: "typesafe" | "deterministic";
   confidence?: number;
+  reason: string;
 } | null> {
   const selection = await selectAutoRoutingTarget(
     rotator,
@@ -218,6 +219,7 @@ async function resolveAutoModel(
     providerId: selection.candidate.providerId,
     mode: selection.mode,
     confidence: selection.confidence,
+    reason: selection.reason,
   };
 }
 
@@ -772,6 +774,7 @@ export async function streamCompatSse(
     selectedProvider: context?.providerId,
     modelSelection: context?.selectionMode,
     selectionConfidence: context?.selectionConfidence,
+    selectionReason: context?.selectionReason,
     ttfbMs: Date.now() - (context?.requestStartMs ?? streamStartMs),
     healthScore: context?.account?.healthScore,
     routingPolicy: rotator?.getConfig?.()?.routingPolicy || "timer-first",
@@ -1504,6 +1507,7 @@ export async function streamResponsesSse(
     selectedProvider: context?.providerId,
     modelSelection: context?.selectionMode,
     selectionConfidence: context?.selectionConfidence,
+    selectionReason: context?.selectionReason,
     ttfbMs: Date.now() - (context?.requestStartMs ?? streamStartMs),
     healthScore: context?.account?.healthScore,
     routingPolicy: rotator?.getConfig?.()?.routingPolicy || "timer-first",
@@ -2916,6 +2920,7 @@ export async function handleGeminiGenerateContent(
           providerId: autoSelection?.providerId,
           selectionMode: autoSelection?.mode,
           selectionConfidence: autoSelection?.confidence,
+          selectionReason: autoSelection?.reason,
         }
       : {}),
     request: {
@@ -2956,6 +2961,7 @@ export async function handleGeminiGenerateContent(
     selectedProvider: result.context?.providerId,
     modelSelection: result.context?.selectionMode,
     selectionConfidence: result.context?.selectionConfidence,
+    selectionReason: result.context?.selectionReason,
     latencyMs: totalMs,
     ttfbMs,
     inputTokens: result.completion.inputTokens,
@@ -3048,6 +3054,7 @@ export async function handleOpenAIChatCompletions(
       requestedModel: autoRequested ? requestedModel : undefined,
       selectionMode: autoSelection?.mode,
       selectionConfidence: autoSelection?.confidence,
+      selectionReason: autoSelection?.reason,
     });
     return;
   }
@@ -3077,6 +3084,7 @@ export async function handleOpenAIChatCompletions(
     bodyToForward.providerId = autoSelection.providerId;
     bodyToForward.selectionMode = autoSelection.mode;
     bodyToForward.selectionConfidence = autoSelection.confidence;
+    bodyToForward.selectionReason = autoSelection.reason;
   }
   const result = await completeViaRotator(
     req,
@@ -3128,6 +3136,7 @@ export async function handleOpenAIChatCompletions(
     selectedProvider: result.context?.providerId,
     modelSelection: result.context?.selectionMode,
     selectionConfidence: result.context?.selectionConfidence,
+    selectionReason: result.context?.selectionReason,
     latencyMs: totalMs,
     ttfbMs,
     inputTokens: result.completion.inputTokens,
@@ -3235,6 +3244,7 @@ export async function handleOpenAIResponsesCreate(
       requestedModel: autoRequested ? requestedModel : undefined,
       selectionMode: autoSelection?.mode,
       selectionConfidence: autoSelection?.confidence,
+      selectionReason: autoSelection?.reason,
     });
     return;
   }
@@ -3276,6 +3286,7 @@ export async function handleOpenAIResponsesCreate(
     requestBody.providerId = autoSelection.providerId;
     requestBody.selectionMode = autoSelection.mode;
     requestBody.selectionConfidence = autoSelection.confidence;
+    requestBody.selectionReason = autoSelection.reason;
   }
   requestBody.requestId = responseId;
 
@@ -3396,6 +3407,7 @@ export async function handleOpenAIResponsesCreate(
     selectedProvider: result.context?.providerId,
     modelSelection: result.context?.selectionMode,
     selectionConfidence: result.context?.selectionConfidence,
+    selectionReason: result.context?.selectionReason,
     latencyMs: totalMs,
     ttfbMs,
     inputTokens: result.completion.inputTokens,
@@ -3558,6 +3570,7 @@ export async function handleAnthropicMessages(
     bodyToForward.providerId = autoSelection.providerId;
     bodyToForward.selectionMode = autoSelection.mode;
     bodyToForward.selectionConfidence = autoSelection.confidence;
+    bodyToForward.selectionReason = autoSelection.reason;
   }
   const result = await completeViaRotator(
     req,
@@ -3630,6 +3643,7 @@ export async function handleAnthropicMessages(
     selectedProvider: result.context?.providerId,
     modelSelection: result.context?.selectionMode,
     selectionConfidence: result.context?.selectionConfidence,
+    selectionReason: result.context?.selectionReason,
     latencyMs: totalMs,
     ttfbMs,
     inputTokens: result.completion.inputTokens,

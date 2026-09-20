@@ -67,6 +67,7 @@ export function applyConfigDefaults(config: Config): Config {
 					timeoutMs: config.typesafeRouting.timeoutMs ?? 3_000,
 					minConfidence: config.typesafeRouting.minConfidence ?? 0.45,
 					maxCandidates: config.typesafeRouting.maxCandidates ?? 32,
+					shortlistSize: config.typesafeRouting.shortlistSize ?? 12,
 					maxExcerptChars: config.typesafeRouting.maxExcerptChars ?? 12_000,
 				}
 				: undefined,

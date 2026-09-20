@@ -230,13 +230,18 @@ remains available only as an optional deployment-level fallback:
     "timeoutMs": 3000,
     "minConfidence": 0.45,
     "maxCandidates": 32,
+    "shortlistSize": 12,
     "maxExcerptChars": 12000
   }
 }
 ```
 
-If Jev is unavailable, times out, returns low confidence, or selects no
-candidate, routing fails open to the best deterministic operational candidate.
+`maxCandidates` bounds the locally filtered pool and `shortlistSize` bounds the
+final Jev question. The shortlist is selected dynamically so healthy providers
+and model families remain represented instead of sending dozens of near-
+duplicate variants. If Jev is unavailable, times out, returns low confidence,
+or selects no candidate, routing fails open to the best deterministic
+operational candidate.
 If no candidate is routable, the request returns an unavailable response. The
 API key is never returned by the dashboard/export endpoints; those surfaces
 show `[configured]`.

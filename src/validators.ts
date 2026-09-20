@@ -332,6 +332,10 @@ export function validateConfig(value: unknown): ValidationResult<Config> {
 				(!isNonNegativeInteger(routing.maxCandidates) || routing.maxCandidates < 1 || routing.maxCandidates > 128)) {
 				errors.push("config.typesafeRouting.maxCandidates must be an integer between 1 and 128");
 			}
+			if (routing.shortlistSize !== undefined &&
+				(!isNonNegativeInteger(routing.shortlistSize) || routing.shortlistSize < 1 || routing.shortlistSize > 32)) {
+				errors.push("config.typesafeRouting.shortlistSize must be an integer between 1 and 32");
+			}
 			if (routing.maxExcerptChars !== undefined &&
 				(!isNonNegativeInteger(routing.maxExcerptChars) || routing.maxExcerptChars < 256 || routing.maxExcerptChars > 50_000)) {
 				errors.push("config.typesafeRouting.maxExcerptChars must be an integer between 256 and 50000");
