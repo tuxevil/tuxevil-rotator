@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Single-account transport retry recovery**: Transient upstream transport failures now retry the current account with cancellable jittered exponential backoff when no replacement account is available, preserving recovery for single-account deployments and exhausted pools across native, compatibility, and Code Assist routes ([#35](https://github.com/tuxevil/tuxevil-rotator/pull/35) by [@toRolex](https://github.com/toRolex)).
+
 ## [3.7.2] - 2026-09-16
 
 ### Added
