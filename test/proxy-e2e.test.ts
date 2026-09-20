@@ -380,6 +380,83 @@ describe("proxy e2e: pre-flush stream recovery", () => {
       await upstream.close();
     }
   });
+
+  it("retries on transport error with a single account and recovers", async () => {
+    let calls = 0;
+    const upstream = await listen((req, res) => {
+      calls += 1;
+      if (calls === 1) {
+        res.destroy();
+        return;
+      }
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        res.end("data: ok from single account\n\n");
+      });
+    });
+    endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
+
+    const singleAccount = makeAccount("single@example.com");
+    const rotator = makeRotator(singleAccount, {}, {
+      accounts: [],
+      streamRecoveryMaxRetries: 2,
+    });
+
+    try {
+      const outcome = await withRotation(
+        rotator,
+        "gemini-3.1-pro",
+        {},
+        makeBody(),
+        async (response) => response.text(),
+      );
+
+      assert.equal(outcome.ok, true);
+      if (outcome.ok) {
+        assert.equal(outcome.result, "data: ok from single account\n\n");
+        assert.equal(outcome.context?.retries, 1);
+      }
+      assert.equal(calls, 2);
+    } finally {
+      await upstream.close();
+    }
+  });
+
+  it("fails with all retry attempts failed when single account transport error exceeds maxRetries", async () => {
+    let calls = 0;
+    const upstream = await listen((req, res) => {
+      calls += 1;
+      res.destroy();
+    });
+    endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
+
+    const singleAccount = makeAccount("single@example.com");
+    const rotator = makeRotator(singleAccount, {}, {
+      accounts: [],
+      streamRecoveryMaxRetries: 1,
+    });
+
+    try {
+      const outcome = await withRotation(
+        rotator,
+        "gemini-3.1-pro",
+        {},
+        makeBody(),
+        async (response) => response.text(),
+      );
+
+      assert.equal(outcome.ok, false);
+      if (!outcome.ok) {
+        assert.equal(outcome.status, 502);
+        assert.equal(outcome.errorText, "All retry attempts failed");
+        assert.equal(outcome.context?.retries, 1);
+      }
+      assert.equal(calls, 2);
+    } finally {
+      await upstream.close();
+    }
+  });
 });
 
 describe("proxy e2e: 429 rate-limited", () => {
