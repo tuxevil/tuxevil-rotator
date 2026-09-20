@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { serveCliLogin, serveLoginLanding, handleCliLoginApi } from "../src/onboarding.js";
 import { removeAccountFromConfig } from "../src/account-store.js";
-import type { AccountConfig } from "../src/types.js";
+import { getDefaultConfig } from "../src/config-defaults.js";
+import type { AccountConfig, Config } from "../src/types.js";
 
 function mockRes() {
 	const state = { body: "", statusCode: 200, headers: {} as Record<string, string> };
@@ -127,6 +128,30 @@ describe("serveCliLogin", () => {
 		assert.match(state.body, /id="zenForm"/);
 	});
 
+	it("includes a TypeSafe Jev configuration panel", () => {
+		const { res, state } = mockRes();
+		serveCliLogin(res);
+		assert.match(state.body, /id="panel-typesafe"/);
+		assert.match(state.body, /TypeSafe API key/);
+		assert.match(state.body, /id="typesafeForm"/);
+	});
+
+	it("shows configured status without rendering the TypeSafe API key", () => {
+		const { res, state } = mockRes();
+		const config: Config = {
+			...getDefaultConfig(),
+			typesafeRouting: {
+				enabled: true,
+				apiKey: "secret-typesafe-key",
+				model: "jev-preview",
+			},
+		};
+		serveCliLogin(res, { getConfig: () => config });
+		assert.match(state.body, /A Jev key is already configured/);
+		assert.match(state.body, /value="jev-preview"/);
+		assert.doesNotMatch(state.body, /secret-typesafe-key/);
+	});
+
 	it("uses independent values for the browser session and OAuth state", () => {
 		const { res, state } = mockRes();
 		serveCliLogin(res);
@@ -145,6 +170,62 @@ describe("serveCliLogin", () => {
 });
 
 describe("handleCliLoginApi", () => {
+	it("persists TypeSafe configuration without returning the API key", async () => {
+		let saved: Config | undefined;
+		const current = getDefaultConfig();
+		const rotator = {
+			async addOrUpdateAccount() {},
+			getConfig: () => current,
+			async replaceConfig(config: Config) {
+				saved = config;
+			},
+		};
+		const req = mockReq({
+			provider: "typesafe",
+			apiKey: "fake-typesafe-key",
+			model: "jev-preview",
+			enabled: true,
+		});
+		const { res, state } = mockRes();
+		await handleCliLoginApi(req, res, rotator as any);
+		assert.equal(state.statusCode, 200, state.body);
+		const result = JSON.parse(state.body) as Record<string, unknown>;
+		assert.equal(result.ok, true);
+		assert.equal(result.model, "jev-preview");
+		assert.equal(saved?.typesafeRouting?.apiKey, "fake-typesafe-key");
+		assert.doesNotMatch(state.body, /fake-typesafe-key/);
+	});
+
+	it("keeps an existing TypeSafe API key when the dashboard leaves it blank", async () => {
+		const existing: Config = {
+			...getDefaultConfig(),
+			typesafeRouting: {
+				enabled: true,
+				apiKey: "existing-typesafe-key",
+				model: "jev-latest",
+			},
+		};
+		let saved: Config | undefined;
+		const rotator = {
+			async addOrUpdateAccount() {},
+			getConfig: () => existing,
+			async replaceConfig(config: Config) {
+				saved = config;
+			},
+		};
+		const req = mockReq({
+			provider: "typesafe",
+			model: "jev-preview",
+			enabled: false,
+		});
+		const { res, state } = mockRes();
+		await handleCliLoginApi(req, res, rotator as any);
+		assert.equal(state.statusCode, 200, state.body);
+		assert.equal(saved?.typesafeRouting?.apiKey, "existing-typesafe-key");
+		assert.equal(saved?.typesafeRouting?.enabled, false);
+		assert.doesNotMatch(state.body, /existing-typesafe-key/);
+	});
+
 	it("returns 400 for invalid JSON body", async () => {
 		const req = mockReqRaw("not json{{{");
 		const { res, state } = mockRes();

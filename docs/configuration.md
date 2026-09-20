@@ -24,6 +24,7 @@ tuxevil-rotator start --config-dir /path/to/config
 | `TUXEVIL_ROTATOR_MAX_BODY_BYTES` | Max accepted proxy request body size in bytes (default: `26214400` = 25 MiB) |
 | `TUXEVIL_ROTATOR_LOG_LEVEL` | Log verbosity: `debug`, `info`, `warn`, `error`, `silent` (default: `info`) |
 | `TUXEVIL_ROTATOR_LOG_RETENTION_DAYS` | Spend log retention in days (default: `30`) |
+| `TYPESAFE_API_KEY` | Optional fallback TypeSafe API key for Jev routing when no configured key is stored in `typesafeRouting` |
 | `TUXEVIL_ROTATOR_QUOTA_USER_AGENT` | Override the User-Agent for quota API fetches |
 | `TUXEVIL_ROTATOR_ANTIGRAVITY_VERSION` | Override the Antigravity version in quota fetch UA (default: `2.11.0`) |
 | `TUXEVIL_ROTATOR_TELEMETRY` | Set to `off`, `false`, or `0` to disable anonymous telemetry |
@@ -205,9 +206,20 @@ concurrency, and credential checks. Jev receives bounded request metadata and
 a text excerpt only to rank those candidates; it does not choose accounts or
 write routing state.
 
-Configure the provider token in `accounts.json` (it is encrypted at rest with
-the same `TUXEVIL_ROTATOR_ENCRYPTION_KEY`) or keep it outside the config with
-`TYPESAFE_API_KEY`:
+When using PostgreSQL-backed settings, configure Jev from the existing
+`/login-cli` page: open the page with admin authorization, select the
+**TypeSafe Jev** tab, paste the provider key, choose the Jev model alias, and
+save. The page reuses the rotator configuration persistence path, so the key
+is encrypted and stored inside the existing `rotator_settings.accounts_json`
+value. Leave the key field empty when changing the model or enabled flag to
+preserve the stored key. The dashboard never renders or returns the key.
+
+Saving a new key requires a stable `TUXEVIL_ROTATOR_ENCRYPTION_KEY` (with
+`ENCRYPTION_KEY` accepted as a fallback). This encryption secret is separate
+from the TypeSafe provider key and must be available after restarts so the
+rotator can decrypt the PostgreSQL value. For file-backed configurations, the
+same dashboard flow persists to the configured config file. `TYPESAFE_API_KEY`
+remains available only as an optional deployment-level fallback:
 
 ```json
 {

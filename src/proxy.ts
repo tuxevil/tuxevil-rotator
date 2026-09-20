@@ -2187,7 +2187,7 @@ export function startProxy(
     if (method === "GET" && pathname === "/login-cli") {
       if (!requireAdmin(req, res)) return;
       trackFeature("cliLogin");
-      serveCliLogin(res);
+      serveCliLogin(res, rotator);
       return;
     }
 

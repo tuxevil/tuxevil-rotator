@@ -31,10 +31,17 @@ import {
   parseCodexIdentity,
   type CodexOAuthConfig,
 } from "./providers/openai-codex/oauth.js";
-import type { AccountConfig } from "./types.js";
+import type { AccountConfig, Config } from "./types.js";
 
 interface AccountSink {
   addOrUpdateAccount(account: AccountConfig): Promise<void>;
+  getConfig?(): Config;
+  replaceConfig?(config: Config): Promise<void>;
+}
+
+interface TypeSafeConfigSink {
+  getConfig(): Config;
+  replaceConfig(config: Config): Promise<void>;
 }
 
 interface PendingSession {
@@ -303,8 +310,14 @@ function pruneCliSessions(): void {
   }
 }
 
-export function serveCliLogin(res: ServerResponse): void {
+export function serveCliLogin(
+  res: ServerResponse,
+  configSource?: Pick<TypeSafeConfigSink, "getConfig">,
+): void {
   pruneCliSessions();
+  const currentTypeSafe = configSource?.getConfig().typesafeRouting;
+  const typeSafeConfigured = Boolean(currentTypeSafe?.apiKey);
+  const typeSafeModel = currentTypeSafe?.model || "jev-latest";
   const { verifier, challenge } = generatePkce();
   const oauthState = generateState();
   let authUrl: string | null = null;
@@ -358,6 +371,7 @@ export function serveCliLogin(res: ServerResponse): void {
   <button class="tab" data-panel="panel-codex">OpenAI Codex</button>
   <button class="tab" data-panel="panel-ollama">Ollama Cloud</button>
   <button class="tab" data-panel="panel-zen">OpenCode Zen</button>
+  <button class="tab" data-panel="panel-typesafe">TypeSafe Jev</button>
 </div>
 
 <div class="panel active" id="panel-google">
@@ -428,6 +442,24 @@ ${codexAuthUrl && codexSessionId ? `<h3 style="margin:24px 0 8px;font-size:18px;
   <input id="zenApiKey" name="apiKey" class="field" type="password" placeholder="sk-..." autocomplete="off" required />
   <button type="submit" class="cta" style="cursor:pointer;border:none;font-family:inherit;font-size:16px;margin-top:12px;">
     Connect Account
+  </button>
+</form>
+</div>
+
+<div class="panel" id="panel-typesafe">
+<p>Configure TypeSafe Jev for optional <code>model: "auto"</code> routing. The key is stored encrypted with the rotator configuration in PostgreSQL when a database is configured.</p>
+<p class="mono">${typeSafeConfigured ? "A Jev key is already configured. Leave the key field empty to keep it." : "No Jev key is configured yet."}</p>
+<form id="typesafeForm" style="margin-top:12px;">
+  <label for="typesafeApiKey">TypeSafe API key</label>
+  <input id="typesafeApiKey" name="apiKey" class="field" type="password" placeholder="Paste a new TypeSafe API key" autocomplete="new-password" />
+  <label for="typesafeModel">Jev model</label>
+  <input id="typesafeModel" name="model" class="field" value="${escapeHtml(typeSafeModel)}" placeholder="jev-latest" autocomplete="off" />
+  <label style="display:flex;align-items:center;gap:8px;margin-top:16px;">
+    <input name="enabled" type="checkbox" ${currentTypeSafe?.enabled !== false ? "checked" : ""} />
+    Enable Jev when requests use <code>model: "auto"</code>
+  </label>
+  <button type="submit" class="cta" style="cursor:pointer;border:none;font-family:inherit;font-size:16px;margin-top:16px;">
+    Save Jev configuration
   </button>
 </form>
 </div>
@@ -617,6 +649,49 @@ if (zenForm) zenForm.addEventListener('submit', async (e) => {
     btn.textContent = 'Connect Account';
   }
 });
+
+const typesafeForm = document.getElementById('typesafeForm');
+if (typesafeForm) typesafeForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const btn = form.querySelector('button[type=submit]');
+  const apiKey = form.apiKey.value.trim();
+  const model = form.model.value.trim();
+  const enabled = form.enabled.checked;
+  if (!model) { showResult('<div class="note error">Please enter a Jev model alias.</div>'); return; }
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+  showResult('<div class="note">Saving the encrypted Jev configuration...</div>');
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get('token') || '';
+    const payload = { provider: 'typesafe', ...(apiKey ? { apiKey } : {}), model, enabled };
+    const res = await fetch('/api/cli-login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(token ? { 'X-Rotator-Admin-Token': token } : {}) },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showResult('<div class="note" style="border-left-color:var(--accent);background:rgba(30,107,82,0.12);">TypeSafe Jev configuration saved. The API key is not returned by the server.</div>');
+    } else {
+      const errorDiv = document.createElement('div');
+      errorDiv.className = 'note error';
+      errorDiv.textContent = data.error || 'Unable to save TypeSafe configuration';
+      document.getElementById('result').innerHTML = '';
+      document.getElementById('result').appendChild(errorDiv);
+    }
+  } catch (err) {
+    const errorDiv = document.createElement('div');
+    errorDiv.className = 'note error';
+    errorDiv.textContent = 'Request failed: ' + err.message;
+    document.getElementById('result').innerHTML = '';
+    document.getElementById('result').appendChild(errorDiv);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save Jev configuration';
+  }
+});
 </script>
 `,
     ),
@@ -634,6 +709,8 @@ export async function handleCliLoginApi(
     redirectUrl?: string;
     email?: string;
     apiKey?: string;
+    model?: string;
+    enabled?: boolean;
   };
   try {
     const raw = await readLimitedBody(req, MAX_CLI_LOGIN_BODY_BYTES);
@@ -647,6 +724,8 @@ export async function handleCliLoginApi(
       redirectUrl?: string;
       email?: string;
       apiKey?: string;
+      model?: string;
+      enabled?: boolean;
     };
   } catch (err) {
     res.writeHead(err instanceof PayloadTooLargeError ? 413 : 400, {
@@ -670,6 +749,25 @@ export async function handleCliLoginApi(
 
   if (provider === "opencode-zen") {
     await handleZenCliLogin(body, res, rotator);
+    return;
+  }
+
+  if (provider === "typesafe") {
+    if (
+      typeof rotator.getConfig !== "function" ||
+      typeof rotator.replaceConfig !== "function"
+    ) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        ok: false,
+        error: "TypeSafe configuration is unavailable on this server",
+      }));
+      return;
+    }
+    await handleTypeSafeCliLogin(body, res, {
+      getConfig: () => rotator.getConfig!(),
+      replaceConfig: (config) => rotator.replaceConfig!(config),
+    });
     return;
   }
 
@@ -789,6 +887,80 @@ export async function handleCliLoginApi(
       }),
     );
   }
+}
+
+async function handleTypeSafeCliLogin(
+  body: { apiKey?: string; model?: string; enabled?: boolean },
+  res: ServerResponse,
+  rotator: TypeSafeConfigSink,
+): Promise<void> {
+  if (body.apiKey !== undefined && typeof body.apiKey !== "string") {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: false, error: "Invalid apiKey" }));
+    return;
+  }
+  if (body.model !== undefined && typeof body.model !== "string") {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: false, error: "Invalid Jev model" }));
+    return;
+  }
+  if (body.enabled !== undefined && typeof body.enabled !== "boolean") {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: false, error: "Invalid enabled flag" }));
+    return;
+  }
+
+  const apiKey = body.apiKey?.trim() ?? "";
+  const model = body.model?.trim() ?? "";
+  const enabled = body.enabled ?? true;
+  if (apiKey.length > 4096) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: false, error: "API key too long" }));
+    return;
+  }
+  if (!model || model.length > 128) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: false, error: "Invalid Jev model" }));
+    return;
+  }
+
+  const current = rotator.getConfig();
+  const currentRouting = current.typesafeRouting ?? {};
+  if (!apiKey && !currentRouting.apiKey) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: false, error: "Missing TypeSafe API key" }));
+    return;
+  }
+
+  const nextConfig: Config = {
+    ...current,
+    typesafeRouting: {
+      ...currentRouting,
+      ...(apiKey ? { apiKey } : {}),
+      enabled,
+      model,
+    },
+  };
+
+  try {
+    await rotator.replaceConfig(nextConfig);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    const userError = /ENCRYPTION_KEY/i.test(message)
+      ? "Configure TUXEVIL_ROTATOR_ENCRYPTION_KEY before saving the Jev key."
+      : "Unable to save TypeSafe configuration.";
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: false, error: userError }));
+    return;
+  }
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({
+    ok: true,
+    configured: true,
+    enabled,
+    model,
+  }));
 }
 
 async function handleCodexCliLogin(
