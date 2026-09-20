@@ -39,3 +39,5 @@ ollama-debug-last.json
 .codegraph/
 .atl/
 .pi/
+pnpm-lock.yaml
+pnpm-workspace.yaml
