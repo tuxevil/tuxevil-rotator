@@ -2096,9 +2096,10 @@ async function handleCodeAssistPassthrough(
       releaseCurrentAccount();
       const nextAccount = await rotator.rotateToNext(CODE_ASSIST_ROUTING_MODEL, account);
       if (!nextAccount) {
+        const label = account.config.label || account.config.email;
         const waited = await sleepTransportRetry(
           action,
-          account.email,
+          label,
           attempt,
           maxRetries,
           rotator,
