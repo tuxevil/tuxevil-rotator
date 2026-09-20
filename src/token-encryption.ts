@@ -65,6 +65,13 @@ export function isEncryptedToken(token: string): boolean {
   );
 }
 
+/** Checks whether any persisted secret uses one of the encrypted formats. */
+export const isEncryptedSecret = isEncryptedToken;
+
+export function isRedactedSecret(value: string | undefined): boolean {
+  return value === "[configured]";
+}
+
 /**
  * Encrypts a plain-text OAuth refresh token using AES-256-GCM.
  * Format: enc:v2:<salt_hex>:<iv_hex>:<tag_hex>:<ciphertext_hex>
@@ -117,6 +124,90 @@ export function decryptRefreshToken(
   let decrypted = decipher.update(ciphertextHex, "hex", "utf8");
   decrypted += decipher.final("utf8");
   return decrypted;
+}
+
+/** Encrypts a non-OAuth secret using the same authenticated format. */
+export function encryptSecret(secret: string, keyInput: string): string {
+  return encryptRefreshToken(secret, keyInput);
+}
+
+/** Decrypts a non-OAuth secret using the same authenticated format. */
+export function decryptSecret(secret: string, keyInput: string): string {
+  return decryptRefreshToken(secret, keyInput);
+}
+
+/**
+ * Encrypts the optional TypeSafe credential before it reaches persistence.
+ * A newly supplied API key must never be silently written in plaintext.
+ */
+export function encryptTypeSafeRoutingInConfig(
+  config: Config,
+  keyInput?: string,
+): Config {
+  const routing = config.typesafeRouting;
+  if (!routing?.apiKey || isEncryptedSecret(routing.apiKey) || isRedactedSecret(routing.apiKey)) return config;
+  const key = keyInput || getEncryptionKey();
+  if (!key) {
+    throw new Error(
+      "TypeSafe API key cannot be persisted without ENCRYPTION_KEY",
+    );
+  }
+  return {
+    ...config,
+    typesafeRouting: {
+      ...routing,
+      apiKey: encryptSecret(routing.apiKey, key),
+    },
+  };
+}
+
+/**
+ * Decrypts the persisted TypeSafe credential for runtime use. If the
+ * encryption key is unavailable, the ciphertext remains in place and Jev is
+ * treated as unavailable by the routing layer.
+ */
+export function decryptTypeSafeRoutingInConfig(
+  config: Config,
+  keyInput?: string,
+): { config: Config; migrated: boolean } {
+  const routing = config.typesafeRouting;
+  if (!routing?.apiKey || !isEncryptedSecret(routing.apiKey)) {
+    return { config, migrated: Boolean(routing?.apiKey && (keyInput || getEncryptionKey())) };
+  }
+  const key = keyInput || getEncryptionKey();
+  if (!key) {
+    if (!missingKeyWarned) {
+      tokenLog.warn(
+        "Found encrypted TypeSafe API key but ENCRYPTION_KEY is not set; Jev auto-routing is disabled until it is configured.",
+      );
+      missingKeyWarned = true;
+    }
+    return { config, migrated: false };
+  }
+  try {
+    return {
+      config: {
+        ...config,
+        typesafeRouting: { ...routing, apiKey: decryptSecret(routing.apiKey, key) },
+      },
+      migrated: false,
+    };
+  } catch (err) {
+    tokenLog.error(`Failed to decrypt TypeSafe API key: ${err}`);
+    return { config, migrated: false };
+  }
+}
+
+/** Returns a config safe for the admin UI/export surface. */
+export function redactTypeSafeRoutingInConfig(config: Config): Config {
+  if (!config.typesafeRouting?.apiKey) return structuredClone(config);
+  return {
+    ...structuredClone(config),
+    typesafeRouting: {
+      ...config.typesafeRouting,
+      apiKey: "[configured]",
+    },
+  };
 }
 
 /**

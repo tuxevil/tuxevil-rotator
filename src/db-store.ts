@@ -12,7 +12,9 @@ import { rotatorEnv } from "./env.js";
 import { applyConfigDefaults } from "./config-defaults.js";
 import {
   decryptAccountsInConfig,
+  decryptTypeSafeRoutingInConfig,
   encryptAccountsInConfig,
+  encryptTypeSafeRoutingInConfig,
 } from "./token-encryption.js";
 import {
   type ISettingsRepository,
@@ -94,8 +96,10 @@ export function getCachedConfig(): Config | null {
     const validation = validateConfig(parsed);
     if (validation.ok && validation.value) {
       const withDefaults = applyConfigDefaults(validation.value);
-      const { config: decryptedConfig, migrated } = decryptAccountsInConfig(withDefaults);
-      if (migrated) {
+      const accountsResult = decryptAccountsInConfig(withDefaults);
+      const typesafeResult = decryptTypeSafeRoutingInConfig(accountsResult.config);
+      const decryptedConfig = typesafeResult.config;
+      if (accountsResult.migrated || typesafeResult.migrated) {
         void setCachedConfig(decryptedConfig).catch((err) => {
           console.error(`Failed to persist migrated accounts config: ${err}`);
         });
@@ -111,7 +115,9 @@ export function getCachedConfig(): Config | null {
 export async function setCachedConfig(config: Config): Promise<void> {
   assertInitialized();
   const withDefaults = applyConfigDefaults(config);
-  const encryptedConfig = encryptAccountsInConfig(withDefaults);
+  const encryptedConfig = encryptTypeSafeRoutingInConfig(
+    encryptAccountsInConfig(withDefaults),
+  );
   await repository.set("accounts_json", JSON.stringify(encryptedConfig, null, 2));
 }
 

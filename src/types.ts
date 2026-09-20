@@ -152,6 +152,27 @@ export interface Config {
   // Config-driven alias routing based on reasoning_effort.
   // Absent, null, or empty object = disabled.
   effortRouting?: Record<string, EffortRoutingRule> | null;
+  /** Optional semantic model routing through TypeSafe Jev. */
+  typesafeRouting?: TypeSafeRoutingConfig;
+}
+
+export interface TypeSafeRoutingConfig {
+  /** Explicit opt-in. When omitted, a configured apiKey enables the feature. */
+  enabled?: boolean;
+  /** TypeSafe API key. Persisted encrypted by the settings layer. */
+  apiKey?: string;
+  /** Jev model alias. Defaults to the provider's stable latest alias. */
+  model?: string;
+  /** Optional API root override for self-hosted/test environments. */
+  baseURL?: string;
+  /** Per-attempt timeout for the routing decision. */
+  timeoutMs?: number;
+  /** Minimum accepted Jev confidence before deterministic fallback. */
+  minConfidence?: number;
+  /** Maximum candidate models sent to Jev per request. */
+  maxCandidates?: number;
+  /** Maximum prompt excerpt characters sent to Jev. */
+  maxExcerptChars?: number;
 }
 
 export interface EffortRoutingRule {

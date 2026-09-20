@@ -106,7 +106,7 @@ export function serveConfigApi(
     "Content-Type": "application/json",
     "Cache-Control": "no-store",
   });
-  res.end(JSON.stringify(rotator.getConfig()));
+  res.end(JSON.stringify(rotator.getPublicConfig()));
 }
 
 /**
@@ -145,7 +145,7 @@ export function serveConfigExportApi(
     "Content-Disposition":
       'attachment; filename="tuxevil-rotator-config.json"',
   });
-  res.end(JSON.stringify(rotator.getConfig(), null, 2));
+  res.end(JSON.stringify(rotator.getPublicConfig(), null, 2));
 }
 
 export async function serveConfigImportApi(

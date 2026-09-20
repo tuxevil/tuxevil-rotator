@@ -47,6 +47,7 @@
   },
   "author": "Sebastián Real (tuxevil)",
   "dependencies": {
+    "@typesafe-ai/sdk": "^0.6.0",
     "pg": "^8.22.0",
     "tsx": "^4.22.4",
     "undici": "^7.29.0"

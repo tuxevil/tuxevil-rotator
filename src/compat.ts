@@ -10,7 +10,11 @@ import {
   type CompressionStats,
 } from "./compression/index.js";
 import { idempotencyManager } from "./idempotency.js";
-import { authenticateVirtualKey, sendAuthErrorResponse } from "./key-auth.js";
+import {
+  authenticateVirtualKey,
+  isVirtualKeyModelAllowed,
+  sendAuthErrorResponse,
+} from "./key-auth.js";
 import { logSpend } from "./spend-logger.js";
 import { hashKey } from "./virtual-keys.js";
 import { PayloadTooLargeError, readLimitedBody } from "./body-limit.js";
@@ -100,6 +104,11 @@ import {
   getCodexModels,
 } from "./providers/openai-codex/catalog.js";
 import { serveCodexChat, serveCodexResponses } from "./providers/openai-codex/compat.js";
+import {
+  selectAutoRoutingTarget,
+  type AutoRoutingCatalogEntry,
+  type AutoRoutingRoute,
+} from "./auto-routing.js";
 
 function isCodexModelForRotator(rotator: AccountRotator, model: string): boolean {
   if (isCodexRequestModel(model)) return true;
@@ -109,6 +118,107 @@ function isCodexModelForRotator(rotator: AccountRotator, model: string): boolean
   } catch {
     return false;
   }
+}
+
+function isAutoModel(model: string): boolean {
+  return model.trim().toLowerCase() === "auto";
+}
+
+function authorizeResolvedAutoModel(
+  res: ServerResponse,
+  auth: Awaited<ReturnType<typeof authenticateVirtualKey>>,
+  model: string,
+): boolean {
+  if (isVirtualKeyModelAllowed(auth.key, model)) return true;
+  sendAuthErrorResponse(res, {
+    authenticated: false,
+    key: auth.key,
+    rawKey: auth.rawKey,
+    error: `Model '${model}' is not allowed for this Virtual Key`,
+    statusCode: 403,
+  });
+  return false;
+}
+
+function buildAutoRoutingCatalog(
+  rotator: AccountRotator,
+  route: AutoRoutingRoute,
+): AutoRoutingCatalogEntry[] {
+  const catalog: AutoRoutingCatalogEntry[] = getEffectiveAntigravityModels()
+    .filter((model) => !["whisper-1", "proactive-observer", "proactive-observer-v10", "models/proactive-observer-v10"].includes(model.id.toLowerCase()))
+    .map((model) => ({
+      providerId: "google-antigravity",
+      modelId: model.id,
+      contextWindow: model.ctx,
+      multimodal: model.multimodal,
+      tools: model.tools,
+      reasoning: model.isThinking,
+      family: model.family,
+    }));
+  if (route === "gemini") return catalog;
+
+  const codexCatalog = new Map(getCodexModels().map((model) => [model.id, model]));
+  for (const modelId of route === "anthropic" ? [] : rotator.getCodexModels?.() ?? []) {
+    const model = codexCatalog.get(modelId);
+    catalog.push({
+      providerId: "openai-codex",
+      modelId,
+      contextWindow: model?.contextWindow ?? 1_050_000,
+      multimodal: model?.multimodal ?? true,
+      tools: model?.tools ?? true,
+      reasoning: model?.reasoning ?? true,
+      family: "openai-codex",
+    });
+  }
+  for (const modelId of rotator.getOllamaModels?.() ?? []) {
+    catalog.push({
+      providerId: "ollama",
+      modelId,
+      contextWindow: 128_000,
+      multimodal: false,
+      tools: true,
+      reasoning: false,
+      responses: true,
+      family: "ollama-cloud",
+    });
+  }
+  for (const model of OPENCODE_ZEN_CATALOG) {
+    catalog.push({
+      providerId: OPENCODE_ZEN_PROVIDER_ID,
+      modelId: model.id,
+      contextWindow: model.contextWindow,
+      multimodal: false,
+      tools: true,
+      reasoning: false,
+      responses: isOpenCodeZenResponsesModel(model.id),
+      family: "opencode-zen",
+    });
+  }
+  return catalog;
+}
+
+async function resolveAutoModel(
+  rotator: AccountRotator,
+  route: AutoRoutingRoute,
+  input: unknown,
+): Promise<{
+  model: string;
+  providerId: string;
+  mode: "typesafe" | "deterministic";
+  confidence?: number;
+} | null> {
+  const selection = await selectAutoRoutingTarget(
+    rotator,
+    buildAutoRoutingCatalog(rotator, route),
+    { route, input, requestedModel: "auto" },
+  );
+  if (!selection) return null;
+  return {
+    model: selection.candidate.modelId,
+    providerId: selection.candidate.providerId,
+    mode: selection.mode,
+    confidence: selection.confidence,
+  };
 }
 
 export {
@@ -658,6 +768,10 @@ export async function streamCompatSse(
   const rotatorHeaders = buildRotatorResponseHeaders({
     accountLabel: context?.label,
     model,
+    requestedModel: context?.requestedModel,
+    selectedProvider: context?.providerId,
+    modelSelection: context?.selectionMode,
+    selectionConfidence: context?.selectionConfidence,
     ttfbMs: Date.now() - (context?.requestStartMs ?? streamStartMs),
     healthScore: context?.account?.healthScore,
     routingPolicy: rotator?.getConfig?.()?.routingPolicy || "timer-first",
@@ -1386,6 +1500,10 @@ export async function streamResponsesSse(
   const rotatorHeaders = buildRotatorResponseHeaders({
     accountLabel: context?.label,
     model: request.model,
+    requestedModel: context?.requestedModel,
+    selectedProvider: context?.providerId,
+    modelSelection: context?.selectionMode,
+    selectionConfidence: context?.selectionConfidence,
     ttfbMs: Date.now() - (context?.requestStartMs ?? streamStartMs),
     healthScore: context?.account?.healthScore,
     routingPolicy: rotator?.getConfig?.()?.routingPolicy || "timer-first",
@@ -2113,9 +2231,9 @@ async function completeResponsesViaRotator(
         context,
         rotator,
         options?.compressionStats,
-        isOpenCodeZenResponsesModel(body.model)
+        body.providerId === OPENCODE_ZEN_PROVIDER_ID || isOpenCodeZenResponsesModel(body.model)
           ? "opencode-zen"
-          : (rotator?.getOllamaModels?.() ?? []).includes(body.model)
+          : body.providerId === "ollama" || (rotator?.getOllamaModels?.() ?? []).includes(body.model)
             ? "ollama"
             : "google",
       );
@@ -2190,7 +2308,7 @@ async function completeViaRotator(
   compressionStats?: CompressionStats | null;
 }> {
   const ollamaModels = rotator?.getOllamaModels?.() ?? [];
-  const isOllamaUpstream = (model: string): boolean => ollamaModels.includes(model);
+  const isOllamaUpstream = (model: string): boolean => body.providerId === "ollama" || ollamaModels.includes(model);
   const cfg = typeof rotator?.getConfig === "function" ? rotator.getConfig() : undefined;
   const enabled = cfg?.idempotencyEnabled === true;
   const windowMs = cfg?.idempotencyWindowMs ?? 2000;
@@ -2210,7 +2328,7 @@ async function completeViaRotator(
       async (response, context) => {
         if (streamMode === "none") {
           const raw = await response.text();
-          const completion = isOpenCodeZenModel(body.model)
+          const completion = body.providerId === OPENCODE_ZEN_PROVIDER_ID || isOpenCodeZenModel(body.model)
             ? parseOpenAiJson(raw)
             : isOllamaUpstream(body.model)
               ? parseOllamaNdjson(raw)
@@ -2237,12 +2355,14 @@ async function completeViaRotator(
             response.body,
             req,
             res,
-            body.displayModel || body.model,
+            body.displayModel?.toLowerCase() === "auto"
+              ? body.model
+              : body.displayModel || body.model,
             streamMode,
             context,
             rotator,
             options?.compressionStats,
-            isOpenCodeZenModel(body.model)
+            body.providerId === OPENCODE_ZEN_PROVIDER_ID || isOpenCodeZenModel(body.model)
               ? "opencode-zen"
               : isOllamaUpstream(body.model)
                 ? "ollama"
@@ -2768,16 +2888,36 @@ export async function handleGeminiGenerateContent(
       error: { message: "Model path is required", status: "INVALID_ARGUMENT" },
     });
 
-  const auth = await authenticateVirtualKey(req, model);
+  const autoRequested = isAutoModel(model);
+  const auth = await authenticateVirtualKey(req, autoRequested ? undefined : model);
   if (!auth.authenticated) {
     sendAuthErrorResponse(res, auth);
     return;
   }
   const apiKeyHash = auth.key?.tokenHash || (auth.rawKey ? hashKey(auth.rawKey) : null);
 
+  const autoSelection = autoRequested
+    ? await resolveAutoModel(rotator, "gemini", parsed)
+    : null;
+  if (autoRequested && !autoSelection) {
+    return writeJson(res, 503, {
+      error: { message: "No compatible model is currently available", status: "UNAVAILABLE" },
+    });
+  }
+  if (autoSelection && !authorizeResolvedAutoModel(res, auth, autoSelection.model)) return;
+  const selectedModel = autoSelection?.model ?? model;
+
   const body: RequestBody = {
-    model,
+    model: selectedModel,
     project: "",
+    ...(autoRequested
+      ? {
+          displayModel: model,
+          providerId: autoSelection?.providerId,
+          selectionMode: autoSelection?.mode,
+          selectionConfidence: autoSelection?.confidence,
+        }
+      : {}),
     request: {
       contents: Array.isArray(parsed.contents) ? parsed.contents : [],
       systemInstruction: parsed.systemInstruction,
@@ -2811,7 +2951,11 @@ export async function handleGeminiGenerateContent(
   const ttfbMs = result.completion.firstByteMs ?? totalMs;
   const rotatorHeaders = buildRotatorResponseHeaders({
     accountLabel: result.context?.label,
-    model: model,
+    model: autoRequested ? result.context?.selectedModel ?? selectedModel : model,
+    requestedModel: result.context?.requestedModel,
+    selectedProvider: result.context?.providerId,
+    modelSelection: result.context?.selectionMode,
+    selectionConfidence: result.context?.selectionConfidence,
     latencyMs: totalMs,
     ttfbMs,
     inputTokens: result.completion.inputTokens,
@@ -2872,19 +3016,38 @@ export async function handleOpenAIChatCompletions(
       },
     });
 
-  const auth = await authenticateVirtualKey(req, validation.value.model);
+  const requestedModel = validation.value.model;
+  const autoRequested = isAutoModel(requestedModel);
+  const auth = await authenticateVirtualKey(req, autoRequested ? undefined : requestedModel);
   if (!auth.authenticated) {
     sendAuthErrorResponse(res, auth);
     return;
   }
   const apiKeyHash = auth.key?.tokenHash || (auth.rawKey ? hashKey(auth.rawKey) : null);
 
-  if (isCodexModelForRotator(rotator, validation.value.model)) {
-    await serveCodexChat(req, res, rotator, validation.value, {
+  const autoSelection = autoRequested
+    ? await resolveAutoModel(rotator, "openai-chat", validation.value)
+    : null;
+  if (autoRequested && !autoSelection) {
+    return writeJson(res, 503, {
+      error: { message: "No compatible model is currently available", type: "upstream_error" },
+    });
+  }
+  if (autoSelection && !authorizeResolvedAutoModel(res, auth, autoSelection.model)) return;
+  const routedRequest = autoSelection
+    ? { ...validation.value, model: autoSelection.model }
+    : validation.value;
+
+  if (isCodexModelForRotator(rotator, routedRequest.model)) {
+    await serveCodexChat(req, res, rotator, routedRequest, {
       callType: "chat_completion",
       apiKeyHash,
       requesterIp: req.socket?.remoteAddress || null,
       rawRequest: validation.value,
+      providerId: autoSelection?.providerId,
+      requestedModel: autoRequested ? requestedModel : undefined,
+      selectionMode: autoSelection?.mode,
+      selectionConfidence: autoSelection?.confidence,
     });
     return;
   }
@@ -2894,19 +3057,27 @@ export async function handleOpenAIChatCompletions(
     rotator?.getConfig?.()?.compressionMode,
   );
   const compRes = applyPromptCompression(
-    validation.value.messages,
+    routedRequest.messages,
     compMode,
-    { model: validation.value.model },
+    { model: routedRequest.model },
   );
   const chatReq = compRes.stats
-    ? { ...validation.value, messages: compRes.messages }
-    : validation.value;
+    ? { ...routedRequest, messages: compRes.messages }
+    : routedRequest;
 
   const started = Date.now();
-  const streamMode = validation.value.stream ? "openai" : "none";
-  const bodyToForward: RequestBody = isOpenCodeZenModel(chatReq.model)
+  const streamMode = routedRequest.stream ? "openai" : "none";
+  const bodyToForward: RequestBody = isOpenCodeZenModel(chatReq.model) || autoSelection?.providerId === OPENCODE_ZEN_PROVIDER_ID
     ? { project: "", model: chatReq.model, request: chatReq, requestType: "openai-chat" }
-    : (rotator?.getOllamaModels?.().includes(chatReq.model) ? openAIToOllamaBody(chatReq) : openAIToAntigravityBody(chatReq));
+    : (autoSelection?.providerId === "ollama" || rotator?.getOllamaModels?.().includes(chatReq.model)
+      ? openAIToOllamaBody(chatReq)
+      : openAIToAntigravityBody(chatReq));
+  if (autoSelection) {
+    bodyToForward.displayModel = requestedModel;
+    bodyToForward.providerId = autoSelection.providerId;
+    bodyToForward.selectionMode = autoSelection.mode;
+    bodyToForward.selectionConfidence = autoSelection.confidence;
+  }
   const result = await completeViaRotator(
     req,
     res,
@@ -2952,7 +3123,11 @@ export async function handleOpenAIChatCompletions(
   const ttfbMs = result.completion.firstByteMs ?? totalMs;
   const rotatorHeaders = buildRotatorResponseHeaders({
     accountLabel: result.context?.label,
-    model: validation.value.model,
+    model: autoRequested ? result.context?.selectedModel ?? routedRequest.model : requestedModel,
+    requestedModel: result.context?.requestedModel,
+    selectedProvider: result.context?.providerId,
+    modelSelection: result.context?.selectionMode,
+    selectionConfidence: result.context?.selectionConfidence,
     latencyMs: totalMs,
     ttfbMs,
     inputTokens: result.completion.inputTokens,
@@ -2966,7 +3141,7 @@ export async function handleOpenAIChatCompletions(
     id: `chatcmpl-${started.toString(36)}`,
     object: "chat.completion",
     created: Math.floor(started / 1000),
-    model: validation.value.model,
+    model: autoRequested ? result.context?.selectedModel ?? routedRequest.model : requestedModel,
     choices: [
       {
         index: 0,
@@ -3028,26 +3203,45 @@ export async function handleOpenAIResponsesCreate(
       },
     });
 
-  const auth = await authenticateVirtualKey(req, validation.value.model);
+  const requestedModel = validation.value.model;
+  const autoRequested = isAutoModel(requestedModel);
+  const auth = await authenticateVirtualKey(req, autoRequested ? undefined : requestedModel);
   if (!auth.authenticated) {
     sendAuthErrorResponse(res, auth);
     return;
   }
   const apiKeyHash = auth.key?.tokenHash || (auth.rawKey ? hashKey(auth.rawKey) : null);
 
-  if (isCodexModelForRotator(rotator, validation.value.model)) {
-    await serveCodexResponses(req, res, rotator, validation.value, {
+  const autoSelection = autoRequested
+    ? await resolveAutoModel(rotator, "openai-responses", validation.value)
+    : null;
+  if (autoRequested && !autoSelection) {
+    return writeJson(res, 503, {
+      error: { message: "No compatible model is currently available", type: "upstream_error" },
+    });
+  }
+  if (autoSelection && !authorizeResolvedAutoModel(res, auth, autoSelection.model)) return;
+  const routedValidation = autoSelection
+    ? { ...validation.value, model: autoSelection.model }
+    : validation.value;
+
+  if (isCodexModelForRotator(rotator, routedValidation.model)) {
+    await serveCodexResponses(req, res, rotator, routedValidation, {
       callType: "responses",
       apiKeyHash,
       requesterIp: req.socket?.remoteAddress || null,
       rawRequest: validation.value,
+      providerId: autoSelection?.providerId,
+      requestedModel: autoRequested ? requestedModel : undefined,
+      selectionMode: autoSelection?.mode,
+      selectionConfidence: autoSelection?.confidence,
     });
     return;
   }
 
   let converted: ResponsesConversionResult;
   try {
-    converted = convertResponsesToChatRequest(validation.value);
+    converted = convertResponsesToChatRequest(routedValidation);
   } catch {
     return writeJson(res, 400, {
       error: {
@@ -3072,16 +3266,24 @@ export async function handleOpenAIResponsesCreate(
     ? { ...converted.chatRequest, messages: compRes.messages }
     : converted.chatRequest;
 
-  const requestBody: RequestBody = isOpenCodeZenModel(chatRequest.model)
+  const requestBody: RequestBody = isOpenCodeZenModel(chatRequest.model) || autoSelection?.providerId === OPENCODE_ZEN_PROVIDER_ID
     ? { project: "", model: chatRequest.model, request: chatRequest, requestType: "openai-responses" }
-    : (rotator?.getOllamaModels?.().includes(chatRequest.model) ? openAIToOllamaBody(chatRequest) : openAIToAntigravityBody(chatRequest));
+    : (autoSelection?.providerId === "ollama" || rotator?.getOllamaModels?.().includes(chatRequest.model)
+      ? openAIToOllamaBody(chatRequest)
+      : openAIToAntigravityBody(chatRequest));
+  if (autoSelection) {
+    requestBody.displayModel = requestedModel;
+    requestBody.providerId = autoSelection.providerId;
+    requestBody.selectionMode = autoSelection.mode;
+    requestBody.selectionConfidence = autoSelection.confidence;
+  }
   requestBody.requestId = responseId;
 
   if (validation.value.store !== false) {
     const expiresAt = Date.now() + 6 * 60 * 60 * 1000;
     setStoredResponse(responseId, {
       response: buildResponsesResponse(
-        validation.value,
+        routedValidation,
         responseId,
         createdAt,
         { text: "", inputTokens: 0, outputTokens: 0, toolCalls: [] },
@@ -3102,7 +3304,7 @@ export async function handleOpenAIResponsesCreate(
       req,
       res,
       rotator,
-      validation.value,
+      routedValidation,
       requestBody,
       responseId,
       converted.previousResponseId,
@@ -3126,7 +3328,7 @@ export async function handleOpenAIResponsesCreate(
     }
     if (validation.value.store !== false) {
       const responseObject = buildResponsesResponse(
-        validation.value,
+        routedValidation,
         responseId,
         createdAt,
         result.completion,
@@ -3168,7 +3370,7 @@ export async function handleOpenAIResponsesCreate(
   }
 
   const responseObject = buildResponsesResponse(
-    validation.value,
+    routedValidation,
     responseId,
     createdAt,
     result.completion,
@@ -3189,7 +3391,11 @@ export async function handleOpenAIResponsesCreate(
   const ttfbMs = result.completion.firstByteMs ?? totalMs;
   const rotatorHeaders = buildRotatorResponseHeaders({
     accountLabel: result.context?.label,
-    model: validation.value.model,
+    model: autoRequested ? result.context?.selectedModel ?? routedValidation.model : requestedModel,
+    requestedModel: result.context?.requestedModel,
+    selectedProvider: result.context?.providerId,
+    modelSelection: result.context?.selectionMode,
+    selectionConfidence: result.context?.selectionConfidence,
     latencyMs: totalMs,
     ttfbMs,
     inputTokens: result.completion.inputTokens,
@@ -3301,34 +3507,58 @@ export async function handleAnthropicMessages(
       },
     });
 
-  const auth = await authenticateVirtualKey(req, validation.value.model);
+  const requestedModel = validation.value.model;
+  const autoRequested = isAutoModel(requestedModel);
+  const auth = await authenticateVirtualKey(req, autoRequested ? undefined : requestedModel);
   if (!auth.authenticated) {
     sendAuthErrorResponse(res, auth);
     return;
   }
   const apiKeyHash = auth.key?.tokenHash || (auth.rawKey ? hashKey(auth.rawKey) : null);
 
+  const autoSelection = autoRequested
+    ? await resolveAutoModel(rotator, "anthropic", validation.value)
+    : null;
+  if (autoRequested && !autoSelection) {
+    return writeJson(res, 503, {
+      type: "error",
+      error: { type: "overloaded_error", message: "No compatible model is currently available" },
+    });
+  }
+  if (autoSelection && !authorizeResolvedAutoModel(res, auth, autoSelection.model)) return;
+  const routedValidation = autoSelection
+    ? { ...validation.value, model: autoSelection.model }
+    : validation.value;
+
   const compMode = parseCompressionMode(
     req.headers["x-rotator-compression"],
     rotator?.getConfig?.()?.compressionMode,
   );
   const compRes = applyPromptCompression(
-    validation.value.messages as ChatMessage[],
+    routedValidation.messages as ChatMessage[],
     compMode,
-    { model: validation.value.model },
+    { model: routedValidation.model },
   );
   const anthropicReq = compRes.stats
     ? {
-        ...validation.value,
-        messages: compRes.messages as typeof validation.value.messages,
+        ...routedValidation,
+        messages: compRes.messages as typeof routedValidation.messages,
       }
-    : validation.value;
+    : routedValidation;
 
   const started = Date.now();
-  const streamMode = validation.value.stream ? "anthropic" : "none";
-  const bodyToForward: RequestBody = isOpenCodeZenModel(anthropicReq.model)
+  const streamMode = routedValidation.stream ? "anthropic" : "none";
+  const bodyToForward: RequestBody = isOpenCodeZenModel(anthropicReq.model) || autoSelection?.providerId === OPENCODE_ZEN_PROVIDER_ID
     ? { project: "", model: anthropicReq.model, request: anthropicToOpenAIChatRequest(anthropicReq), requestType: "anthropic" }
-    : (rotator?.getOllamaModels?.().includes(anthropicReq.model) ? anthropicToOllamaBody(anthropicReq) : anthropicToAntigravityBody(anthropicReq));
+    : (autoSelection?.providerId === "ollama" || rotator?.getOllamaModels?.().includes(anthropicReq.model)
+      ? anthropicToOllamaBody(anthropicReq)
+      : anthropicToAntigravityBody(anthropicReq));
+  if (autoSelection) {
+    bodyToForward.displayModel = requestedModel;
+    bodyToForward.providerId = autoSelection.providerId;
+    bodyToForward.selectionMode = autoSelection.mode;
+    bodyToForward.selectionConfidence = autoSelection.confidence;
+  }
   const result = await completeViaRotator(
     req,
     res,
@@ -3395,7 +3625,11 @@ export async function handleAnthropicMessages(
   const ttfbMs = result.completion.firstByteMs ?? totalMs;
   const rotatorHeaders = buildRotatorResponseHeaders({
     accountLabel: result.context?.label,
-    model: validation.value.model,
+    model: autoRequested ? result.context?.selectedModel ?? routedValidation.model : requestedModel,
+    requestedModel: result.context?.requestedModel,
+    selectedProvider: result.context?.providerId,
+    modelSelection: result.context?.selectionMode,
+    selectionConfidence: result.context?.selectionConfidence,
     latencyMs: totalMs,
     ttfbMs,
     inputTokens: result.completion.inputTokens,
@@ -3409,7 +3643,7 @@ export async function handleAnthropicMessages(
     id: `msg_${started.toString(36)}`,
     type: "message",
     role: "assistant",
-    model: validation.value.model,
+    model: autoRequested ? result.context?.selectedModel ?? routedValidation.model : requestedModel,
     content: contentBlocks,
     stop_reason: stopReason,
     stop_sequence: null,

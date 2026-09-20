@@ -28,6 +28,10 @@ export interface CompressionHeaderOptions {
 export interface RotatorResponseHeaderOptions {
   accountLabel?: string;
   model?: string;
+  requestedModel?: string;
+  selectedProvider?: string;
+  modelSelection?: "typesafe" | "deterministic" | "disabled";
+  selectionConfidence?: number;
   latencyMs?: number;
   ttfbMs?: number;
   inputTokens?: number;
@@ -60,6 +64,18 @@ export function buildRotatorResponseHeaders(
   }
   if (opts.model) {
     headers["X-Rotator-Model"] = opts.model;
+  }
+  if (opts.requestedModel && opts.requestedModel !== opts.model) {
+    headers["X-Rotator-Requested-Model"] = opts.requestedModel;
+  }
+  if (opts.selectedProvider) {
+    headers["X-Rotator-Selected-Provider"] = opts.selectedProvider;
+  }
+  if (opts.modelSelection) {
+    headers["X-Rotator-Model-Selection"] = opts.modelSelection;
+  }
+  if (opts.selectionConfidence !== undefined && Number.isFinite(opts.selectionConfidence)) {
+    headers["X-Rotator-Selection-Confidence"] = opts.selectionConfidence.toFixed(3);
   }
   if (opts.latencyMs !== undefined && opts.latencyMs >= 0) {
     headers["X-Rotator-Latency-Ms"] = String(Math.round(opts.latencyMs));

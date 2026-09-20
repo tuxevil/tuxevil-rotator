@@ -37,6 +37,10 @@ export interface CodexCompatOptions {
   apiKeyHash?: string | null;
   requesterIp?: string | null;
   rawRequest?: unknown;
+  providerId?: string;
+  requestedModel?: string;
+  selectionMode?: "typesafe" | "deterministic" | "disabled";
+  selectionConfidence?: number;
 }
 
 function recordCodexTokenUsage(
@@ -357,7 +361,7 @@ function codexResponseJson(
   };
 }
 
-function upstreamHeaders(response: Response, context: { account?: { healthScore: number }; requestStartMs: number; label: string; retries: number }, model: string): Record<string, string> {
+function upstreamHeaders(response: Response, context: RotationAttemptContext, model: string): Record<string, string> {
   const headers: Record<string, string> = {};
   response.headers.forEach((value, key) => {
     if (key !== "connection" && key !== "transfer-encoding" && key !== "content-length") headers[key] = value;
@@ -365,6 +369,10 @@ function upstreamHeaders(response: Response, context: { account?: { healthScore:
   Object.assign(headers, buildRotatorResponseHeaders({
     accountLabel: context.label,
     model,
+    requestedModel: context.requestedModel,
+    selectedProvider: context.providerId,
+    modelSelection: context.selectionMode,
+    selectionConfidence: context.selectionConfidence,
     ttfbMs: Date.now() - context.requestStartMs,
     healthScore: context.account?.healthScore,
     retries: context.retries,
@@ -377,7 +385,7 @@ async function pipeNativeResponses(
   response: Response,
   req: IncomingMessage,
   res: ServerResponse,
-  context: { account?: { healthScore: number }; requestStartMs: number; label: string; retries: number },
+  context: RotationAttemptContext,
   model: string,
 ): Promise<CompatCompletion> {
   res.writeHead(response.status, upstreamHeaders(response, context, model));
@@ -435,7 +443,7 @@ async function pipeCodexAsChat(
   req: IncomingMessage,
   res: ServerResponse,
   model: string,
-  context: { account?: { healthScore: number }; requestStartMs: number; label: string; retries: number },
+  context: RotationAttemptContext,
 ): Promise<CompatCompletion> {
   res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive", ...upstreamHeaders(response, context, model) });
   const id = `chatcmpl-${Date.now().toString(36)}`;
@@ -520,7 +528,15 @@ export async function serveCodexResponses(
   request: OpenAIResponsesRequest,
   options?: CodexCompatOptions,
 ): Promise<void> {
-  const body: RequestBody = { project: "", model: request.model, request: buildCodexPayload({ project: "", model: request.model, request }) };
+  const body: RequestBody = {
+    project: "",
+    model: request.model,
+    request: buildCodexPayload({ project: "", model: request.model, request }),
+    ...(options?.providerId ? { providerId: options.providerId } : {}),
+    ...(options?.requestedModel ? { displayModel: options.requestedModel } : {}),
+    ...(options?.selectionMode ? { selectionMode: options.selectionMode } : {}),
+    ...(options?.selectionConfidence !== undefined ? { selectionConfidence: options.selectionConfidence } : {}),
+  };
   const controller = new AbortController();
   const abort = (): void => controller.abort();
   req.once("aborted", abort);
@@ -567,7 +583,15 @@ export async function serveCodexChat(
   options?: CodexCompatOptions,
 ): Promise<void> {
   const codexRequest = chatToCodexResponsesRequest(request);
-  const body: RequestBody = { project: "", model: request.model, request: codexRequest };
+  const body: RequestBody = {
+    project: "",
+    model: request.model,
+    request: codexRequest,
+    ...(options?.providerId ? { providerId: options.providerId } : {}),
+    ...(options?.requestedModel ? { displayModel: options.requestedModel } : {}),
+    ...(options?.selectionMode ? { selectionMode: options.selectionMode } : {}),
+    ...(options?.selectionConfidence !== undefined ? { selectionConfidence: options.selectionConfidence } : {}),
+  };
   const controller = new AbortController();
   const abort = (): void => controller.abort();
   req.once("aborted", abort);

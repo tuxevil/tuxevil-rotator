@@ -146,6 +146,10 @@ The main configuration file. Created automatically by the `login` command, and e
   "idempotencyWindowMs": 2000,
   "streamRecoveryMaxRetries": 2,
   "compressionMode": "off",
+  "typesafeRouting": {
+    "enabled": true,
+    "apiKey": "ts_..."
+  },
   "accounts": [
     {
       "email": "user@gmail.com",
@@ -190,6 +194,40 @@ The main configuration file. Created automatically by the `login` command, and e
 | `idempotencyWindowMs` | `2000` | Retention window for completed idempotent request results |
 | `streamRecoveryMaxRetries` | `2` | Maximum account rotations for upstream failures before the response is flushed |
 | `compressionMode` | `off` | Prompt compression mode: `off`, `lite`, `rtk`, or `rtk+lite`. Can be overridden by the `X-Rotator-Compression` request header |
+| `typesafeRouting` | absent | Optional Jev semantic router. When enabled, `model: "auto"` selects among currently routable provider/model candidates |
+
+### TypeSafe Jev model selection
+
+`model: "auto"` is an opt-in alias for the OpenAI Chat/Responses, Anthropic
+Messages, and Gemini compatibility endpoints. The rotator builds a fresh
+candidate list from active providers and its own quota, cooldown, circuit,
+concurrency, and credential checks. Jev receives bounded request metadata and
+a text excerpt only to rank those candidates; it does not choose accounts or
+write routing state.
+
+Configure the provider token in `accounts.json` (it is encrypted at rest with
+the same `TUXEVIL_ROTATOR_ENCRYPTION_KEY`) or keep it outside the config with
+`TYPESAFE_API_KEY`:
+
+```json
+{
+  "typesafeRouting": {
+    "enabled": true,
+    "apiKey": "ts_...",
+    "model": "jev-latest",
+    "timeoutMs": 3000,
+    "minConfidence": 0.45,
+    "maxCandidates": 32,
+    "maxExcerptChars": 12000
+  }
+}
+```
+
+If Jev is unavailable, times out, returns low confidence, or selects no
+candidate, routing fails open to the best deterministic operational candidate.
+If no candidate is routable, the request returns an unavailable response. The
+API key is never returned by the dashboard/export endpoints; those surfaces
+show `[configured]`.
 
 Existing configuration files keep explicit concurrency values. To enable the
 five-requests-per-account pool on an installation that already sets either

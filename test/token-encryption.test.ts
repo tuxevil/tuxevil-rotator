@@ -5,12 +5,16 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import {
   decryptAccountsInConfig,
+  decryptTypeSafeRoutingInConfig,
   decryptRefreshToken,
   deriveKey,
   encryptAccountsInConfig,
+  encryptTypeSafeRoutingInConfig,
   encryptRefreshToken,
   getEncryptionKey,
   isEncryptedToken,
+  isRedactedSecret,
+  redactTypeSafeRoutingInConfig,
 } from "../src/token-encryption.js";
 import type { Config } from "../src/types.js";
 import { initDb, closeDb, getCachedConfig, setCachedConfig } from "../src/db-store.js";
@@ -88,6 +92,33 @@ describe("token encryption", () => {
     const enc2 = encryptRefreshToken(enc1, secret);
 
     assert.equal(enc1, enc2);
+  });
+
+  it("encrypts and redacts the optional TypeSafe API key", () => {
+    const config: Config = {
+      ...getDefaultConfig(),
+      typesafeRouting: { enabled: true, apiKey: "typesafe-secret" },
+    };
+    const encrypted = encryptTypeSafeRoutingInConfig(config, "config-key");
+    assert.ok(isEncryptedToken(encrypted.typesafeRouting?.apiKey ?? ""));
+    assert.notEqual(encrypted.typesafeRouting?.apiKey, "typesafe-secret");
+
+    const redacted = redactTypeSafeRoutingInConfig(config);
+    assert.equal(redacted.typesafeRouting?.apiKey, "[configured]");
+    assert.equal(isRedactedSecret(redacted.typesafeRouting?.apiKey), true);
+    assert.equal(config.typesafeRouting?.apiKey, "typesafe-secret");
+
+    const restored = decryptTypeSafeRoutingInConfig(encrypted, "config-key");
+    assert.equal(restored.migrated, false);
+    assert.equal(restored.config.typesafeRouting?.apiKey, "typesafe-secret");
+  });
+
+  it("refuses to persist a new TypeSafe API key without encryption", () => {
+    const config: Config = {
+      ...getDefaultConfig(),
+      typesafeRouting: { enabled: true, apiKey: "typesafe-secret" },
+    };
+    assert.throws(() => encryptTypeSafeRoutingInConfig(config), /ENCRYPTION_KEY/);
   });
 
   it("throws when decrypting with wrong passphrase", () => {

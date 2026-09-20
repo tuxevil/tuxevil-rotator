@@ -103,8 +103,12 @@ export function providerAdapterForModel(
   account: AccountRuntime,
   model: string | undefined,
   rotator?: { getOllamaModels?: () => string[]; getCodexModels?: () => string[] },
+  providerHint?: string,
 ): ProviderAdapter {
   const creds = account.config.credentials ?? [];
+  if (providerHint && isKnownProvider(providerHint)) {
+    return getProviderAdapter(providerHint);
+  }
   if (model) {
     const context = {
       ollamaModels: new Set(rotator?.getOllamaModels?.() ?? []),
@@ -134,11 +138,11 @@ export function providerAdapterForModel(
     : fallback;
 }
 
-function routingModelKey(rotator: AccountRotator, model: string): string {
+function routingModelKey(rotator: AccountRotator, model: string, providerId?: string): string {
   const resolver = (rotator as unknown as {
-    resolveQuotaModelKeyForDisplay?: (value: string) => string | null;
+    resolveQuotaModelKeyForDisplay?: (value: string, provider?: string) => string | null;
   }).resolveQuotaModelKeyForDisplay;
-  return resolver?.call(rotator, model) ?? resolveQuotaModelKey(model) ?? model;
+  return resolver?.call(rotator, model, providerId) ?? resolveQuotaModelKey(model) ?? model;
 }
 
 function observedModelKey(
@@ -235,6 +239,9 @@ export interface RequestBody {
   userAgent?: string;
   requestId?: string;
   displayModel?: string;
+  providerId?: string;
+  selectionMode?: "typesafe" | "deterministic" | "disabled";
+  selectionConfidence?: number;
   [key: string]: unknown;
 }
 
@@ -275,6 +282,11 @@ export interface RotationAttemptContext {
   requestStartMs: number;
   endpoint: string;
   retries: number;
+  providerId?: string;
+  requestedModel?: string;
+  selectedModel?: string;
+  selectionMode?: "typesafe" | "deterministic" | "disabled";
+  selectionConfidence?: number;
 }
 
 export type RotationOutcome<T> =
@@ -1197,7 +1209,7 @@ export async function withRotation<T>(
     context?: RotationAttemptContext,
   ): RotationOutcome<T> => {
     log(`[${model}] No healthy account available: ${reason}`, rotator, "warn");
-    const retryAfterMs = rotator.getRetryAfterMs(model);
+    const retryAfterMs = rotator.getRetryAfterMs(model, body.providerId);
     const contextFields = context
       ? { context, totalMs: Date.now() - context.requestStartMs }
       : {};
@@ -1223,7 +1235,7 @@ export async function withRotation<T>(
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const admissionStartedMs = Date.now();
-    const account = await rotator.getActiveAccount(model, signal);
+    const account = await rotator.getActiveAccount(model, signal, body.providerId);
     if (!account) {
       if (signal?.aborted) {
         return { ok: false, status: 499, errorText: "Client closed request" };
@@ -1232,7 +1244,7 @@ export async function withRotation<T>(
     }
 
     const label = account.config.label || account.config.email;
-    const modelKey = routingModelKey(rotator, model);
+    const modelKey = routingModelKey(rotator, model, body.providerId);
     const displayModelKey = observedModelKey(
       rotator,
       body.displayModel || model,
@@ -1249,7 +1261,7 @@ export async function withRotation<T>(
     };
     const rotateAndRelease = async (): Promise<AccountRuntime | null> => {
       releaseCurrentAccount();
-      const nextAccount = await rotator.rotateToNext(model, account);
+      const nextAccount = await rotator.rotateToNext(model, account, body.providerId);
       return nextAccount;
     };
     const logRequestEnd = (status: string | number, extra = ""): void => {
@@ -1297,6 +1309,7 @@ export async function withRotation<T>(
         account,
         model,
         rotator,
+        body.providerId,
       );
       // A parent account may carry Google + Codex credentials; refresh the
       // selected provider, never merely the account's primary provider.
@@ -1317,6 +1330,11 @@ export async function withRotation<T>(
         requestStartMs,
         endpoint,
         retries: attempt,
+        providerId: provider.id,
+        requestedModel: body.displayModel || model,
+        selectedModel: model,
+        selectionMode: body.selectionMode,
+        selectionConfidence: body.selectionConfidence,
       };
 
       const action = await classifyUpstreamResponse(
@@ -1349,7 +1367,7 @@ export async function withRotation<T>(
 
       // success
       const result = await onSuccess(response, context);
-      const shouldRotate = rotator.recordRequest(account, model);
+      const shouldRotate = rotator.recordRequest(account, model, body.providerId);
       const inTokens =
         result && typeof result === "object" && "inputTokens" in result
           ? (result as Record<string, unknown>).inputTokens
@@ -1367,7 +1385,7 @@ export async function withRotation<T>(
         inTokens || outTokens ? ` inTokens=${inTokens} outTokens=${outTokens}` : "";
       logRequestEnd(response.status, `endpoint=${endpoint}${ttfbInfo}${tokensInfo}`);
       if (shouldRotate) {
-        await rotator.rotateToNext(model, account);
+        await rotator.rotateToNext(model, account, body.providerId);
       }
       return { ok: true, result, endpoint, context };
     } catch (err) {

@@ -58,6 +58,18 @@ export function applyConfigDefaults(config: Config): Config {
 		modelSpecs: config.modelSpecs,
 		modelAliases: config.modelAliases,
 		effortRouting: config.effortRouting,
+		typesafeRouting: config.typesafeRouting
+			? {
+					enabled: config.typesafeRouting.enabled ?? Boolean(config.typesafeRouting.apiKey),
+					apiKey: config.typesafeRouting.apiKey,
+					model: config.typesafeRouting.model ?? "jev-latest",
+					baseURL: config.typesafeRouting.baseURL,
+					timeoutMs: config.typesafeRouting.timeoutMs ?? 3_000,
+					minConfidence: config.typesafeRouting.minConfidence ?? 0.45,
+					maxCandidates: config.typesafeRouting.maxCandidates ?? 32,
+					maxExcerptChars: config.typesafeRouting.maxExcerptChars ?? 12_000,
+				}
+				: undefined,
 		accounts: config.accounts ? config.accounts.map((account) => ({
 			...normalizeAccountConfig(account),
 			tier: account.tier || "unknown",

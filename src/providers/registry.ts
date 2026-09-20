@@ -63,8 +63,19 @@ export function isKnownProvider(providerId: string): boolean {
 
 export function findProviderForModel(
   model: string,
-  context?: { ollamaModels?: Set<string>; codexModels?: Set<string> },
+  context?: {
+    ollamaModels?: Set<string>;
+    codexModels?: Set<string>;
+    providerId?: string;
+  },
 ): ProviderAdapter | null {
+  if (context?.providerId) {
+    try {
+      return getProviderAdapter(context.providerId);
+    } catch {
+      return null;
+    }
+  }
   // Check non-default explicit providers first to prevent Google fallback overlap
   for (const adapter of [opencodeZenAdapter, openaiCodexAdapter, ollamaAdapter, googleAntigravityAdapter]) {
     if (adapter.ownsModel?.(model, context)) {

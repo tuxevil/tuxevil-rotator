@@ -304,6 +304,40 @@ export function validateConfig(value: unknown): ValidationResult<Config> {
 			}
 		}
 	}
+	if (value.typesafeRouting !== undefined) {
+		if (!isRecord(value.typesafeRouting)) {
+			errors.push("config.typesafeRouting must be an object when provided");
+		} else {
+			const routing = value.typesafeRouting;
+			if (routing.enabled !== undefined && typeof routing.enabled !== "boolean") {
+				errors.push("config.typesafeRouting.enabled must be a boolean");
+			}
+			if (routing.apiKey !== undefined && !isNonEmptyString(routing.apiKey)) {
+				errors.push("config.typesafeRouting.apiKey must be a non-empty string when provided");
+			}
+			if (routing.model !== undefined && !isNonEmptyString(routing.model)) {
+				errors.push("config.typesafeRouting.model must be a non-empty string when provided");
+			}
+			if (routing.baseURL !== undefined && !isNonEmptyString(routing.baseURL)) {
+				errors.push("config.typesafeRouting.baseURL must be a non-empty string when provided");
+			}
+			if (routing.timeoutMs !== undefined && !isPositiveNumber(routing.timeoutMs)) {
+				errors.push("config.typesafeRouting.timeoutMs must be a positive number");
+			}
+			if (routing.minConfidence !== undefined &&
+				(typeof routing.minConfidence !== "number" || !Number.isFinite(routing.minConfidence) || routing.minConfidence < 0 || routing.minConfidence > 1)) {
+				errors.push("config.typesafeRouting.minConfidence must be between 0 and 1");
+			}
+			if (routing.maxCandidates !== undefined &&
+				(!isNonNegativeInteger(routing.maxCandidates) || routing.maxCandidates < 1 || routing.maxCandidates > 128)) {
+				errors.push("config.typesafeRouting.maxCandidates must be an integer between 1 and 128");
+			}
+			if (routing.maxExcerptChars !== undefined &&
+				(!isNonNegativeInteger(routing.maxExcerptChars) || routing.maxExcerptChars < 256 || routing.maxExcerptChars > 50_000)) {
+				errors.push("config.typesafeRouting.maxExcerptChars must be an integer between 256 and 50000");
+			}
+		}
+	}
 
 	return errors.length > 0 ? fail(errors) : ok(value as unknown as Config);
 }
