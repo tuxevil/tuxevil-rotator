@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-09-20
+
+### Added
+
+- **Optional TypeSafe Jev model selection**: `model: "auto"` can now semantically select a currently routable model across active providers for OpenAI Chat/Responses, Anthropic Messages, and Gemini compatibility routes. The bounded candidate shortlist, encrypted `/login-cli` configuration, and deterministic fail-open fallback keep the feature opt-in and operationally safe when Jev is unavailable or uncertain.
+
 ### Fixed
 
 - **Single-account transport retry recovery**: Transient upstream transport failures now retry the current account with cancellable jittered exponential backoff when no replacement account is available, preserving recovery for single-account deployments and exhausted pools across native, compatibility, and Code Assist routes ([#35](https://github.com/tuxevil/tuxevil-rotator/pull/35) by [@toRolex](https://github.com/toRolex)).
