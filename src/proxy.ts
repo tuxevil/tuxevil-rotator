@@ -78,6 +78,7 @@ import {
 import { requireAdmin } from "./admin-auth.js";
 import { PayloadTooLargeError, readLimitedBody } from "./body-limit.js";
 import { validateConfig, validateProxyRequestBody } from "./validators.js";
+import { calculateBackoffMs } from "./fetch-with-retry.js";
 import { logger } from "./logger.js";
 import {
   trackFeature,
@@ -1441,19 +1442,18 @@ export async function withRotation<T>(
       }
       const nextAccount = await rotateAndRelease();
       if (!nextAccount) {
-        if (isFetchTransportError(err) && attempt < maxRetries) {
-          const backoffMs = 1000 * (attempt + 1);
-          log(
-            `[${requestId}] Retrying after transport error on current account ${label} in ${backoffMs}ms (attempt ${attempt + 1}/${maxRetries})`,
-            rotator,
-            "warn",
-          );
-          await sleep(backoffMs, signal);
-          continue;
-        }
-        return sendNoAccountsAvailable(
-          `no replacement account remained after ${label} request error`,
+        const waited = await sleepTransportRetry(
+          requestId,
+          label,
+          attempt,
+          maxRetries,
+          rotator,
+          signal,
         );
+        if (!waited) {
+          return { ok: false, status: 499, errorText: "Client closed request" };
+        }
+        continue;
       }
       continue;
     } finally {
@@ -1471,6 +1471,29 @@ function log(
 ): void {
   proxyLogger.log(level, msg);
   rotator?.recordProxyEvent(msg, level);
+}
+
+async function sleepTransportRetry(
+  requestId: string,
+  label: string,
+  attempt: number,
+  maxRetries: number,
+  rotator?: AccountRotator,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (signal?.aborted) return false;
+  const backoffMs = calculateBackoffMs(attempt, 500, 5_000);
+  log(
+    `[${requestId}] Retrying after transport error on current account ${label} in ${backoffMs}ms (attempt ${attempt + 1}/${maxRetries})`,
+    rotator,
+    "warn",
+  );
+  try {
+    await sleep(backoffMs, signal);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isGeminiGenerateContentPath(pathname: string): boolean {
@@ -1939,19 +1962,16 @@ async function handleProxyRequest(
       }
       const nextAccount = await rotateAndRelease();
       if (!nextAccount) {
-        if (isFetchTransportError(err) && attempt < maxRetries) {
-          const backoffMs = 1000 * (attempt + 1);
-          proxyLog(
-            `[${requestId}] Retrying after transport error on current account ${label} in ${backoffMs}ms (attempt ${attempt + 1}/${maxRetries})`,
-            "warn",
-          );
-          await sleep(backoffMs, clientController.signal);
-          continue;
-        }
-        sendNoAccountsAvailable(
-          `no replacement account remained after ${label} request error`,
+        const waited = await sleepTransportRetry(
+          requestId,
+          label,
+          attempt,
+          maxRetries,
+          rotator,
+          clientController.signal,
         );
-        return;
+        if (!waited) return;
+        continue;
       }
       continue;
     } finally {
@@ -2075,22 +2095,19 @@ async function handleCodeAssistPassthrough(
       }
       releaseCurrentAccount();
       const nextAccount = await rotator.rotateToNext(CODE_ASSIST_ROUTING_MODEL, account);
-      if (nextAccount) {
-        continue;
-      }
-      if (isFetchTransportError(err) && attempt < maxRetries) {
-        const backoffMs = 1000 * (attempt + 1);
-        log(
-          `[code-assist] Retrying after transport error on current account in ${backoffMs}ms (attempt ${attempt + 1}/${maxRetries})`,
+      if (!nextAccount) {
+        const waited = await sleepTransportRetry(
+          action,
+          account.email,
+          attempt,
+          maxRetries,
           rotator,
-          "warn",
+          clientController.signal,
         );
-        await sleep(backoffMs, clientController.signal);
+        if (!waited) return;
         continue;
       }
-      res.writeHead(503, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "No replacement Google account available" }));
-      return;
+      continue;
     } finally {
       releaseCurrentAccount();
     }
