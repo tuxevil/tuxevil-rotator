@@ -1441,6 +1441,16 @@ export async function withRotation<T>(
       }
       const nextAccount = await rotateAndRelease();
       if (!nextAccount) {
+        if (isFetchTransportError(err) && attempt < maxRetries) {
+          const backoffMs = 1000 * (attempt + 1);
+          log(
+            `[${requestId}] Retrying after transport error on current account ${label} in ${backoffMs}ms (attempt ${attempt + 1}/${maxRetries})`,
+            rotator,
+            "warn",
+          );
+          await sleep(backoffMs, signal);
+          continue;
+        }
         return sendNoAccountsAvailable(
           `no replacement account remained after ${label} request error`,
         );
@@ -1929,6 +1939,15 @@ async function handleProxyRequest(
       }
       const nextAccount = await rotateAndRelease();
       if (!nextAccount) {
+        if (isFetchTransportError(err) && attempt < maxRetries) {
+          const backoffMs = 1000 * (attempt + 1);
+          proxyLog(
+            `[${requestId}] Retrying after transport error on current account ${label} in ${backoffMs}ms (attempt ${attempt + 1}/${maxRetries})`,
+            "warn",
+          );
+          await sleep(backoffMs, clientController.signal);
+          continue;
+        }
         sendNoAccountsAvailable(
           `no replacement account remained after ${label} request error`,
         );
@@ -2057,6 +2076,16 @@ async function handleCodeAssistPassthrough(
       releaseCurrentAccount();
       const nextAccount = await rotator.rotateToNext(CODE_ASSIST_ROUTING_MODEL, account);
       if (nextAccount) {
+        continue;
+      }
+      if (isFetchTransportError(err) && attempt < maxRetries) {
+        const backoffMs = 1000 * (attempt + 1);
+        log(
+          `[code-assist] Retrying after transport error on current account in ${backoffMs}ms (attempt ${attempt + 1}/${maxRetries})`,
+          rotator,
+          "warn",
+        );
+        await sleep(backoffMs, clientController.signal);
         continue;
       }
       res.writeHead(503, { "Content-Type": "application/json" });
