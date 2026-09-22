@@ -13,20 +13,22 @@ export interface CodexModel {
   source: "allowlist" | "discovered";
 }
 
-// Only models validated by the initial unauthenticated/public spike are in the
-// safe base list. Authenticated discovery can add provider-owned GPT-5 IDs.
+// The base list contains OpenAI models published in the Codex model catalog.
+// Authenticated discovery can add provider-owned GPT-5 and GPT-6 IDs.
 // The Codex /models endpoint can expose models from other ChatGPT-backed
 // providers (for example Claude), so model IDs alone must be filtered before
 // they influence routing.
-// Official context window for the GPT-5.6 family per
-// https://platform.openai.com/docs/models (gpt-5.6-sol / gpt-5.6-terra / gpt-5.6-luna
-// each report 1.05M context / 128K max output).
+// Official context window for GPT-5.6 and GPT-6 Astra, Sol, and Luna per their
+// OpenAI model pages (1.05M context / 128K max output).
 const CODEX_CONTEXT_WINDOW = 1_050_000;
 // Hard cap to defend against `/models` upstream reporting absurd values for
 // discovered ids. 2M is comfortably above the published 1.05M baseline.
 const CODEX_DISCOVERED_MAX_CONTEXT_WINDOW = 2_000_000;
-const CODEX_DISCOVERED_ID_PATTERN = /^gpt-5(?:\.\d+)?(?:-[a-z0-9]+)+$/i;
+const CODEX_DISCOVERED_ID_PATTERN = /^gpt-(?:5(?:\.\d+)?|6)(?:-[a-z0-9]+)+$/i;
 export const CODEX_BASE_MODELS: readonly CodexModel[] = [
+  { id: "gpt-6-astra", contextWindow: CODEX_CONTEXT_WINDOW, reasoning: true, multimodal: true, tools: true, source: "allowlist" },
+  { id: "gpt-6-sol", contextWindow: CODEX_CONTEXT_WINDOW, reasoning: true, multimodal: true, tools: true, source: "allowlist" },
+  { id: "gpt-6-luna", contextWindow: CODEX_CONTEXT_WINDOW, reasoning: true, multimodal: true, tools: true, source: "allowlist" },
   { id: "gpt-5.6-sol", contextWindow: CODEX_CONTEXT_WINDOW, reasoning: true, multimodal: true, tools: true, source: "allowlist" },
   { id: "gpt-5.6-terra", contextWindow: CODEX_CONTEXT_WINDOW, reasoning: true, multimodal: true, tools: true, source: "allowlist" },
   { id: "gpt-5.6-luna", contextWindow: CODEX_CONTEXT_WINDOW, reasoning: true, multimodal: true, tools: true, source: "allowlist" },

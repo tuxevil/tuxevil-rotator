@@ -26,6 +26,9 @@ curl http://localhost:51200/v1/models
 | `gpt-5.6-terra` | GPT-5.6 | `openai-codex` | Safe base catalog, via Codex OAuth |
 | `gpt-5.6-luna` | GPT-5.6 | `openai-codex` | Safe base catalog, via Codex OAuth |
 | `gpt-5.6-sol` | GPT-5.6 | `openai-codex` | Reserved for paid Codex plans; upstream may reject on free-tier accounts |
+| `gpt-6-astra` | GPT-6 | `openai-codex` | Current GPT-6 model, via Codex OAuth |
+| `gpt-6-sol` | GPT-6 | `openai-codex` | Current GPT-6 model, via Codex OAuth |
+| `gpt-6-luna` | GPT-6 | `openai-codex` | Current GPT-6 model, via Codex OAuth |
 | `big-pickle`, `mimo-v2.5-free`, `ling-3.0-flash-fin-free`, `nemotron-3-ultra-free`, `nemotron-3.5-lightning-free`, `muse-spark-1.3-contributor-free` | OpenCode Zen | `opencode-zen` | Free-tier models via OpenCode Zen API (`https://opencode.ai/zen/v1`); Muse Spark 1.3 uses `/responses` |
 | `gpt-oss:20b`, `gpt-oss:120b`, `gemma4:31b`, `kimi-k3`, `minimax-m3`, `deepseek-v4-pro`, ... | Ollama Cloud | `ollama` | Catalog fetched at startup from `https://ollama.com/api/tags` |
 

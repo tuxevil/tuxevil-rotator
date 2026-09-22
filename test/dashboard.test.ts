@@ -323,6 +323,9 @@ describe("dashboard", () => {
     assert.equal(gptOss20b, "#dcfce7");
 
     // Codex Pool (Yellow spectrum)
+    assert.equal(getModelColor("gpt-6-astra"), "#713f12");
+    assert.equal(getModelColor("gpt-6-sol"), "#a16207");
+    assert.equal(getModelColor("gpt-6-luna"), "#fde047");
     assert.equal(getModelColor("gpt-5.6-sol"), "#a16207");
     assert.equal(getModelColor("gpt-5.6-terra"), "#eab308");
     assert.equal(getModelColor("gpt-5.6-luna"), "#fde047");

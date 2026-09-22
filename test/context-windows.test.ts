@@ -99,8 +99,8 @@ describe("official context windows", () => {
 	});
 
 	describe("openai codex", () => {
-		it("uses 1.05M context for every allowlisted GPT-5.6 id", () => {
-			assert.equal(CODEX_BASE_MODELS.length, 3);
+		it("uses 1.05M context for GPT-6 and GPT-5.6 IDs", () => {
+			assert.equal(CODEX_BASE_MODELS.length, 6);
 			for (const model of CODEX_BASE_MODELS) {
 				assert.equal(model.contextWindow, 1_050_000);
 			}

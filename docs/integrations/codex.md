@@ -77,16 +77,27 @@ keeps upstream Responses events intact. `/v1/chat/completions` uses an explicit
 Chat ↔ Responses conversion for multimodal input, tools, reasoning, usage, and
 SSE chunks.
 
-The safe base catalog contains the Codex variants `gpt-5.6-terra` and
-`gpt-5.6-luna`. The ID `gpt-5.6-sol` is also recognised for routing and exposed
-on `GET /v1/models`, but it is reserved for paid Codex plans: ChatGPT OAuth
-returns an error for free-tier accounts and the rotator forwards that response
-verbatim instead of pretending the model is unavailable. Authenticated
-discovery against `${CODEX_BASE_URL}/models` can add additional IDs that match
-the safe pattern `^gpt-5(?:\.\d+)?(?:-[a-z0-9]+)+$` (so non-Codex models
-exposed by the same endpoint, e.g. Claude under ChatGPT, are not pulled into
-the Codex catalog). A discovery failure leaves the base catalog in place.
-Prices are not fabricated for subscription quota models.
+The safe base catalog includes the new `gpt-6-astra`, `gpt-6-sol`, and
+`gpt-6-luna` models and retains the existing `gpt-5.6-sol`, `gpt-5.6-terra`,
+and `gpt-5.6-luna` IDs. All base IDs
+are exposed on `GET /v1/models`; upstream errors are forwarded unchanged.
+The `gpt-5.6-sol` ID may return an error for accounts without access.
+Authenticated discovery against `${CODEX_BASE_URL}/models` can add more IDs
+that match `^gpt-(?:5(?:[.][0-9]+)?|6)(?:-[a-z0-9]+)+$`, filtering out other
+providers exposed by that endpoint. A discovery failure leaves the base catalog
+in place. Spend estimates use the published standard API rates per 1M text
+tokens for short-context requests:
+
+| Model | Input | Cached input | Output |
+| --- | ---: | ---: | ---: |
+| `gpt-6-astra` | $10.00 | $1.00 | $50.00 |
+| `gpt-6-sol` | $2.00 | $0.20 | $10.00 |
+| `gpt-6-luna` | $0.10 | $0.01 | $0.50 |
+
+The spend logger estimates from aggregate input/output usage; it does not apply
+cached-input discounts, long-context multipliers, or tool-call charges. These
+API-equivalent estimates do not represent Codex subscription quota billing.
+See the [OpenAI API pricing page](https://developers.openai.com/api/docs/pricing).
 
 `POST /v1/responses` supports the full Responses lifecycle:
 

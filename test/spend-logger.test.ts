@@ -19,6 +19,15 @@ test("calculateCost uses the official Codex GPT-5.6 rates", () => {
 	assert.equal(calculateCost("gpt-5.6-luna", 1_000_000, 1_000_000), 1.4);
 });
 
+test("calculateCost uses the official GPT-6 Astra rates", () => {
+	assert.equal(calculateCost("gpt-6-astra", 1_000_000, 1_000_000), 60);
+});
+
+test("calculateCost uses the official GPT-6 Sol and Luna rates", () => {
+	assert.equal(calculateCost("gpt-6-sol", 1_000_000, 1_000_000), 12);
+	assert.equal(calculateCost("gpt-6-luna", 1_000_000, 1_000_000), 0.6);
+});
+
 test("calculateCost uses the official Gemini 3.7 Flash tiered rates", () => {
 	// 1M input (0.75) + 1M output (3.75) = 4.50
 	assert.equal(

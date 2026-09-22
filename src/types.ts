@@ -913,9 +913,25 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
   },
   "gpt-oss-120b-medium": { inputPer1M: 2.0, outputPer1M: 10.0 },
 
-  // OpenAI Codex GPT-5.6 models — official OpenAI API pricing checked
-  // 2026-08-11. Token usage currently records aggregate input/output tokens;
-  // cache rates are retained for spend metadata but are not applied separately.
+  // OpenAI Codex API-equivalent standard rates, checked against
+  // https://developers.openai.com/api/docs/pricing on 2026-09-22.
+  // Spend logs use aggregate input/output tokens;
+  // cache rates are metadata and are not applied separately.
+  "gpt-6-astra": {
+    inputPer1M: 10.0,
+    outputPer1M: 50.0,
+    cachingPer1M: 1.0,
+  },
+  "gpt-6-sol": {
+    inputPer1M: 2.0,
+    outputPer1M: 10.0,
+    cachingPer1M: 0.2,
+  },
+  "gpt-6-luna": {
+    inputPer1M: 0.1,
+    outputPer1M: 0.5,
+    cachingPer1M: 0.01,
+  },
   "gpt-5.6-sol": {
     inputPer1M: 5.0,
     outputPer1M: 30.0,

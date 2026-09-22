@@ -1088,6 +1088,9 @@ var TOKEN_MODEL_COLORS = {
   "gemini-3-flash": "#93c5fd", // Gemini 3 Flash (Azul pastel claro)
 
   // Codex Pool (Amarillos) — de más caro a más barato
+  "gpt-6-astra": "#713f12", // GPT-6 Astra (ámbar oscuro)
+  "gpt-6-sol": "#a16207", // GPT-6 Sol
+  "gpt-6-luna": "#fde047", // GPT-6 Luna
   "gpt-5.6-sol": "#a16207", // GPT-5.6 Sol (Amarillo oscuro/marrón mostaza)
   "gpt-5.6-terra": "#eab308", // GPT-5.6 Terra (Amarillo vivo)
   "gpt-5.6-luna": "#fde047", // GPT-5.6 Luna (Amarillo pastel suave)
@@ -1133,6 +1136,9 @@ function getModelColor(model) {
   if (lower.indexOf("gemini") !== -1 || lower.indexOf("3-flash") !== -1) return "#93c5fd";
 
   // Codex pool (Amarillos)
+  if (lower.indexOf("gpt-6-astra") !== -1) return "#713f12";
+  if (lower.indexOf("gpt-6-sol") !== -1) return "#a16207";
+  if (lower.indexOf("gpt-6-luna") !== -1) return "#fde047";
   if (lower.indexOf("gpt-5.6-sol") !== -1) return "#a16207";
   if (lower.indexOf("gpt-5.6-terra") !== -1) return "#eab308";
   if (lower.indexOf("gpt-5.6-luna") !== -1) return "#fde047";
@@ -1182,7 +1188,10 @@ var MODEL_PRICING_CLIENT = {
   "gemini-3.8-flash-medium": { input: 0.75, output: 3.75 },
   "gemini-3.8-flash-high": { input: 0.75, output: 3.75 },
   "gpt-oss-120b-medium": { input: 2.0, output: 10.0 },
-  // OpenAI Codex GPT-5.6 models — mirrors MODEL_PRICING in types.ts.
+  // OpenAI Codex pricing — mirrors MODEL_PRICING in types.ts.
+  "gpt-6-astra": { input: 10.0, output: 50.0 },
+  "gpt-6-sol": { input: 2.0, output: 10.0 },
+  "gpt-6-luna": { input: 0.1, output: 0.5 },
   "gpt-5.6-sol": { input: 5.0, output: 30.0 },
   "gpt-5.6-terra": { input: 2.0, output: 12.0 },
   "gpt-5.6-luna": { input: 0.2, output: 1.2 },

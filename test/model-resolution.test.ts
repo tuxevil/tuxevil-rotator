@@ -98,6 +98,9 @@ describe("model resolution", () => {
 		assert.ok(MODEL_PRICING["gpt-5.6-sol"]);
 		assert.ok(MODEL_PRICING["gpt-5.6-terra"]);
 		assert.ok(MODEL_PRICING["gpt-5.6-luna"]);
+		assert.ok(MODEL_PRICING["gpt-6-astra"]);
+		assert.ok(MODEL_PRICING["gpt-6-sol"]);
+		assert.ok(MODEL_PRICING["gpt-6-luna"]);
 		assert.ok(MODEL_PRICING["big-pickle"]);
 		assert.ok(MODEL_PRICING["nemotron-3.5-lightning-free"]);
 		assert.ok(MODEL_PRICING["nemotron-3-ultra-free"]);
@@ -126,6 +129,27 @@ describe("model resolution", () => {
 			inputPer1M: 0.2,
 			outputPer1M: 1.2,
 			cachingPer1M: 0.02,
+		});
+	});
+
+	it("uses official GPT-6 Astra text-token pricing", () => {
+		assert.deepEqual(MODEL_PRICING["gpt-6-astra"], {
+			inputPer1M: 10.0,
+			outputPer1M: 50.0,
+			cachingPer1M: 1.0,
+		});
+	});
+
+	it("uses official GPT-6 Sol and Luna text-token pricing", () => {
+		assert.deepEqual(MODEL_PRICING["gpt-6-sol"], {
+			inputPer1M: 2.0,
+			outputPer1M: 10.0,
+			cachingPer1M: 0.2,
+		});
+		assert.deepEqual(MODEL_PRICING["gpt-6-luna"], {
+			inputPer1M: 0.1,
+			outputPer1M: 0.5,
+			cachingPer1M: 0.01,
 		});
 	});
 

@@ -132,7 +132,7 @@ never served by an Antigravity or Ollama account (and vice versa):
 |------|-------------|--------|------------|-----------------|-------------------------|
 | Google Antigravity | `google-antigravity` | Gemini, Claude, gpt-oss variants | `claude`, `gemini` | Yes (`projectId` + model) | Yes (per-account) |
 | Ollama Cloud | `ollama` | Ollama Cloud catalog from `/api/tags` | `monthly` | No (Ollama has no project concept) | Yes (per-account) |
-| OpenAI Codex | `openai-codex` | `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.6-sol` (paid plans only) | `openai-codex`, `openai-codex-spark` (when present) | **Disabled** — Codex has no `projectId` | Yes (per-account, 30 s–5 min from `Retry-After`) |
+| OpenAI Codex | `openai-codex` | GPT-6 (`gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`) and GPT-5.6 (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`; Sol may require a paid plan) | `openai-codex`, `openai-codex-spark` (when present) | **Disabled** — Codex has no `projectId` | Yes (per-account, 30 s–5 min from `Retry-After`) |
 
 Codex-specific behaviour worth remembering:
 

@@ -43,6 +43,9 @@ describe("model discovery", () => {
 
 		assert.ok(payload.data.some((model) => model.owned_by === "openai-codex"));
 		assert.ok(payload.data.some((model) => model.id === "gpt-5.6-sol" && model.owned_by === "openai-codex"));
+		for (const modelId of ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]) {
+			assert.ok(payload.data.some((model) => model.id === modelId && model.owned_by === "openai-codex"));
+		}
 		assert.ok(payload.data.some((model) => model.id === "gemma4:31b" && model.owned_by === "ollama"));
 	});
 

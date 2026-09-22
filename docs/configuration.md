@@ -92,11 +92,10 @@ isolated and runs in its own credential ring:
   multimodal input, tools, reasoning, usage, and SSE chunks. Codex streaming
   is the only path that emits a single SSE delta per upstream event.
 - `GET /v1/models` lists the Codex catalog (`owned_by: "openai-codex"`). The
-  safe base catalog contains `gpt-5.6-terra` and `gpt-5.6-luna`; `gpt-5.6-sol`
-  is also recognised but is reserved for paid Codex plans and may return an
-  upstream `4xx` on free-tier accounts. Authenticated discovery can add more
-  IDs that match the Codex pattern, but no cross-provider models exposed by
-  the same endpoint are pulled in.
+  safe base catalog includes `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, and the
+  GPT-5.6 IDs; `gpt-5.6-sol` may return an upstream `4xx` for accounts without
+  access. Authenticated discovery can add more GPT-5 or GPT-6 IDs, but no
+  cross-provider models exposed by the same endpoint are pulled in.
 
 Optional Codex environment variables (defaults from
 [`docs/integrations/codex.md`](integrations/codex.md)):

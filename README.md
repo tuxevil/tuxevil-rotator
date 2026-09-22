@@ -53,6 +53,7 @@ Originally built as a multi-account rotator for Google Antigravity. It now gener
 
 ## Current Model Update
 
+- **OpenAI Codex GPT-6 catalog**: Added GPT-6 Astra, Sol, and Luna to the Codex options while keeping GPT-5.6 Sol, Terra, and Luna available.
 - **Single-Account Transport Retry Recovery**: Transient upstream network failures now retry the current account with cancellable jittered exponential backoff when no alternate account is available, covering native proxy, compatibility, and Code Assist routes. ([PR #35](https://github.com/tuxevil/tuxevil-rotator/pull/35) by [@toRolex](https://github.com/toRolex))
 - **Cached Token Usage Propagation**: Google Antigravity cached prompt usage is preserved as `cachedContentTokenCount` for native Gemini responses and as cache-read details across OpenAI, Anthropic, and OpenCode Zen Responses compatibility routes. ([PR #34](https://github.com/tuxevil/tuxevil-rotator/pull/34) by [@toRolex](https://github.com/toRolex); follow-up compatibility fixes included in [v3.7.2](https://github.com/tuxevil/tuxevil-rotator/releases/tag/v3.7.2))
 - **OpenCode Zen catalog sync**: Added `big-pickle` and removed the retired `deepseek-v4-flash-free` and `hy3-free` entries; `muse-spark-1.3-contributor-free` is now routed through the Responses endpoint with full Chat, Responses, and Anthropic surface compatibility. ([v3.7.1](https://github.com/tuxevil/tuxevil-rotator/releases/tag/v3.7.1))

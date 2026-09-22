@@ -46,11 +46,21 @@ afterEach(() => {
 });
 
 describe("openai-codex OAuth", () => {
-  it("uses the current GPT-5.6 Codex catalog", () => {
+  it("includes GPT-6 models and keeps the GPT-5.6 Codex models", () => {
     assert.deepEqual(
       CODEX_BASE_MODELS.map((model) => model.id),
-      ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+      [
+        "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+      ],
     );
+    assert.equal(isCodexModel("gpt-6-astra"), true);
+    assert.equal(isCodexModel("gpt-6-sol"), true);
+    assert.equal(isCodexModel("gpt-6-luna"), true);
     assert.equal(isCodexModel("gpt-5.6-luna"), true);
     assert.equal(isCodexModel("gpt-5-codex"), false);
     assert.equal(isCodexModel("gpt-5.6-sol"), true);
@@ -91,12 +101,21 @@ describe("openai-codex OAuth", () => {
         tools: true,
         source: "discovered",
       },
+      {
+        id: "gpt-6-codex-preview",
+        contextWindow: 272_000,
+        reasoning: true,
+        multimodal: true,
+        tools: true,
+        source: "discovered",
+      },
     ]);
 
     assert.equal(isCodexModel("claude-sonnet-4-6"), false);
     assert.equal(isCodexModel("gpt-oss-120b-medium"), false);
     assert.equal(isCodexModel("gpt-5.6-nova"), true);
     assert.equal(isCodexModel("gpt-5.6-sol"), true);
+    assert.equal(isCodexModel("gpt-6-codex-preview"), true);
   });
 
   it("does not route non-Codex models from a contaminated rotator catalog", () => {

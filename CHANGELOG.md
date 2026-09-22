@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **OpenAI Codex GPT-6 catalog**: Added GPT-6 Astra, Sol, and Luna to the Codex model options, discovery filter, API catalog, dashboard, and spend estimates, alongside the existing GPT-5.6 models.
+
 ## [3.8.0] - 2026-09-20
 
 ### Added
