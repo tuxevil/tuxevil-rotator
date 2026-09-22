@@ -39,7 +39,7 @@ export interface CodexCompatOptions {
   rawRequest?: unknown;
   providerId?: string;
   requestedModel?: string;
-  selectionMode?: "typesafe" | "deterministic" | "disabled";
+  selectionMode?: "typesafe" | "deterministic" | "shadow" | "disabled";
   selectionConfidence?: number;
   selectionReason?: string;
 }

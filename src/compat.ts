@@ -204,7 +204,7 @@ async function resolveAutoModel(
 ): Promise<{
   model: string;
   providerId: string;
-  mode: "typesafe" | "deterministic";
+  mode: "typesafe" | "deterministic" | "shadow";
   confidence?: number;
   reason: string;
 } | null> {

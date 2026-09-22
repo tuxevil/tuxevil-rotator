@@ -134,6 +134,7 @@ describe("serveCliLogin", () => {
 		assert.match(state.body, /id="panel-typesafe"/);
 		assert.match(state.body, /TypeSafe API key/);
 		assert.match(state.body, /id="typesafeForm"/);
+		assert.match(state.body, /name="shadowMode"/);
 	});
 
 	it("shows configured status without rendering the TypeSafe API key", () => {
@@ -144,11 +145,13 @@ describe("serveCliLogin", () => {
 				enabled: true,
 				apiKey: "secret-typesafe-key",
 				model: "jev-preview",
+				shadowMode: true,
 			},
 		};
 		serveCliLogin(res, { getConfig: () => config });
 		assert.match(state.body, /A Jev key is already configured/);
 		assert.match(state.body, /value="jev-preview"/);
+		assert.match(state.body, /name="shadowMode" type="checkbox" checked/);
 		assert.doesNotMatch(state.body, /secret-typesafe-key/);
 	});
 
@@ -185,6 +188,7 @@ describe("handleCliLoginApi", () => {
 			apiKey: "fake-typesafe-key",
 			model: "jev-preview",
 			enabled: true,
+			shadowMode: true,
 		});
 		const { res, state } = mockRes();
 		await handleCliLoginApi(req, res, rotator as any);
@@ -192,6 +196,8 @@ describe("handleCliLoginApi", () => {
 		const result = JSON.parse(state.body) as Record<string, unknown>;
 		assert.equal(result.ok, true);
 		assert.equal(result.model, "jev-preview");
+		assert.equal(result.shadowMode, true);
+		assert.equal(saved?.typesafeRouting?.shadowMode, true);
 		assert.equal(saved?.typesafeRouting?.apiKey, "fake-typesafe-key");
 		assert.doesNotMatch(state.body, /fake-typesafe-key/);
 	});
@@ -203,6 +209,7 @@ describe("handleCliLoginApi", () => {
 				enabled: true,
 				apiKey: "existing-typesafe-key",
 				model: "jev-latest",
+				shadowMode: true,
 			},
 		};
 		let saved: Config | undefined;
@@ -223,7 +230,27 @@ describe("handleCliLoginApi", () => {
 		assert.equal(state.statusCode, 200, state.body);
 		assert.equal(saved?.typesafeRouting?.apiKey, "existing-typesafe-key");
 		assert.equal(saved?.typesafeRouting?.enabled, false);
+		assert.equal(saved?.typesafeRouting?.shadowMode, true);
 		assert.doesNotMatch(state.body, /existing-typesafe-key/);
+	});
+
+	it("rejects a non-boolean TypeSafe shadow mode value", async () => {
+		const current = getDefaultConfig();
+		const rotator = {
+			async addOrUpdateAccount() {},
+			getConfig: () => current,
+			async replaceConfig() {},
+		};
+		const req = mockReq({
+			provider: "typesafe",
+			apiKey: "fake-typesafe-key",
+			model: "jev-latest",
+			shadowMode: "true",
+		});
+		const { res, state } = mockRes();
+		await handleCliLoginApi(req, res, rotator as any);
+		assert.equal(state.statusCode, 400);
+		assert.match(state.body, /Invalid shadow mode flag/);
 	});
 
 	it("returns 400 for invalid JSON body", async () => {

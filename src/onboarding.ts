@@ -458,6 +458,10 @@ ${codexAuthUrl && codexSessionId ? `<h3 style="margin:24px 0 8px;font-size:18px;
     <input name="enabled" type="checkbox" ${currentTypeSafe?.enabled !== false ? "checked" : ""} />
     Enable Jev when requests use <code>model: "auto"</code>
   </label>
+  <label style="display:flex;align-items:flex-start;gap:8px;margin-top:12px;">
+    <input name="shadowMode" type="checkbox" ${currentTypeSafe?.shadowMode ? "checked" : ""} />
+    <span>Shadow mode: log Jev's recommendation, but keep serving the deterministic model. Logs contain model IDs and decision metadata only, not prompts.</span>
+  </label>
   <button type="submit" class="cta" style="cursor:pointer;border:none;font-family:inherit;font-size:16px;margin-top:16px;">
     Save Jev configuration
   </button>
@@ -658,6 +662,7 @@ if (typesafeForm) typesafeForm.addEventListener('submit', async (e) => {
   const apiKey = form.apiKey.value.trim();
   const model = form.model.value.trim();
   const enabled = form.enabled.checked;
+  const shadowMode = form.shadowMode.checked;
   if (!model) { showResult('<div class="note error">Please enter a Jev model alias.</div>'); return; }
   btn.disabled = true;
   btn.textContent = 'Saving...';
@@ -665,7 +670,7 @@ if (typesafeForm) typesafeForm.addEventListener('submit', async (e) => {
   try {
     const params = new URLSearchParams(window.location.search);
     const token = params.get('token') || '';
-    const payload = { provider: 'typesafe', ...(apiKey ? { apiKey } : {}), model, enabled };
+    const payload = { provider: 'typesafe', ...(apiKey ? { apiKey } : {}), model, enabled, shadowMode };
     const res = await fetch('/api/cli-login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(token ? { 'X-Rotator-Admin-Token': token } : {}) },
@@ -711,6 +716,7 @@ export async function handleCliLoginApi(
     apiKey?: string;
     model?: string;
     enabled?: boolean;
+    shadowMode?: boolean;
   };
   try {
     const raw = await readLimitedBody(req, MAX_CLI_LOGIN_BODY_BYTES);
@@ -726,6 +732,7 @@ export async function handleCliLoginApi(
       apiKey?: string;
       model?: string;
       enabled?: boolean;
+      shadowMode?: boolean;
     };
   } catch (err) {
     res.writeHead(err instanceof PayloadTooLargeError ? 413 : 400, {
@@ -890,7 +897,7 @@ export async function handleCliLoginApi(
 }
 
 async function handleTypeSafeCliLogin(
-  body: { apiKey?: string; model?: string; enabled?: boolean },
+  body: { apiKey?: string; model?: string; enabled?: boolean; shadowMode?: boolean },
   res: ServerResponse,
   rotator: TypeSafeConfigSink,
 ): Promise<void> {
@@ -907,6 +914,11 @@ async function handleTypeSafeCliLogin(
   if (body.enabled !== undefined && typeof body.enabled !== "boolean") {
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: false, error: "Invalid enabled flag" }));
+    return;
+  }
+  if (body.shadowMode !== undefined && typeof body.shadowMode !== "boolean") {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: false, error: "Invalid shadow mode flag" }));
     return;
   }
 
@@ -926,6 +938,7 @@ async function handleTypeSafeCliLogin(
 
   const current = rotator.getConfig();
   const currentRouting = current.typesafeRouting ?? {};
+  const shadowMode = body.shadowMode ?? currentRouting.shadowMode ?? false;
   if (!apiKey && !currentRouting.apiKey) {
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: false, error: "Missing TypeSafe API key" }));
@@ -939,6 +952,7 @@ async function handleTypeSafeCliLogin(
       ...(apiKey ? { apiKey } : {}),
       enabled,
       model,
+      shadowMode,
     },
   };
 
@@ -959,6 +973,7 @@ async function handleTypeSafeCliLogin(
     ok: true,
     configured: true,
     enabled,
+    shadowMode,
     model,
   }));
 }

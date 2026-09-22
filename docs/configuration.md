@@ -195,15 +195,22 @@ The main configuration file. Created automatically by the `login` command, and e
 | `streamRecoveryMaxRetries` | `2` | Maximum account rotations for upstream failures before the response is flushed |
 | `compressionMode` | `off` | Prompt compression mode: `off`, `lite`, `rtk`, or `rtk+lite`. Can be overridden by the `X-Rotator-Compression` request header |
 | `typesafeRouting` | absent | Optional Jev semantic router. When enabled, `model: "auto"` selects among currently routable provider/model candidates |
+| `typesafeRouting.shadowMode` | `false` | Ask Jev for recommendations and log model-only decision metadata while continuing to serve the deterministic route |
 
 ### TypeSafe Jev model selection
 
 `model: "auto"` is an opt-in alias for the OpenAI Chat/Responses, Anthropic
 Messages, and Gemini compatibility endpoints. The rotator builds a fresh
 candidate list from active providers and its own quota, cooldown, circuit,
-concurrency, and credential checks. Jev receives bounded request metadata and
-a text excerpt only to rank those candidates; it does not choose accounts or
-write routing state.
+concurrency, and credential checks. Jev receives named, bounded context from
+the latest user message, recent assistant intent, and a few relevant tool
+results. System/developer instructions, tool schemas, image/audio payloads, and
+arbitrary request fields are excluded; URLs and inline media in text are
+redacted. It makes separate typed judgments about task effort and candidate fit.
+Explicit high reasoning requests
+remain hard constraints, and a confident high-effort judgment cannot route to a
+non-reasoning candidate when a reasoning-capable candidate is available. Jev
+does not choose accounts or write routing state.
 
 When using PostgreSQL-backed settings, configure Jev from the existing
 `/login-cli` page: open the page with admin authorization, select the
@@ -228,6 +235,7 @@ remains available only as an optional deployment-level fallback:
     "model": "jev-latest",
     "timeoutMs": 3000,
     "minConfidence": 0.45,
+    "shadowMode": false,
     "maxCandidates": 32,
     "shortlistSize": 12,
     "maxExcerptChars": 12000
@@ -238,9 +246,17 @@ remains available only as an optional deployment-level fallback:
 `maxCandidates` bounds the locally filtered pool and `shortlistSize` bounds the
 final Jev question. The shortlist is selected dynamically so healthy providers
 and model families remain represented instead of sending dozens of near-
-duplicate variants. If Jev is unavailable, times out, returns low confidence,
-or selects no candidate, routing fails open to the best deterministic
-operational candidate.
+duplicate variants. When Jev actively routes, the chosen candidate is honored;
+operational health is not blended in afterward to silently replace it. If Jev
+is unavailable, times out, returns low confidence, or selects no candidate,
+routing fails open to the best deterministic operational candidate.
+
+Enable `shadowMode` from the TypeSafe Jev panel on `/login-cli` to call Jev and
+log its recommended model and task-effort class while continuing to serve the
+deterministic operational choice. Shadow logs contain provider/model IDs and
+confidence metadata only, never prompts or credentials. The response header
+reports `X-Rotator-Model-Selection: shadow`; disable shadow mode before expecting
+Jev's recommendations to control routing.
 If no candidate is routable, the request returns an unavailable response. The
 API key is never returned by the dashboard/export endpoints; those surfaces
 show `[configured]`.

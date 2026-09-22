@@ -647,7 +647,7 @@ describe("effortRouting config validation", () => {
 });
 
 describe("applyConfigDefaults plumbing", () => {
-	it("carries modelSpecs, modelAliases, and effortRouting through applyConfigDefaults", () => {
+	it("carries modelSpecs, modelAliases, effortRouting, and TypeSafe routing through defaults", () => {
 		const initial = {
 			proxyPort: 51200,
 			accounts: [],
@@ -665,12 +665,26 @@ describe("applyConfigDefaults plumbing", () => {
 					},
 				},
 			},
+			typesafeRouting: {
+				enabled: true,
+				apiKey: "typesafe-key",
+				shadowMode: true,
+			},
 		};
 
 		const withDefaults = applyConfigDefaults(initial as any);
 		assert.deepEqual(withDefaults.modelSpecs, initial.modelSpecs);
 		assert.deepEqual(withDefaults.modelAliases, initial.modelAliases);
 		assert.deepEqual(withDefaults.effortRouting, initial.effortRouting);
+		assert.equal(withDefaults.typesafeRouting?.shadowMode, true);
+		assert.equal(
+			applyConfigDefaults({
+				proxyPort: 51200,
+				accounts: [],
+				typesafeRouting: { enabled: true, apiKey: "typesafe-key" },
+			} as any).typesafeRouting?.shadowMode,
+			false,
+		);
 	});
 
 	it("preserves modelSpecs, modelAliases, and effortRouting through rotator.getConfig() and persistence round-trip", async () => {

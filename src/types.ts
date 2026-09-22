@@ -169,6 +169,8 @@ export interface TypeSafeRoutingConfig {
   timeoutMs?: number;
   /** Minimum accepted Jev confidence before deterministic fallback. */
   minConfidence?: number;
+  /** Ask Jev for a recommendation but continue serving the deterministic route. */
+  shadowMode?: boolean;
   /** Maximum candidate models sent to Jev per request. */
   maxCandidates?: number;
   /** Maximum diverse candidate models included in Jev's final decision. */

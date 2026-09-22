@@ -241,7 +241,7 @@ export interface RequestBody {
   requestId?: string;
   displayModel?: string;
   providerId?: string;
-  selectionMode?: "typesafe" | "deterministic" | "disabled";
+  selectionMode?: "typesafe" | "deterministic" | "shadow" | "disabled";
   selectionConfidence?: number;
   selectionReason?: string;
   [key: string]: unknown;
@@ -287,7 +287,7 @@ export interface RotationAttemptContext {
   providerId?: string;
   requestedModel?: string;
   selectedModel?: string;
-  selectionMode?: "typesafe" | "deterministic" | "disabled";
+  selectionMode?: "typesafe" | "deterministic" | "shadow" | "disabled";
   selectionConfidence?: number;
   selectionReason?: string;
 }

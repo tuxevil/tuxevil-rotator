@@ -70,5 +70,18 @@ describe("response headers", () => {
       assert.equal(headers["X-Rotator-Cost-Usd"], undefined);
       assert.equal(headers["X-Rotator-Retries"], undefined);
     });
+
+    it("identifies TypeSafe shadow routing separately from active Jev routing", () => {
+      const headers = buildRotatorResponseHeaders({
+        model: "local-fast",
+        requestedModel: "auto",
+        modelSelection: "shadow",
+        selectionConfidence: 0.81,
+        selectionReason: "typesafe-shadow",
+      });
+      assert.equal(headers["X-Rotator-Model"], "local-fast");
+      assert.equal(headers["X-Rotator-Model-Selection"], "shadow");
+      assert.equal(headers["X-Rotator-Selection-Reason"], "typesafe-shadow");
+    });
   });
 });

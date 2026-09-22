@@ -58,6 +58,21 @@ describe("validators", () => {
 		assert.equal(result.ok, true);
 	});
 
+	it("validates the optional TypeSafe shadow-mode flag", () => {
+		const enabled = validateConfig({
+			accounts: [],
+			typesafeRouting: { enabled: true, shadowMode: true },
+		});
+		assert.equal(enabled.ok, true);
+
+		const invalid = validateConfig({
+			accounts: [],
+			typesafeRouting: { enabled: true, shadowMode: "yes" },
+		});
+		assert.equal(invalid.ok, false);
+		assert.match(formatValidationErrors(invalid.errors), /shadowMode/);
+	});
+
 	it("accepts quota-aware sequential and sticky routing policies", () => {
 		for (const routingPolicy of ["sequential-quota", "sticky-quota"] as const) {
 			const result = validateConfig({

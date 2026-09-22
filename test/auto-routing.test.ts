@@ -95,6 +95,12 @@ describe("TypeSafe Jev auto-routing", () => {
         body: {
           model: "jev-test",
           answers: {
+            task_effort: {
+              type: "choice",
+              choice: "medium",
+              confidence: 0.9,
+              probabilities: { low: 0, medium: 1, high: 0, max: 0 },
+            },
             selected_model: {
               type: "choice",
               choice: "candidate_0",
@@ -107,14 +113,21 @@ describe("TypeSafe Jev auto-routing", () => {
       };
     });
 
+    const rotator = fakeRotator(baseURL);
+    rotator.getConfig().typesafeRouting!.maxExcerptChars = 512;
     const result = await selectAutoRoutingTarget(
-      fakeRotator(baseURL),
+      rotator,
       catalog,
       {
         route: "openai-chat",
         requestedModel: "auto",
         input: {
-          messages: [{ role: "user", content: "Choose a model for this request" }],
+          messages: [
+            { role: "system", content: "Do not send this private system prompt" },
+            { role: "user", content: "Choose a model for this request at https://private.example/do-not-send" },
+            { role: "assistant", content: "I will compare the available capabilities. data:image/png;base64,secret" },
+          ],
+          tools: [{ description: "Do not send this tool schema" }],
           attachment: "https://private.example/do-not-send",
         },
       } satisfies AutoRoutingRequest,
@@ -128,8 +141,11 @@ describe("TypeSafe Jev auto-routing", () => {
     })();
     const state = captured.state as Record<string, unknown>;
     assert.equal((state.candidates as Array<Record<string, unknown>>).length, 2);
-    assert.equal(state.prompt_excerpt, "user\nChoose a model for this request");
+    const context = state.request_context as Record<string, unknown>;
+    assert.equal(context.latest_user_request, "Choose a model for this request at [url omitted]");
+    assert.deepEqual(context.recent_assistant_intent, ["I will compare the available capabilities. [media omitted]"]);
     assert.doesNotMatch(JSON.stringify(captured), /private\.example/);
+    assert.doesNotMatch(JSON.stringify(captured), /private system prompt|tool schema|base64,secret/);
   });
 
   it("fails open to the best operational candidate when Jev is unavailable", async () => {
@@ -168,6 +184,12 @@ describe("TypeSafe Jev auto-routing", () => {
         status: 200,
         body: {
           answers: {
+            task_effort: {
+              type: "choice",
+              choice: "medium",
+              confidence: 0.9,
+              probabilities: { low: 0, medium: 1, high: 0, max: 0 },
+            },
             selected_model: {
               choice: "candidate_0",
               confidence: 0.8,
@@ -221,25 +243,208 @@ describe("TypeSafe Jev auto-routing", () => {
     assert.doesNotMatch(JSON.stringify(captured), /none/);
   });
 
-  it("uses Jev probabilities with operational health as the tie-breaker", async () => {
-    const baseURL = await startServer(() => ({
-      status: 200,
-      body: {
-        answers: {
-          selected_model: {
-            choice: "candidate_0",
-            confidence: 0.51,
-            probabilities: { candidate_0: 0.51, candidate_1: 0.5 },
+  it("bounds role-aware decision context and preserves the end of a long user request", async () => {
+    let received: Record<string, unknown> | null = null;
+    const baseURL = await startServer((body) => {
+      received = body;
+      return {
+        status: 200,
+        body: {
+          answers: {
+            task_effort: {
+              type: "choice",
+              choice: "high",
+              confidence: 0.9,
+              probabilities: { low: 0, medium: 0, high: 1, max: 0 },
+            },
+            selected_model: {
+              choice: "candidate_0",
+              confidence: 0.9,
+              probabilities: { candidate_0: 1 },
+            },
           },
         },
+      };
+    });
+    const rotator = fakeRotator(baseURL);
+    rotator.getConfig().typesafeRouting!.maxExcerptChars = 256;
+    const longRequest = `${"analyze the architecture carefully ".repeat(20)}Preserve this final constraint.`;
+    await selectAutoRoutingTarget(rotator, catalog, {
+      route: "openai-chat",
+      input: {
+        messages: [
+          { role: "user", content: "Earlier project context" },
+          { role: "assistant", content: "Prior decision and current intent" },
+          { role: "user", content: longRequest },
+          { role: "tool", content: "Error: tool call returned unavailable" },
+        ],
       },
-    }));
+    });
+
+    const captured: Record<string, unknown> = received ?? (() => { throw new Error("TypeSafe test server did not receive a request"); })();
+    const state = captured.state as Record<string, unknown>;
+    const context = state.request_context as Record<string, string | string[]>;
+    const texts = Object.values(context).flatMap((value) => Array.isArray(value) ? value : [value]);
+    assert.ok(texts.reduce((total, value) => total + value.length, 0) <= 256);
+    assert.match(context.latest_user_request as string, /\[truncated\]/);
+    assert.match(context.latest_user_request as string, /Preserve this final constraint\./);
+    assert.equal(context.previous_user_context, "Earlier project context");
+    assert.deepEqual(context.recent_assistant_intent, ["Prior decision and current intent"]);
+    assert.match((context.recent_tool_results as string[])[0], /^\[error\]/);
+  });
+
+  it("honors Jev's selected candidate instead of replacing it with a health blend", async () => {
+    const baseURL = await startServer((body) => {
+      const state = body.state as Record<string, unknown>;
+      const candidates = state.candidates as Array<Record<string, unknown>>;
+      const nominated = candidates.find((candidate) => candidate.model === "gemini-pro");
+      assert.ok(nominated);
+      const probabilities = Object.fromEntries(candidates.map((candidate) => [
+        String(candidate.id), candidate.id === nominated.id ? 0.51 : 0.49,
+      ]));
+      return {
+        status: 200,
+        body: {
+          answers: {
+            task_effort: {
+              type: "choice",
+              choice: "medium",
+              confidence: 0.9,
+              probabilities: { low: 0, medium: 1, high: 0, max: 0 },
+            },
+            selected_model: {
+              choice: nominated.id,
+              confidence: 0.51,
+              probabilities,
+            },
+          },
+        },
+      };
+    });
     const result = await selectAutoRoutingTarget(
       fakeRotator(baseURL),
       catalog,
       { route: "openai-chat", input: "hello" },
     );
     assert.equal(result?.mode, "typesafe");
-    assert.equal(result?.candidate.modelId, "local-fast");
+    assert.equal(result?.candidate.modelId, "gemini-pro");
+  });
+
+  it("enforces a high-effort Jev judgment when a reasoning-capable option exists", async () => {
+    const baseURL = await startServer((body) => {
+      const state = body.state as Record<string, unknown>;
+      const candidates = state.candidates as Array<Record<string, unknown>>;
+      const fast = candidates.find((candidate) => candidate.reasoning === false);
+      const reasoning = candidates.find((candidate) => candidate.reasoning === true);
+      assert.ok(fast && reasoning);
+      return {
+        status: 200,
+        body: {
+          answers: {
+            task_effort: {
+              type: "choice",
+              choice: "high",
+              confidence: 0.9,
+              probabilities: { low: 0, medium: 0, high: 1, max: 0 },
+            },
+            selected_model: {
+              choice: fast.id,
+              confidence: 0.8,
+              probabilities: { [String(fast.id)]: 0.8, [String(reasoning.id)]: 0.2 },
+            },
+          },
+        },
+      };
+    });
+    const result = await selectAutoRoutingTarget(
+      fakeRotator(baseURL),
+      catalog,
+      { route: "openai-chat", input: "Investigate a complex distributed-systems failure" },
+    );
+    assert.equal(result?.candidate.reasoning, true);
+    assert.equal(result?.reason, "typesafe-reasoning-guard");
+  });
+
+  it("keeps the high-effort capability guard when the model choice is uncertain", async () => {
+    const baseURL = await startServer((body) => {
+      const state = body.state as Record<string, unknown>;
+      const candidates = state.candidates as Array<Record<string, unknown>>;
+      const fast = candidates.find((candidate) => candidate.reasoning === false);
+      assert.ok(fast);
+      return {
+        status: 200,
+        body: {
+          answers: {
+            task_effort: {
+              type: "choice",
+              choice: "high",
+              confidence: 0.9,
+              probabilities: { low: 0, medium: 0, high: 1, max: 0 },
+            },
+            selected_model: {
+              choice: fast.id,
+              confidence: 0.3,
+              probabilities: { [String(fast.id)]: 1 },
+            },
+          },
+        },
+      };
+    });
+    const result = await selectAutoRoutingTarget(
+      fakeRotator(baseURL),
+      catalog,
+      { route: "openai-chat", input: "Investigate a complex distributed-systems failure" },
+    );
+    assert.equal(result?.mode, "deterministic");
+    assert.equal(result?.candidate.reasoning, true);
+    assert.equal(result?.reason, "typesafe-low-confidence");
+  });
+
+  it("supports shadow mode without changing the served deterministic target", async () => {
+    const baseURL = await startServer((body) => {
+      const state = body.state as Record<string, unknown>;
+      const candidates = state.candidates as Array<Record<string, unknown>>;
+      const nominated = candidates.find((candidate) => candidate.model === "gemini-pro");
+      assert.ok(nominated);
+      return {
+        status: 200,
+        body: {
+          answers: {
+            task_effort: {
+              type: "choice",
+              choice: "medium",
+              confidence: 0.9,
+              probabilities: { low: 0, medium: 1, high: 0, max: 0 },
+            },
+            selected_model: {
+              choice: nominated.id,
+              confidence: 0.3,
+              probabilities: { [String(nominated.id)]: 1 },
+            },
+          },
+        },
+      };
+    });
+    const rotator = fakeRotator(baseURL);
+    rotator.getConfig().typesafeRouting!.shadowMode = true;
+    const logged: string[] = [];
+    const originalInfo = console.info;
+    console.info = (...values: unknown[]) => logged.push(values.map(String).join(" "));
+    try {
+      const result = await selectAutoRoutingTarget(
+        rotator,
+        catalog,
+        { route: "openai-chat", input: "hello" },
+      );
+      assert.equal(result?.mode, "shadow");
+      assert.equal(result?.candidate.modelId, "local-fast");
+      assert.equal(result?.reason, "typesafe-shadow-low-confidence");
+    } finally {
+      console.info = originalInfo;
+    }
+    assert.match(logged.join("\n"), /gemini-pro/);
+    assert.match(logged.join("\n"), /local-fast/);
+    assert.match(logged.join("\n"), /below_confidence_threshold/);
+    assert.doesNotMatch(logged.join("\n"), /hello|apiKey|test-typesafe-key/);
   });
 });

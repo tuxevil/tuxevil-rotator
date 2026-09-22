@@ -312,6 +312,9 @@ export function validateConfig(value: unknown): ValidationResult<Config> {
 			if (routing.enabled !== undefined && typeof routing.enabled !== "boolean") {
 				errors.push("config.typesafeRouting.enabled must be a boolean");
 			}
+			if (routing.shadowMode !== undefined && typeof routing.shadowMode !== "boolean") {
+				errors.push("config.typesafeRouting.shadowMode must be a boolean");
+			}
 			if (routing.apiKey !== undefined && !isNonEmptyString(routing.apiKey)) {
 				errors.push("config.typesafeRouting.apiKey must be a non-empty string when provided");
 			}

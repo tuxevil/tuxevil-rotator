@@ -30,7 +30,7 @@ export interface RotatorResponseHeaderOptions {
   model?: string;
   requestedModel?: string;
   selectedProvider?: string;
-  modelSelection?: "typesafe" | "deterministic" | "disabled";
+  modelSelection?: "typesafe" | "deterministic" | "shadow" | "disabled";
   selectionConfidence?: number;
   selectionReason?: string;
   latencyMs?: number;
