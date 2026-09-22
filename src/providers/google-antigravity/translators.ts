@@ -216,6 +216,19 @@ export function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function containsUnresolvedFunctionResponseRef(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some(containsUnresolvedFunctionResponseRef);
+  }
+  if (!isRecord(value)) return false;
+
+  // Gemini reserves { "$ref": "..." } inside function responses for a
+  // FunctionResponsePart display_name. This converter does not attach named
+  // response parts, so JSON Schema/OpenAPI refs cannot be resolved here.
+  if (typeof value.$ref === "string") return true;
+  return Object.values(value).some(containsUnresolvedFunctionResponseRef);
+}
+
 /**
  * Normalize a tool-call `arguments` field into the JSON-encoded string
  * shape that OpenAI-compat responses expect. The Ollama adapter feeds us
@@ -1129,6 +1142,9 @@ export function openAIToAntigravityBody(
           !Array.isArray(parsed)
             ? parsed
             : { output: parsed };
+        if (containsUnresolvedFunctionResponseRef(responseData)) {
+          responseData = { output: responseText };
+        }
       } catch {
         responseData = { output: responseText };
       }

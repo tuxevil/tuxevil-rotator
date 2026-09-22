@@ -270,6 +270,85 @@ describe("OpenAI Compat Tool Calling", () => {
 		]);
 	});
 
+	it("preserves JSON Schema and OpenAPI references as tool output text", () => {
+		const outputs = [
+			{
+				name: "webfetch",
+				content: JSON.stringify({
+					$schema: "https://json-schema.org/draft/2020-12/schema",
+					$ref: "#/$defs/Config",
+					$defs: { Config: { type: "object" } },
+				}),
+			},
+			{
+				name: "bash",
+				content: JSON.stringify({
+					openapi: "3.1.0",
+					components: {
+						schemas: {
+							HTTPValidationError: { type: "object" },
+						},
+					},
+					paths: {
+						"/items": {
+							get: {
+								responses: {
+									"400": {
+										content: {
+											"application/json": {
+												schema: {
+													$ref: "#/components/schemas/HTTPValidationError",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				}),
+			},
+		];
+
+		for (const [index, output] of outputs.entries()) {
+			const callId = `call_schema_${index}`;
+			cacheThoughtSignature(callId, "SG_TEST_SIGNATURE");
+			try {
+				const result = openAIToAntigravityBody({
+					model: "gemini-3.8-flash-high",
+					messages: [
+						{ role: "user", content: "Fetch the schema" },
+						{
+							role: "assistant",
+							content: null,
+							tool_calls: [
+								{
+									id: callId,
+									type: "function",
+									function: { name: output.name, arguments: "{}" },
+								},
+							],
+						},
+						{
+							role: "tool",
+							name: output.name,
+							tool_call_id: callId,
+							content: output.content,
+						},
+					],
+				});
+				const contents = (result.request as any).contents;
+				const functionResponse = contents
+					.flatMap((content: any) => content.parts)
+					.find((part: any) => part.functionResponse)?.functionResponse;
+
+				assert.deepStrictEqual(functionResponse.response, { output: output.content });
+			} finally {
+				thoughtSignatureCache.delete(callId);
+			}
+		}
+	});
+
 	it("converts tool_choice appropriately", () => {
 		const testChoice = (tool_choice: unknown, expectedMode: string, expectedNames?: string[]) => {
 			const req: OpenAIChatCompletionRequest = {
