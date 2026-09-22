@@ -1,10 +1,15 @@
 # Changelog
 
-## [Unreleased]
+## [3.9.0] - 2026-09-22
 
 ### Added
 
-- **OpenAI Codex GPT-6 catalog**: Added GPT-6 Astra, Sol, and Luna to the Codex model options, discovery filter, API catalog, dashboard, and spend estimates, alongside the existing GPT-5.6 models.
+- **OpenAI Codex GPT-6 catalog**: Added GPT-6 Astra, Sol, and Luna to the Codex model catalog, discovery filter, API catalog, dashboard, and spend estimates, alongside the existing GPT-5.6 models.
+- **TypeSafe Jev shadow mode**: Added an opt-in shadow mode (`typesafeRouting.shadowMode: true`) configurable via `/login-cli` or config, allowing operators to observe Jev routing recommendations alongside deterministic routing without impacting production traffic, tracked via `X-Rotator-Model-Selection: shadow` response headers.
+
+### Improved
+
+- **TypeSafe auto-routing decisions**: Decoupled dynamic reasoning effort and model judgments for `model: "auto"`, aligned final candidate selection with Jev's judgment, and added bounded decision context with strict payload redaction to protect prompt privacy.
 
 ## [3.8.0] - 2026-09-20
 
