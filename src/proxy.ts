@@ -10,7 +10,7 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import { Readable } from "node:stream";
+import { Readable, type Duplex } from "node:stream";
 import {
   classifyEffortRoutingModel,
   getEffortRoutingRule,
@@ -178,6 +178,8 @@ import {
 import {
   handleOpenAIAudioTranscriptions,
   handleAudioWebSocket,
+  closeAllAudioWebSockets,
+  WS_SHUTDOWN_CLOSE_GRACE_MS,
 } from "./audio-transcription.js";
 import { applyConfigDefaults } from "./account-store.js";
 import {
@@ -2611,7 +2613,7 @@ export function startProxy(
     }
 
     if (method === "POST" && pathname === "/v1/audio/transcriptions") {
-      handleOpenAIAudioTranscriptions(req, res).catch((err) => {
+      handleOpenAIAudioTranscriptions(req, res, rotator).catch((err) => {
         log(`Audio transcription error: ${err}`, rotator, "error");
         if (!res.headersSent)
           res.writeHead(500, { "Content-Type": "application/json" });
@@ -2749,6 +2751,11 @@ export function startProxy(
     res.end(JSON.stringify({ error: "Not found" }));
   });
 
+  // Upgraded sockets leave the HTTP server's connection tracking, so neither closeAllConnections() nor
+  // closeAllAudioWebSockets() alone can end sockets still authenticating or half-closed earlier.
+  const audioUpgradeSockets = new Set<Duplex>();
+  const serverClosing = new AbortController();
+
   server.on("upgrade", (req, socket) => {
     const url = req.url || "";
     const pathname = url.split("?")[0];
@@ -2759,10 +2766,33 @@ export function startProxy(
       pathname === "/v1/listen" ||
       pathname.startsWith("/ws/")
     ) {
-      handleAudioWebSocket(req, socket).catch(() => socket.destroy());
+      if (serverClosing.signal.aborted) {
+        socket.destroy();
+        return;
+      }
+      audioUpgradeSockets.add(socket);
+      socket.once("close", () => audioUpgradeSockets.delete(socket));
+      handleAudioWebSocket(req, socket, rotator, { signal: serverClosing.signal }).catch(() =>
+        socket.destroy(),
+      );
       return;
     }
     socket.destroy();
+  });
+
+  const originalClose = server.close.bind(server);
+  server.close = ((callback?: (err?: Error) => void) => {
+    serverClosing.abort();
+    closeAllAudioWebSockets(serverClosing.signal);
+    const forceCloseTimer = setTimeout(() => {
+      for (const socket of audioUpgradeSockets) socket.destroy();
+    }, WS_SHUTDOWN_CLOSE_GRACE_MS);
+    forceCloseTimer.unref?.();
+    return originalClose(callback);
+  }) as typeof server.close;
+
+  server.on("close", () => {
+    closeAllAudioWebSockets(serverClosing.signal);
   });
 
   server.listen(port, bindHost, () => {

@@ -28,6 +28,7 @@ export const DEFAULT_MODEL_SPECS: Record<string, ModelSpec> = {
 	"gemini-3.8-flash-high":     { maxOutputTokens: 65536, thinkingBudget: -1,    isThinking: true, contextWindow: 1_000_000 },
 	"gemini-3.8-flash-medium":   { maxOutputTokens: 65536, thinkingBudget: -1,    isThinking: true, contextWindow: 1_000_000 },
 	"gemini-3.8-flash-low":      { maxOutputTokens: 65536, thinkingBudget: -1,    isThinking: true, contextWindow: 1_000_000 },
+	"gemini-3.5-flash-lite":     { maxOutputTokens: 65536, thinkingBudget: -1,    isThinking: true, contextWindow: 1_000_000 },
 	"gemini-3-flash":            { maxOutputTokens: 65536, thinkingBudget: 4000,  isThinking: true, contextWindow: 1_000_000 },
 	"gemini-2.5-flash":          { maxOutputTokens: 65535, thinkingBudget: 24576, isThinking: true, contextWindow: 1_000_000 },
 	"gemini-2.5-pro":            { maxOutputTokens: 65535, thinkingBudget: 1024,  isThinking: true, contextWindow: 1_000_000 },

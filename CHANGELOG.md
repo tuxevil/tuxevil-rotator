@@ -47,6 +47,20 @@
 - **Codex kickstart lifecycle**: Unstarted Codex quota timers are now kicked off on startup; stale kickstart responses are drained to avoid blocking subsequent requests.
 - **Ollama pricing and forecast label**: Corrected the Ollama pricing entry and aligned the forecast label shown in the dashboard.
 
+### Changed
+
+- **Audio model scopes follow the executed model**: `/v1/audio/transcriptions` and the audio WebSocket now check virtual-key model scopes against the model that actually runs upstream (plus the requested name), and record spend under that model. Keys scoped to the v3.7.0 audio model `models/proactive-observer-v10` keep default audio access on the audio routes only.
+- **Audio `prompt` is context, not an instruction**: the client `prompt` is passed as delimited spelling context (last 1000 characters) and can no longer replace the transcription instruction.
+
+### Fixed
+
+- **Audio stream failures are no longer reported as success**: mid-stream resets, in-band upstream error events, timeouts, streams that end without a finish reason, and `MAX_TOKENS` truncation now fail the request (HTTP `502`/`504`, WebSocket `antigravity_error`) instead of returning partial text; the last SSE event is kept even without a trailing newline.
+- **No fixed 128-token cap on transcriptions**: the output limit now comes from the target model's spec, so long recordings are no longer silently truncated.
+- **Audio rate limits keep their status**: rotator `429`/`503` answers are returned as `429` (with `Retry-After`) and `503` instead of a generic `500`.
+- **Graceful shutdown with audio WebSockets**: unresponsive or still-authenticating WebSocket peers are force-closed after a short grace period, the server close wait is bounded, and a repeated SIGINT/SIGTERM no longer restarts the shutdown.
+- **WebSocket control frames during `stop`**: ping and close frames are answered immediately while a `stop` command waits for the session to finish.
+- **Rotator WebSocket accounting and transcripts**: a session that survives a failed segment is accounted once, as a success, when it completes; legitimate short utterances ("thank you", "one", "cuatro") and short final words are no longer dropped, and word de-duplication compares whole words.
+
 ## [3.7.0] - 2026-09-07
 
 ### Added

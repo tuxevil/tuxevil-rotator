@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { VirtualKey } from "./types.js";
+import { applyModelAlias, type VirtualKey } from "./types.js";
 import {
   hasAnyVirtualKeys,
   lookupVirtualKey,
@@ -68,6 +68,45 @@ export function extractVirtualKey(req: IncomingMessage): string | null {
   return null;
 }
 
+export interface VirtualKeyScopeOptions {
+  /** Scope entries that authorize the equivalent model only, for backward compatibility. */
+  equivalentScopes?: readonly string[];
+  equivalentModel?: string;
+  normalizeModel?: (model: string) => string;
+}
+
+function isModelAllowedByScope(models: string[], targetModel: string): boolean {
+  const normalizedTarget = targetModel.toLowerCase();
+  const aliasedTarget = applyModelAlias(targetModel).toLowerCase();
+  const canonicalTarget =
+    normalizedTarget === "whisper-1" || normalizedTarget === "whisper"
+      ? "gemini-3.8-flash-low"
+      : aliasedTarget;
+
+  return models.some((m) => {
+    const normalizedM = m.toLowerCase();
+    const aliasedM = applyModelAlias(m).toLowerCase();
+    const canonicalM =
+      normalizedM === "whisper-1" || normalizedM === "whisper"
+        ? "gemini-3.8-flash-low"
+        : aliasedM;
+
+    return (
+      normalizedM === normalizedTarget ||
+      normalizedTarget.includes(normalizedM) ||
+      aliasedM === aliasedTarget ||
+      aliasedTarget.includes(aliasedM) ||
+      canonicalM === canonicalTarget ||
+      canonicalM === normalizedTarget ||
+      normalizedM === canonicalTarget ||
+      canonicalM === aliasedTarget ||
+      aliasedM === canonicalTarget ||
+      normalizedM === aliasedTarget ||
+      aliasedM === normalizedTarget
+    );
+  });
+}
+
 /**
  * Validates request authentication against virtual keys.
  *
@@ -75,11 +114,13 @@ export function extractVirtualKey(req: IncomingMessage): string | null {
  * - If DB is not configured OR no virtual keys exist in DB, auth is not enforced.
  * - If keys exist, valid key is mandatory for proxy routes.
  * - Key must not be blocked.
- * - If targetModel is provided and key has model scope, targetModel must be allowed.
+ * - If target models are provided and key has model scope, every target must be allowed,
+ *   unless the key is scoped to an equivalent id for `options.equivalentModel`.
  */
 export async function authenticateVirtualKey(
   req: IncomingMessage,
-  targetModel?: string,
+  targetModel?: string | readonly string[],
+  options: VirtualKeyScopeOptions = {},
 ): Promise<KeyAuthResult> {
   const isEnforced = isDbConfigured() && (await hasAnyVirtualKeys());
 
@@ -124,14 +165,37 @@ export async function authenticateVirtualKey(
   }
 
   // Model access restrictions
-  if (targetModel && !isVirtualKeyModelAllowed(key, targetModel)) {
+  const targets = (typeof targetModel === "string" ? [targetModel] : (targetModel ?? [])).filter(
+    (target) => target.length > 0,
+  );
+  const scopedModels = key.models ?? [];
+  if (targets.length > 0 && scopedModels.length > 0 && !scopedModels.includes("*")) {
+    const scopes = scopedModels.map((m) => m.toLowerCase());
+    const hasEquivalentScope = (options.equivalentScopes ?? []).some((scope) =>
+      scopes.includes(scope.toLowerCase()),
+    );
+    const normalizeModel = (model: string): string =>
+      (options.normalizeModel?.(model) ?? applyModelAlias(model)).toLowerCase().replace(/^models\//, "");
+    const equivalentModel = options.equivalentModel ? normalizeModel(options.equivalentModel) : undefined;
+    const deniedTarget =
+      hasEquivalentScope && equivalentModel === undefined
+        ? undefined
+        : targets.find((target) => {
+            if (isModelAllowedByScope(scopedModels, target)) return false;
+            const isEquivalentModel =
+              equivalentModel !== undefined && normalizeModel(target) === equivalentModel;
+            return !(hasEquivalentScope && isEquivalentModel);
+          });
+
+    if (deniedTarget !== undefined) {
       return {
         authenticated: false,
         key,
         rawKey,
-        error: `Model '${targetModel}' is not allowed for this Virtual Key`,
+        error: `Model '${deniedTarget}' is not allowed for this Virtual Key`,
         statusCode: 403,
       };
+    }
   }
 
   touchVirtualKeyLastActive(key.tokenHash);

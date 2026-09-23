@@ -165,7 +165,12 @@ describe("model discovery", () => {
 			const payload = captureJson(serveOpenAIModels) as {
 				data: Array<{ id: string }>;
 			};
-			assert.ok(!payload.data.some((model) => model.id.toLowerCase().startsWith("gemini-3.5-")));
+			assert.ok(
+				!payload.data.some((model) =>
+					model.id.toLowerCase().startsWith("gemini-3.5-") &&
+					model.id.toLowerCase() !== "gemini-3.5-flash-lite",
+				),
+			);
 			assert.deepEqual(dynamicCatalog.getAllModels(), []);
 		} finally {
 			dynamicCatalog.reset();

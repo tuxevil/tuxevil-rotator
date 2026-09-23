@@ -203,24 +203,17 @@ async function closeServer(server: ReturnType<typeof createServer>): Promise<voi
   });
 }
 
-describe("models/proactive-observer-v10 audio transcription support", () => {
-  it("translates whisper-1 and proactive-observer aliases to models/proactive-observer-v10", () => {
-    assert.equal(applyModelAlias("whisper-1"), "models/proactive-observer-v10");
-    assert.equal(applyModelAlias("proactive-observer"), "models/proactive-observer-v10");
-    assert.equal(applyModelAlias("proactive-observer-v10"), "models/proactive-observer-v10");
-    assert.equal(applyModelAlias("models/proactive-observer-v10"), "models/proactive-observer-v10");
+describe("whisper-1 audio transcription support", () => {
+  it("translates whisper-1 alias to gemini-3.8-flash-low", () => {
+    assert.equal(applyModelAlias("whisper-1"), "gemini-3.8-flash-low");
   });
 
-  it("includes models/proactive-observer-v10 and whisper-1 in OpenAI model catalog", () => {
+  it("includes whisper-1 in OpenAI model catalog", () => {
     const catalog = buildOpenAIModelCatalog();
-    const proactive = catalog.find((m) => m.id === "models/proactive-observer-v10");
     const whisper = catalog.find((m) => m.id === "whisper-1");
 
-    assert.ok(proactive, "models/proactive-observer-v10 should exist in OpenAI catalog");
-    assert.equal(proactive.meta.family, "proactive-observer");
-
     assert.ok(whisper, "whisper-1 should exist in OpenAI catalog");
-    assert.equal(whisper.meta.family, "proactive-observer");
+    assert.equal(whisper.meta.family, "gemini-3.8-flash");
   });
 
   it("rejects non-multipart requests with 400 Bad Request", async () => {
@@ -275,6 +268,7 @@ describe("models/proactive-observer-v10 audio transcription support", () => {
   it("successfully transcribes audio file via POST /v1/audio/transcriptions (default json format)", {
     skip: !fs.existsSync("/tmp/test_hello.wav"),
   }, async () => {
+    const languageServer = mockSuccessfulLanguageServer();
     const { server, url } = await listenServer((req, res) => {
       handleOpenAIAudioTranscriptions(req, res).catch(() => {
         res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
@@ -299,6 +293,7 @@ describe("models/proactive-observer-v10 audio transcription support", () => {
       const data = (await resp.json()) as { text: string };
       assert.equal(typeof data.text, "string");
     } finally {
+      languageServer.restore();
       await closeServer(server);
     }
   });
@@ -306,6 +301,7 @@ describe("models/proactive-observer-v10 audio transcription support", () => {
   it("successfully transcribes audio with response_format: 'text'", {
     skip: !fs.existsSync("/tmp/test_hello.wav"),
   }, async () => {
+    const languageServer = mockSuccessfulLanguageServer();
     const { server, url } = await listenServer((req, res) => {
       handleOpenAIAudioTranscriptions(req, res).catch(() => {
         res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
@@ -319,7 +315,7 @@ describe("models/proactive-observer-v10 audio transcription support", () => {
 
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("model", "models/proactive-observer-v10");
+      formData.append("model", "whisper-1");
       formData.append("response_format", "text");
 
       const resp = await fetch(`${url}/v1/audio/transcriptions`, {
@@ -331,6 +327,7 @@ describe("models/proactive-observer-v10 audio transcription support", () => {
       const text = await resp.text();
       assert.equal(typeof text, "string");
     } finally {
+      languageServer.restore();
       await closeServer(server);
     }
   });

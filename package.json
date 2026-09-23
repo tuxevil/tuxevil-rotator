@@ -16,7 +16,7 @@
     "login": "tsx src/cli.ts login",
     "typecheck": "tsc --noEmit",
     "typecheck:test": "tsc --project tsconfig.test.json",
-    "test": "ANTIGRAVITY_CLIENT_ID=test-client-id ANTIGRAVITY_CLIENT_SECRET=test-client-secret TUXEVIL_ROTATOR_DIR=/tmp/tuxevil-rotator-test node --import tsx/esm --test \"test/**/*.test.ts\"",
+    "test": "TUXEVIL_ROTATOR_ADMIN_TOKEN= PI_ROTATOR_ADMIN_TOKEN= ANTIGRAVITY_CLIENT_ID=test-client-id ANTIGRAVITY_CLIENT_SECRET=test-client-secret TUXEVIL_ROTATOR_DIR=/tmp/tuxevil-rotator-test node --import tsx/esm --test \"test/**/*.test.ts\"",
     "lint": "eslint src test",
     "coverage": "c8 --reporter=text --reporter=html --check-coverage --lines=60 --branches=50 --functions=60 --statements=60 npm test",
     "check": "npm run typecheck && npm run typecheck:test && npm test && npm run lint"

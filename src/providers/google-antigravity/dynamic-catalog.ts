@@ -61,7 +61,7 @@ function isDiscoverableModelId(value: string): boolean {
     !RESERVED_QUOTA_MODEL_IDS.has(lower) &&
     !lower.startsWith("chat_") &&
     !lower.startsWith("tab_") &&
-    !lower.startsWith("gemini-3.5-");
+    (!lower.startsWith("gemini-3.5-") || lower === "gemini-3.5-flash-lite");
 }
 
 /** Validate and sanitize the untrusted runtime catalog response. */
