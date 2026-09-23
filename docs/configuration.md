@@ -363,18 +363,34 @@ Route a client-facing alias model (such as `gemini-3.8-flash`) to concrete Antig
 
 ## Audio Transcription & Live Streaming
 
-The rotator provides OpenAI-compatible audio transcription and bidirectional live streaming powered by the local Antigravity Language Server observer model (`models/proactive-observer-v10`).
+The rotator provides OpenAI-compatible audio transcription and bidirectional live streaming powered by Google Antigravity multimodal models (`gemini-3.8-flash-low` or alias `whisper-1`).
 
 The Language Server uses a self-signed certificate on its loopback listener. The rotator keeps this TLS exception scoped to `127.0.0.1` and sends the detected process CSRF token on every request. Do not expose the Language Server port outside the local host.
 
 ### Endpoints
 
 - `POST /v1/audio/transcriptions`: OpenAI-compatible multipart audio transcription.
-  - Form fields: `file` (audio file), `model` (default: `models/proactive-observer-v10` or alias `whisper-1`), `response_format` (`json`, `text`, `verbose_json`), `prompt`, `language`.
+  - Form fields: `file` (audio file), `model` (default: `whisper-1` or `gemini-3.8-flash-low`), `response_format` (`json`, `text`, `verbose_json`), `prompt`, `language`.
+  - `prompt` is optional context (vocabulary, names or preceding text). It never replaces the transcription instruction; only its last 1000 characters are used.
   - Supported audio formats: `.wav`, `.mp3`, `.m4a`, `.webm`, `.ogg`, `.flac`, `.pcm`.
 - `GET /ws`, `/ws/audio`, `/v1/listen`, `/v1/audio/transcriptions/stream`: Bidirectional WebSocket streaming endpoint (RFC 6455).
   - Streams binary 16kHz PCM audio chunks in real-time.
   - Emits JSON events: `system_status`, `antigravity_ready`, `antigravity_transcript` (with TTFT and interim/final text), and `antigravity_complete`.
+
+### Virtual Key Scopes
+
+Audio routes check virtual-key model scopes against the model that actually runs upstream, and also against the requested name when the client sends one. With rotator accounts, a non-Gemini name such as `whisper-1` runs `gemini-3.8-flash-low`, so the key must allow that model (a `whisper-1` scope does). Keys scoped to `models/proactive-observer-v10` (the v3.7.0 audio model) keep access to the default audio model on the audio routes only; chat routes do not honor that equivalence.
+
+### Errors
+
+`POST /v1/audio/transcriptions` answers an OpenAI-style error instead of partial text:
+
+- `429` with `Retry-After` (and `retry_after_seconds` in the body) when every account is cooling down.
+- `503` when the upstream is unavailable or no account can serve the request.
+- `504` when the transcription times out.
+- `502` when the upstream stream fails, is truncated at the output token limit, or ends before completing.
+
+A WebSocket session reports the same failures as `antigravity_error` events and never commits a partial segment as a final transcript.
 
 ### Low-Latency Headers
 

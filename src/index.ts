@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Config } from "./types.js";
 import { AccountRotator } from "./rotator.js";
 import { startProxy } from "./proxy.js";
+import { closeAllAudioWebSockets } from "./audio-transcription.js";
 import { getConfigDir } from "./paths.js";
 import { TelemetryReporter, setActiveReporter } from "./telemetry.js";
 import { loadConfig as loadConfigFromStore, importLegacyOllamaRotatorAccounts } from "./account-store.js";
@@ -47,6 +48,8 @@ function loadConfig(): Config {
 }
 
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+const SHUTDOWN_SERVER_CLOSE_TIMEOUT_MS = 3_000;
+const SHUTDOWN_FORCE_EXIT_MS = 10_000;
 
 /**
  * Show a one-time, non-intrusive star reminder after 24h since first install.
@@ -242,10 +245,44 @@ export async function main(): Promise<void> {
   setActiveReporter(telemetry);
   void telemetry.start();
 
+  let server: ReturnType<typeof startProxy> | null = null;
+  let shuttingDown = false;
+
   // ── Graceful shutdown ──
   const shutdown = async (): Promise<void> => {
+    // npm/tsx wrappers can deliver the same Ctrl+C twice; a forced exit here would skip the flushes.
+    if (shuttingDown) {
+      console.log("Shutdown already in progress");
+      return;
+    }
+    shuttingDown = true;
     console.log("\nShutting down...");
+    // Last resort if a flush hangs; cleared before the normal exit so it can never fire later.
+    const forceExitTimer = setTimeout(() => {
+      console.error(`Shutdown did not finish within ${SHUTDOWN_FORCE_EXIT_MS}ms; forcing exit`);
+      process.exit(1);
+    }, SHUTDOWN_FORCE_EXIT_MS);
+    forceExitTimer.unref();
     stopRetentionCleanup();
+    closeAllAudioWebSockets();
+    const currentServer = server;
+    if (currentServer) {
+      // Bounded: a peer that never finishes closing must not keep the flushes below from running.
+      await new Promise<void>((resolve) => {
+        const closeTimer = setTimeout(() => {
+          console.warn(
+            `Proxy server did not close within ${SHUTDOWN_SERVER_CLOSE_TIMEOUT_MS}ms; continuing shutdown`,
+          );
+          resolve();
+        }, SHUTDOWN_SERVER_CLOSE_TIMEOUT_MS);
+        closeTimer.unref();
+        currentServer.close(() => {
+          clearTimeout(closeTimer);
+          resolve();
+        });
+        (currentServer as any).closeAllConnections?.();
+      });
+    }
     await flushSpendLogs();
     await flushResponsesStore();
     await rotator.flushPendingStateSave();
@@ -256,12 +293,13 @@ export async function main(): Promise<void> {
     await closeProxyDispatchers();
     const { closeDb } = await import("./db-store.js");
     await closeDb();
+    clearTimeout(forceExitTimer);
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
 
-  startProxy(rotator, config.proxyPort, config.bindHost || "0.0.0.0");
+  server = startProxy(rotator, config.proxyPort, config.bindHost || "0.0.0.0");
 }
 
 // Direct execution

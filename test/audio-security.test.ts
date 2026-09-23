@@ -382,7 +382,7 @@ describe("audio virtual-key security boundary", () => {
 
   it("enforces the multipart-selected model and logs one attributed HTTP request", async () => {
     const rawKey = "rk-audio-model-scope";
-    const tokenHash = addVirtualKey(rawKey, ["models/proactive-observer-v10"]);
+    const tokenHash = addVirtualKey(rawKey, ["gemini-3.8-flash-low"]);
     const languageServer = mockLanguageServer();
     const { server, url } = await listenServer((req, res) => {
       void audio.handleOpenAIAudioTranscriptions(req, res);
@@ -412,14 +412,14 @@ describe("audio virtual-key security boundary", () => {
         [{ apiKeyHash: tokenHash, model: "other-model", status: "failure" }],
       );
 
-      const allowed = await post("models/proactive-observer-v10");
+      const allowed = await post("gemini-3.8-flash-low");
       assert.equal(allowed.status, 200);
       await allowed.arrayBuffer();
 
       const logs = spendLogger.getSpendQueueItemsForTests();
       assert.equal(logs.length, 2);
       assert.equal(logs[1].apiKeyHash, tokenHash);
-      assert.equal(logs[1].model, "models/proactive-observer-v10");
+      assert.equal(logs[1].model, "gemini-3.8-flash-low");
       assert.equal(logs[1].callType, "audio_transcription");
     } finally {
       languageServer.restore();
@@ -566,7 +566,7 @@ describe("audio WebSocket security boundary", () => {
 
   it("enforces the start model scope before opening a Language Server stream", async () => {
     const rawKey = "rk-ws-model-scope";
-    addVirtualKey(rawKey, ["models/proactive-observer-v10"]);
+    addVirtualKey(rawKey, ["gemini-3.8-flash-low"]);
     const languageServer = mockLanguageServer("pending");
     const { server, port } = await listenServer((_req, res) => res.end());
     installUpgradeHandler(server);
@@ -605,7 +605,7 @@ describe("audio WebSocket security boundary", () => {
     try {
       await waitForWebSocketEvent(ws, "open");
       const errorMessage = waitForWebSocketMessage(ws, (message) => message.type === "antigravity_error");
-      ws.send(JSON.stringify({ type: "start", model: "models/proactive-observer-v10" }));
+      ws.send(JSON.stringify({ type: "start", model: "gemini-3.8-flash-low" }));
       await errorMessage;
       assert.equal(messages.some((message) => message.type === "antigravity_error"), true);
       assert.equal(messages.some((message) => message.type === "ready_to_receive_audio"), false);
@@ -634,7 +634,7 @@ describe("audio WebSocket security boundary", () => {
         ws,
         (message) => message.type === "antigravity_error",
       );
-      ws.send(JSON.stringify({ type: "start", model: "models/proactive-observer-v10" }));
+      ws.send(JSON.stringify({ type: "start", model: "gemini-3.8-flash-low" }));
       const errorMessage = await error;
       await new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -702,7 +702,7 @@ describe("audio WebSocket security boundary", () => {
         );
         const close = waitForWebSocketEvent<CloseEvent>(ws, "close");
         void close.catch(() => {});
-        ws.send(JSON.stringify({ type: "start", model: "models/proactive-observer-v10" }));
+        ws.send(JSON.stringify({ type: "start", model: "gemini-3.8-flash-low" }));
 
         const errorMessage = await error;
         assert.match(String(errorMessage.message), testCase.expectedMessage);
@@ -769,7 +769,7 @@ describe("audio WebSocket security boundary", () => {
         ws,
         (message) => message.type === "ready_to_receive_audio",
       );
-      ws.send(JSON.stringify({ type: "start", model: "models/proactive-observer-v10" }));
+      ws.send(JSON.stringify({ type: "start", model: "gemini-3.8-flash-low" }));
       await ready;
 
       const error = waitForWebSocketMessage(
@@ -840,7 +840,7 @@ describe("audio WebSocket security boundary", () => {
         ws,
         (message) => message.type === "antigravity_complete",
       );
-      ws.send(JSON.stringify({ type: "start", model: "models/proactive-observer-v10" }));
+      ws.send(JSON.stringify({ type: "start", model: "gemini-3.8-flash-low" }));
       await complete;
       await new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -928,7 +928,7 @@ describe("audio WebSocket security boundary", () => {
     try {
       await waitForWebSocketEvent(ws, "open");
       const ready = waitForWebSocketMessage(ws, (message) => message.type === "ready_to_receive_audio");
-      ws.send(JSON.stringify({ type: "start", model: "models/proactive-observer-v10" }));
+      ws.send(JSON.stringify({ type: "start", model: "gemini-3.8-flash-low" }));
       await ready;
 
       ws.send(JSON.stringify({ type: "stop" }));
@@ -1010,7 +1010,7 @@ describe("audio WebSocket security boundary", () => {
     try {
       await waitForWebSocketEvent(ws, "open");
       const ready = waitForWebSocketMessage(ws, (message) => message.type === "ready_to_receive_audio");
-      ws.send(JSON.stringify({ type: "start", model: "models/proactive-observer-v10" }));
+      ws.send(JSON.stringify({ type: "start", model: "gemini-3.8-flash-low" }));
       await ready;
 
       const complete = waitForWebSocketMessage(
@@ -1134,7 +1134,7 @@ describe("audio WebSocket security boundary", () => {
     try {
       await waitForWebSocketEvent(ws, "open");
       let ready = waitForWebSocketMessage(ws, (message) => message.type === "ready_to_receive_audio");
-      ws.send(JSON.stringify({ type: "start", model: "models/proactive-observer-v10" }));
+      ws.send(JSON.stringify({ type: "start", model: "gemini-3.8-flash-low" }));
       await ready;
 
       ws.send(Buffer.alloc(1, 1));
@@ -1160,7 +1160,7 @@ describe("audio WebSocket security boundary", () => {
       );
 
       ready = waitForWebSocketMessage(ws, (message) => message.type === "ready_to_receive_audio");
-      ws.send(JSON.stringify({ type: "start", model: "models/proactive-observer-v10" }));
+      ws.send(JSON.stringify({ type: "start", model: "gemini-3.8-flash-low" }));
       await ready;
       ws.send(Buffer.alloc(1, 3));
       await waitForCondition(
@@ -1214,7 +1214,7 @@ describe("audio WebSocket security boundary", () => {
     try {
       await waitForWebSocketEvent(ws, "open");
       const ready = waitForWebSocketMessage(ws, (message) => message.type === "ready_to_receive_audio");
-      ws.send(JSON.stringify({ type: "start", model: "models/proactive-observer-v10" }));
+      ws.send(JSON.stringify({ type: "start", model: "gemini-3.8-flash-low" }));
       await ready;
 
       const error = waitForWebSocketMessage(ws, (message) => message.type === "antigravity_error");
@@ -1281,7 +1281,7 @@ describe("audio WebSocket security boundary", () => {
     try {
       await waitForWebSocketEvent(ws, "open");
       const ready = waitForWebSocketMessage(ws, (message) => message.type === "ready_to_receive_audio");
-      ws.send(JSON.stringify({ type: "start", model: "models/proactive-observer-v10" }));
+      ws.send(JSON.stringify({ type: "start", model: "gemini-3.8-flash-low" }));
       await ready;
 
       ws.send(JSON.stringify({ type: "stop" }));
@@ -1401,7 +1401,7 @@ describe("audio WebSocket security boundary", () => {
     try {
       await waitForWebSocketEvent(ws, "open");
       const ready = waitForWebSocketMessage(ws, (message) => message.type === "ready_to_receive_audio");
-      ws.send(JSON.stringify({ type: "start", model: "models/proactive-observer-v10" }));
+      ws.send(JSON.stringify({ type: "start", model: "gemini-3.8-flash-low" }));
       await ready;
 
       ws.send(JSON.stringify({ type: "stop" }));
@@ -1486,7 +1486,7 @@ describe("audio WebSocket security boundary", () => {
     try {
       await waitForWebSocketEvent(ws, "open");
       const ready = waitForWebSocketMessage(ws, (message) => message.type === "ready_to_receive_audio");
-      ws.send(JSON.stringify({ type: "start", model: "models/proactive-observer-v10" }));
+      ws.send(JSON.stringify({ type: "start", model: "gemini-3.8-flash-low" }));
       await ready;
 
       const close = waitForWebSocketEvent<CloseEvent>(ws, "close");
@@ -1495,7 +1495,7 @@ describe("audio WebSocket security boundary", () => {
       await waitForCondition(() =>
         requests.some((request) => String(request.options.path).endsWith("/EndAudioSession")),
       );
-      ws.send(JSON.stringify({ type: "start", model: "models/proactive-observer-v10" }));
+      ws.send(JSON.stringify({ type: "start", model: "gemini-3.8-flash-low" }));
 
       const endRequest = requests.find((request) =>
         String(request.options.path).endsWith("/EndAudioSession"),
