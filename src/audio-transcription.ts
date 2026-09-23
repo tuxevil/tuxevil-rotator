@@ -18,6 +18,7 @@ import { getModelSpec } from "./compat/model-specs.js";
 const audioLogger = logger.child("audio-transcription");
 const AUDIO_SESSION_START_TIMEOUT_MS = 10_000;
 const AUDIO_TRANSCRIPTION_TIMEOUT_MS = 30_000;
+const LIVE_ROTATOR_TRANSCRIPTION_TIMEOUT_MS = 20_000;
 const AUDIO_UNARY_REQUEST_TIMEOUT_MS = 10_000;
 export const MAX_AUDIO_FRAME_BYTES = 256 * 1024;
 export const MAX_QUEUED_AUDIO_BYTES = 1024 * 1024;
@@ -1892,6 +1893,7 @@ export class RotatorAudioSession implements AudioTranscriptionSession {
         rawText = await transcribeAudioWithRotator(this.rotator, wav, {
           model: this.model,
           language: this.language,
+          timeoutMs: LIVE_ROTATOR_TRANSCRIPTION_TIMEOUT_MS,
           signal: segmentSignal,
           onInterimToken: (_token, partial) => {
             if ((this.state as string) === "destroyed" || segmentSignal.aborted) return;

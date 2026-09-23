@@ -149,13 +149,14 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   throw new TypeError(`blocked non-loopback fetch: ${hostname}`);
 }) as typeof fetch;
 
-const [dbStore, spendLogger, virtualKeys, proxy, versionCheck, notificationPoller] = await Promise.all([
+const [dbStore, spendLogger, virtualKeys, proxy, versionCheck, notificationPoller, audio] = await Promise.all([
   import("../src/db-store.js"),
   import("../src/spend-logger.js"),
   import("../src/virtual-keys.js"),
   import("../src/proxy.js"),
   import("../src/version-check.js"),
   import("../src/notification-poller.js"),
+  import("../src/audio-transcription.js"),
 ]);
 
 await dbStore.initDb();
@@ -595,6 +596,79 @@ describe("rotator WebSocket sessions (H-201, H-103, H-305, H-306)", () => {
       assert.equal(languageServer.paths.some((path) => path.endsWith("/StreamAudioTranscription")), true);
       assert.equal(client.messages.some((m) => m.type === "antigravity_error"), false);
       assert.deepEqual(audioStreamSpend().map((row) => row.status), ["success"]);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("falls back to the Language Server when a live rotator segment times out", async (t) => {
+    const upstreamStarted = deferred();
+    upstream.handler = (_body, init) => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init?.signal?.addEventListener("abort", () => controller.error(init.signal?.reason), { once: true });
+        },
+      });
+      upstreamStarted.resolve();
+      return sseResponse(stream);
+    };
+    languageServer.fallbackText = "transcribed after timeout";
+    const events: Array<{ transcription?: { text: string; isFinal: boolean }; complete?: boolean }> = [];
+    const errors: Error[] = [];
+    const session = new audio.RotatorAudioSession(makeRotator() as never, {
+      model: "gemini-3.8-flash-low",
+      onEvent: (event) => events.push(event),
+      onError: (error) => errors.push(error),
+    });
+
+    try {
+      await session.start();
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      const transcription = (session as unknown as {
+        processSegment: (item: { seqId: number; pcm: Buffer }) => Promise<void>;
+      }).processSegment({ seqId: 0, pcm: voicedPcm(16_000) });
+      await upstreamStarted.promise;
+      t.mock.timers.tick(20_000);
+      await transcription;
+
+      assert.equal(languageServer.paths.some((path) => path.endsWith("/StreamAudioTranscription")), true);
+      assert.equal(events.some((event) => event.transcription?.text === "transcribed after timeout" && event.transcription.isFinal), true);
+      await session.endSession();
+      assert.equal(events.some((event) => event.complete), true);
+      assert.deepEqual(errors, []);
+    } finally {
+      session.destroy();
+      t.mock.timers.reset();
+    }
+  });
+
+  it("does not start the Language Server fallback after client cancellation", async () => {
+    const upstreamStarted = deferred();
+    upstream.handler = (_body, init) => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init?.signal?.addEventListener("abort", () => controller.error(init.signal?.reason), { once: true });
+        },
+      });
+      upstreamStarted.resolve();
+      return sseResponse(stream);
+    };
+    languageServer.fallbackText = "should never appear";
+    const server = await startTestProxy();
+    const client = await openAudioWs(server.wsUrl);
+    try {
+      await client.waitFor((m) => m.type === "system_status", "system_status");
+      client.ws.send(JSON.stringify({ type: "start", model: "gemini-3.8-flash-low" }));
+      await client.waitFor((m) => m.type === "ready_to_receive_audio", "ready_to_receive_audio");
+      client.ws.send(voicedPcm(16_000));
+      client.ws.send(JSON.stringify({ type: "stop" }));
+      await upstreamStarted.promise;
+      await client.close();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      assert.deepEqual(languageServer.paths, []);
+      assert.equal(client.messages.some((m) => m.type === "antigravity_transcript" && m.isFinal), false);
     } finally {
       await client.close();
       await server.close();
