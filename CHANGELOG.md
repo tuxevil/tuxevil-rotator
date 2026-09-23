@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Improved
+
+- **Rotator-backed audio transcription and live streaming**: `/v1/audio/transcriptions` and live WebSocket sessions use active Antigravity accounts for Gemini transcription, with the Language Server as fallback after rotator failures and timeouts. Requested aliases are checked against the executed model while legacy audio-key access remains limited to the default audio route. Live sessions preserve ordered segment commits, enforce bounded deadlines, echo WebSocket Ping payloads, and honor client cancellation ([PR #36](https://github.com/tuxevil/tuxevil-rotator/pull/36) by [@javargasm](https://github.com/javargasm)).
+
 ## [3.9.0] - 2026-09-22
 
 ### Added
