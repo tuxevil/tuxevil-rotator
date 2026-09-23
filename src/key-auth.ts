@@ -72,6 +72,7 @@ export interface VirtualKeyScopeOptions {
   /** Scope entries that authorize the equivalent model only, for backward compatibility. */
   equivalentScopes?: readonly string[];
   equivalentModel?: string;
+  normalizeModel?: (model: string) => string;
 }
 
 function isModelAllowedByScope(models: string[], targetModel: string): boolean {
@@ -173,7 +174,8 @@ export async function authenticateVirtualKey(
     const hasEquivalentScope = (options.equivalentScopes ?? []).some((scope) =>
       scopes.includes(scope.toLowerCase()),
     );
-    const normalizeModel = (model: string): string => applyModelAlias(model).toLowerCase().replace(/^models\//, "");
+    const normalizeModel = (model: string): string =>
+      (options.normalizeModel?.(model) ?? applyModelAlias(model)).toLowerCase().replace(/^models\//, "");
     const equivalentModel = options.equivalentModel ? normalizeModel(options.equivalentModel) : undefined;
     const deniedTarget =
       hasEquivalentScope && equivalentModel === undefined

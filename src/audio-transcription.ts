@@ -195,7 +195,14 @@ function authorizeAudioModel(
     req,
     targets,
     executedModel === DEFAULT_AUDIO_TRANSCRIPTION_MODEL
-      ? { equivalentScopes: LEGACY_AUDIO_MODEL_SCOPES, equivalentModel: executedModel }
+      ? {
+          equivalentScopes: LEGACY_AUDIO_MODEL_SCOPES,
+          equivalentModel: executedModel,
+          normalizeModel: (model) =>
+            model.trim().toLowerCase() === "whisper"
+              ? resolveAudioTranscriptionModel(model)
+              : applyModelAlias(model),
+        }
       : {},
   );
 }
@@ -1867,32 +1874,68 @@ export class RotatorAudioSession implements AudioTranscriptionSession {
 
   private async processSegment(item: { seqId: number; pcm: Buffer }): Promise<void> {
     const wav = pcmToWav(item.pcm, 16000);
-    try {
-      const rawText = await transcribeAudioWithRotator(this.rotator, wav, {
-        model: this.model,
-        language: this.language,
-        signal: this.abortController.signal,
-        onInterimToken: (_token, partial) => {
-          if ((this.state as string) === "destroyed" || this.abortController.signal.aborted) return;
-          // Emit interim live preview if this segment is the next one to be committed
-          if (this.nextCommitSeqId === item.seqId) {
-            const cleanPartial = cleanTranscribedText(partial);
-            if (cleanPartial) {
-              const interimFull = this.committedText
-                ? `${this.committedText} ${cleanPartial}`
-                : cleanPartial;
-              this.onEvent({
-                transcription: {
-                  text: interimFull,
-                  isFinal: false,
-                },
-              });
-            }
-          }
-        },
-      });
+    const segmentDeadlineController = new AbortController();
+    const segmentDeadlineTimer = setTimeout(() => {
+      segmentDeadlineController.abort(
+        new AudioTranscriptionError(`Transcription timed out after ${AUDIO_TRANSCRIPTION_TIMEOUT_MS}ms`, 504),
+      );
+    }, AUDIO_TRANSCRIPTION_TIMEOUT_MS);
+    segmentDeadlineTimer.unref?.();
+    const segmentSignal = AbortSignal.any([
+      this.abortController.signal,
+      segmentDeadlineController.signal,
+    ]);
 
-      if ((this.state as string) !== "destroyed" && !this.abortController.signal.aborted) {
+    try {
+      let rawText: string;
+      try {
+        rawText = await transcribeAudioWithRotator(this.rotator, wav, {
+          model: this.model,
+          language: this.language,
+          signal: segmentSignal,
+          onInterimToken: (_token, partial) => {
+            if ((this.state as string) === "destroyed" || segmentSignal.aborted) return;
+            // Emit interim live preview if this segment is the next one to be committed
+            if (this.nextCommitSeqId === item.seqId) {
+              const cleanPartial = cleanTranscribedText(partial);
+              if (cleanPartial) {
+                const interimFull = this.committedText
+                  ? `${this.committedText} ${cleanPartial}`
+                  : cleanPartial;
+                this.onEvent({
+                  transcription: {
+                    text: interimFull,
+                    isFinal: false,
+                  },
+                });
+              }
+            }
+          },
+        });
+      } catch (rotatorErr) {
+        if (this.abortController.signal.aborted || segmentDeadlineController.signal.aborted) {
+          throw rotatorErr;
+        }
+        audioLogger.warn(
+          `[RotatorAudioSession] Segment #${item.seqId} rotator transcription failed: ${(rotatorErr as Error)?.message || rotatorErr}, attempting Language Server fallback`,
+        );
+        try {
+          rawText = await transcribeAudioWithAntigravity(wav, {
+            model: this.model,
+            language: this.language,
+            signal: segmentSignal,
+          });
+        } catch (fallbackErr) {
+          if (this.abortController.signal.aborted) throw fallbackErr;
+          if (segmentDeadlineController.signal.aborted) {
+            const reason = segmentDeadlineController.signal.reason;
+            throw reason instanceof Error ? reason : fallbackErr;
+          }
+          throw rotatorErr;
+        }
+      }
+
+      if ((this.state as string) !== "destroyed" && !segmentSignal.aborted) {
         const text = cleanTranscribedText(rawText);
         this.pendingResults.set(item.seqId, text);
       }
@@ -1906,6 +1949,7 @@ export class RotatorAudioSession implements AudioTranscriptionSession {
       this.onError(error, { terminal: false });
       this.pendingResults.set(item.seqId, "");
     } finally {
+      clearTimeout(segmentDeadlineTimer);
       this.drainCommittedResults();
     }
   }
@@ -2594,10 +2638,11 @@ export async function handleAudioWebSocket(
         discardInput();
         return;
       } else if (opcode === 9) {
-        // Ping -> Pong
-        const pong = Buffer.alloc(2);
+        // Ping -> Pong with identical application data (RFC 6455 Section 5.5.3).
+        const pong = Buffer.alloc(2 + payload.length);
         pong[0] = 0x8a;
-        pong[1] = 0;
+        pong[1] = payload.length;
+        payload.copy(pong, 2);
         socket.write(pong);
       } else if (opcode === 1 || opcode === 2) {
         if (pendingDataFrames.length >= MAX_QUEUED_WS_DATA_FRAMES) {

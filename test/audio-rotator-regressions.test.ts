@@ -420,6 +420,14 @@ describe("audio model authorization follows the executed model (H-302, H-308)", 
       assert.equal(defaultModel.status, 200);
       await defaultModel.arrayBuffer();
 
+      const whisperAlias = await postTranscription(
+        server.baseUrl,
+        { model: "whisper" },
+        { headers: { Authorization: `Bearer ${rawKey}` } },
+      );
+      assert.equal(whisperAlias.status, 200);
+      await whisperAlias.arrayBuffer();
+
       // The equivalence covers the default audio model only, not any other model it could name.
       const otherModel = await postTranscription(
         server.baseUrl,

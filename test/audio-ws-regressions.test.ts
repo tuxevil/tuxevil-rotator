@@ -67,7 +67,67 @@ class RefusedRequest extends EventEmitter {
   }
 }
 
-mock.method(https, "request", (() => new RefusedRequest()) as unknown as typeof https.request);
+class LanguageServerResponse extends EventEmitter {
+  statusCode = 200;
+  resume(): void {}
+}
+
+const languageServer = { fallbackText: null as string | null, paths: [] as string[] };
+
+class SuccessfulLanguageServerRequest extends EventEmitter {
+  private chunks: Buffer[] = [];
+
+  constructor(
+    private readonly path: string,
+    private readonly callback?: (response: LanguageServerResponse) => void,
+  ) {
+    super();
+  }
+
+  write(data: string | Buffer): boolean {
+    this.chunks.push(Buffer.isBuffer(data) ? data : Buffer.from(data));
+    return true;
+  }
+
+  end(data?: string | Buffer): this {
+    if (data !== undefined) this.write(data);
+    queueMicrotask(() => {
+      const response = new LanguageServerResponse();
+      this.callback?.(response);
+      if (this.path.endsWith("/StreamAudioTranscription")) {
+        const connectFrame = (message: unknown): Buffer => {
+          const payload = Buffer.from(JSON.stringify(message));
+          const frame = Buffer.alloc(5 + payload.length);
+          frame.writeUInt32BE(payload.length, 1);
+          payload.copy(frame, 5);
+          return frame;
+        };
+        response.emit("data", connectFrame({ ready: { sessionId: "fallback-session" } }));
+        response.emit("data", connectFrame({ transcription: { text: languageServer.fallbackText, isFinal: true } }));
+        response.emit("data", connectFrame({ complete: true }));
+      } else {
+        response.emit("end");
+      }
+    });
+    return this;
+  }
+
+  setTimeout(): this {
+    return this;
+  }
+
+  destroy(): this {
+    return this;
+  }
+}
+
+mock.method(https, "request", ((options: { path?: string }, callback?: (response: LanguageServerResponse) => void) => {
+  const path = String(options.path);
+  languageServer.paths.push(path);
+  return languageServer.fallbackText === null
+    ? new RefusedRequest()
+    : new SuccessfulLanguageServerRequest(path, callback);
+}) as unknown as typeof https.request);
 mock.method(cp, "execSync", (() => {
   throw new Error("Language Server discovery disabled in tests");
 }) as unknown as typeof cp.execSync);
@@ -444,6 +504,8 @@ beforeEach(() => {
   spendLogger.resetSpendLoggerForTests();
   upstream.handler = null;
   upstream.requests.length = 0;
+  languageServer.fallbackText = null;
+  languageServer.paths.length = 0;
   countQuery.gate = null;
   countQuery.onEnter = null;
 });
@@ -512,6 +574,33 @@ describe("audio WebSocket authorizes the executed model (H-302, H-308)", () => {
 });
 
 describe("rotator WebSocket sessions (H-201, H-103, H-305, H-306)", () => {
+  it("falls back to the Language Server when a live rotator segment fails", async () => {
+    upstream.handler = () => sseResponse(sse(UPSTREAM_ERROR_EVENT));
+    languageServer.fallbackText = "fallback transcript";
+    const server = await startTestProxy();
+    const client = await openAudioWs(server.wsUrl);
+    try {
+      await client.waitFor((m) => m.type === "system_status", "system_status");
+      client.ws.send(JSON.stringify({ type: "start", model: "gemini-3.8-flash-low" }));
+      await client.waitFor((m) => m.type === "ready_to_receive_audio", "ready_to_receive_audio");
+      client.ws.send(voicedPcm(16_000));
+      client.ws.send(JSON.stringify({ type: "stop" }));
+      const transcript = await client.waitFor(
+        (m) => m.type === "antigravity_transcript" && m.isFinal === true,
+        "fallback transcript",
+      );
+      await client.waitFor((m) => m.type === "antigravity_complete", "antigravity_complete");
+
+      assert.equal(transcript.text, "fallback transcript");
+      assert.equal(languageServer.paths.some((path) => path.endsWith("/StreamAudioTranscription")), true);
+      assert.equal(client.messages.some((m) => m.type === "antigravity_error"), false);
+      assert.deepEqual(audioStreamSpend().map((row) => row.status), ["success"]);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   it("reports a failed segment as antigravity_error and never commits its partial text", async () => {
     upstream.handler = () => sseResponse(sse(textEvent("PRIMERA MITAD "), UPSTREAM_ERROR_EVENT));
     const server = await startTestProxy();
@@ -639,6 +728,7 @@ describe("control frames are answered while stop is pending (H-104)", () => {
       assert.equal(await client.waitForMessage("system_status"), true);
       client.send(9, Buffer.from("idle"));
       assert.equal(await client.waitUntil(() => pongs().length === 1), true, "idle ping answered");
+      assert.equal(pongs()[0].payload.toString("utf8"), "idle");
 
       client.sendJson({ type: "start", model: "gemini-3.8-flash-low" });
       assert.equal(await client.waitForMessage("ready_to_receive_audio"), true);
@@ -649,6 +739,7 @@ describe("control frames are answered while stop is pending (H-104)", () => {
 
       client.send(9, Buffer.from("during-stop"));
       assert.equal(await client.waitUntil(() => pongs().length === 2), true, "ping answered while stop is pending");
+      assert.equal(pongs()[1].payload.toString("utf8"), "during-stop");
       client.send(8, Buffer.from([0x03, 0xe8]));
       const echoed = await client.waitUntil(() => client.frames.some((frame) => frame.opcode === 8));
       assert.equal(echoed, true, "close echoed while stop is pending");
