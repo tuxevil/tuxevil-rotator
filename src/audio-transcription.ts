@@ -1732,7 +1732,7 @@ export class RotatorAudioSession implements AudioTranscriptionSession {
     } = {},
   ) {
     this.rotator = rotator;
-    this.sessionId = `session-rotator-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    this.sessionId = `session-rotator-${Date.now()}-${crypto.randomUUID()}`;
     this.model = resolveAudioTranscriptionModel(options.model);
     this.continuous = options.continuous ?? false;
     this.language = options.language;
