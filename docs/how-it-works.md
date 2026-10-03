@@ -63,7 +63,7 @@ Within the same priority tier, the account with the most remaining quota for tha
 
 **Timer meanings:**
 
-- `fresh` — no future `resetTime` is currently reported for that model on that account. No active reset window is visible in quota polling yet. The dashboard labels this as `idle`.
+- `fresh` — no future `resetTime` is currently reported for that model on that account. No active reset window is visible in quota polling yet. The dashboard labels this as `idle` and offers a **Start** button to open the window.
 - `5h` — `resetTime` is less than 6 hours away.
 - `7d` — `resetTime` is 6 hours or more away.
 
@@ -120,7 +120,7 @@ healthScore = max(0, min(1,
 ))
 ```
 
-The health score is used as a tiebreaker in all policies and as a weighted factor in `hybrid`. It is visible in the Routing Inspector modal on the dashboard.
+The health score is used as a tiebreaker in all policies and as a weighted factor in `hybrid`. It is shown in each account's drawer on the dashboard, and the Overview's model rows expand to show every candidate's score and rejection reason.
 
 ## Provider Scopes
 
@@ -170,7 +170,7 @@ Operationally, `idle` means:
 - because the provider does not expose all parallel buckets explicitly, the rotator cannot guarantee ahead of time whether that new visible window will behave like a short `5h` opportunity or a longer `7d` runway
 
 For that reason, the rotator has two operator controls:
-- a **global fresh-window toggle** that blocks opening new `idle` windows by default
+- a **global fresh-window toggle** (**Allow fresh windows** on the dashboard). It is on by default; turning it off blocks opening new `idle` windows, and the setting survives restarts
 - a **per-account override** that allows specific accounts to ignore the global block
 
 When fresh-window starts are blocked:
@@ -188,7 +188,7 @@ The proxy detects blocked/suspended accounts at three levels:
 
 3. **API 403** (on request) — If the response body contains enforcement keywords such as `infring`, `suspend`, `abus`, `terminat`, `violat`, `banned`, `policy`, `forbidden`, or `verif`, the account is flagged.
 
-Flagged accounts are **immediately excluded** from all model routing. If the reason looks serious enough (ToS, abuse, infringement, suspension, or ban language), the rotator also enables a global **protective pause** that stops all routing for `protectivePauseMs` (default: 6 hours). The dashboard shows a red `FLAGGED` badge with the error message and quarantine guidance.
+Flagged accounts are **immediately excluded** from all model routing. If the reason looks serious enough (ToS, abuse, infringement, suspension, or ban language), the rotator also enables a global **protective pause** that stops all routing for `protectivePauseMs` (default: 6 hours). The dashboard marks the account **Quarantined** and lists it under **Needs you** on the Overview with the error message, what to do about it, and a **Restore** action for when the provider-side block is resolved.
 
 ## Circuit Breakers
 
@@ -210,7 +210,7 @@ Flagged accounts are **immediately excluded** from all model routing. If the rea
 - Explicit reset durations reported by Antigravity `RESOURCE_EXHAUSTED` responses are honored in full; the generic 30-minute cap does not truncate them
 - Stale generic cooldowns from previous sessions are capped on startup, while persisted Antigravity Claude/Gemini reset deadlines are preserved
 - When every non-flagged account is cooling down, the routing state becomes `cooldown_wait`
-- The dashboard shows why routing is waiting, how long until the next retry window, and which accounts are cooling down
+- The dashboard's Overview shows the routing state (**Waiting for cooldowns**), a countdown to the next retry window, and how many accounts are cooling down; the Accounts page's **Cooling down** filter lists them
 - Quota-based rotation only triggers if a healthy account is available; the proxy won't rotate away from a working account if there's no better alternative
 
 ## Error Handling

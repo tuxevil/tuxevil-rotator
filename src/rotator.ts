@@ -78,7 +78,7 @@ import { OPENCODE_ZEN_PROVIDER_ID } from "./providers/opencode-zen/credentials.j
 import { getUpdateInfo } from "./version-check.js";
 import { getNotifications } from "./notification-poller.js";
 import { getConfiguredAdminToken } from "./admin-auth.js";
-import { getProxyExposureWarning } from "./exposure.js";
+import { getProxyExposureWarning, isRunningInContainer } from "./exposure.js";
 import {
   getCachedState,
   setCachedState,
@@ -161,6 +161,7 @@ export function areAccountIdentitiesCompatible(
 }
 
 const rotatorLogger = logger.child("rotator");
+const IN_CONTAINER = isRunningInContainer();
 
 function currentUtcDay(now = Date.now()): string {
   return new Date(now).toISOString().slice(0, 10);
@@ -2806,14 +2807,24 @@ export class AccountRotator {
   private consolidateTokenBuckets(now: Date): void {
     const nowMs = now.getTime();
     const KEEP_MINUTES_MS = 12 * 3600 * 1000; // keep 12h of minutes
-    const KEEP_HOURS_MS = 60 * 86400 * 1000; // keep 60d of hours
-    const KEEP_DAYS_MS = 60 * 86400 * 1000; // keep 60d of days
+    // Keep 61d of hours: the dashboard's activity heatmap reads hour buckets
+    // that far back (buildActivity in dashboard-live.ts).
+    const KEEP_HOURS_MS = 61 * 86400 * 1000;
+    // Keep 60d of days. Hours are kept longer, so today a day bucket is
+    // folded into its month in the same pass that creates it.
+    const KEEP_DAYS_MS = 60 * 86400 * 1000;
 
-    // Helper: parse period string to epoch ms (approximate, enough for cutoff)
-    const periodToMs = (p: string): number =>
-      new Date(p.length <= 7 ? p + "-01" : p).getTime();
+    // Helper: parse period string to epoch ms (approximate, enough for cutoff).
+    // Keys are UTC. A bare "…T12:05" would parse as local time, so hosts
+    // ahead of UTC would consolidate their minute buckets too early, and a
+    // bare "…T12" is not a valid date at all, so hours would never roll up.
+    const periodToMs = (p: string): number => {
+      if (p.length === 16) return Date.parse(`${p}:00Z`);
+      if (p.length === 13) return Date.parse(`${p}:00:00Z`);
+      return Date.parse(p.length <= 7 ? `${p}-01` : p);
+    };
 
-    // Minutes older than 2h → consolidate into hours, keep rest
+    // Minutes older than 12h → consolidate into hours, keep rest
     const minuteCutoff = nowMs - KEEP_MINUTES_MS;
     const staleMinutes = this.tokenBuckets.minutes.filter(
       (b) => periodToMs(b.period) < minuteCutoff,
@@ -2848,7 +2859,7 @@ export class AccountRotator {
       );
     }
 
-    // Hours older than 48h → consolidate into days
+    // Hours older than 61d → consolidate into days
     const hourCutoff = nowMs - KEEP_HOURS_MS;
     const staleHours = this.tokenBuckets.hours.filter(
       (b) => periodToMs(b.period) < hourCutoff,
@@ -3047,26 +3058,14 @@ export class AccountRotator {
 
   getTokenUsage(): TokenUsageData {
     // Buckets are hierarchical rollups: minutes → hours → days → months.
-    // A minute period that has already been rolled into an hour bucket must
-    // NOT be counted again. Same logic applies to hours→days and days→months.
-    const hourPeriods = new Set(this.tokenBuckets.hours.map((b) => b.period));
-    const dayPeriods = new Set(this.tokenBuckets.days.map((b) => b.period));
-    const monthPeriods = new Set(this.tokenBuckets.months.map((b) => b.period));
-
-    const minutesFiltered = this.tokenBuckets.minutes.filter(
-      (b) => !hourPeriods.has(b.period.slice(0, 13)),
-    );
-    const hoursFiltered = this.tokenBuckets.hours.filter(
-      (b) => !dayPeriods.has(b.period.slice(0, 10)),
-    );
-    const daysFiltered = this.tokenBuckets.days.filter(
-      (b) => !monthPeriods.has(b.period.slice(0, 7)),
-    );
-
+    // consolidateTokenBuckets moves a bucket up a tier, it never copies it,
+    // so every request lives in exactly one bucket and the tiers add up. A
+    // period can be split across two tiers while its cutoff passes through
+    // it; both parts count.
     const all = [
-      ...minutesFiltered,
-      ...hoursFiltered,
-      ...daysFiltered,
+      ...this.tokenBuckets.minutes,
+      ...this.tokenBuckets.hours,
+      ...this.tokenBuckets.days,
       ...this.tokenBuckets.months,
     ];
     let totalInputTokens = 0;
@@ -3096,7 +3095,7 @@ export class AccountRotator {
       totalUsd += inputUsd + outputUsd;
     }
 
-    // Build tokensByModel with raw counts (from deduplicated buckets)
+    // Build tokensByModel with raw counts
     const tokensByModel: Record<
       string,
       { input: number; output: number; requests: number }
@@ -4095,7 +4094,7 @@ export class AccountRotator {
     const adminWarning = getConfiguredAdminToken()
       ? null
       : `Admin routes are exposed on ${this.config.bindHost}:${this.config.proxyPort} because TUXEVIL_ROTATOR_ADMIN_TOKEN is not configured.`;
-    const proxyWarning = getProxyExposureWarning(this.config);
+    const proxyWarning = getProxyExposureWarning(this.config, IN_CONTAINER);
 
     return {
       version: updateInfo.currentVersion,
@@ -4122,6 +4121,7 @@ export class AccountRotator {
         adminTokenConfigured: !!getConfiguredAdminToken(),
         warning: [adminWarning, proxyWarning].filter(Boolean).join(" ") || null,
         bindHost: this.config.bindHost || "0.0.0.0",
+        inContainer: IN_CONTAINER,
       },
       routingDiagnostics,
       circuitBreakers: {

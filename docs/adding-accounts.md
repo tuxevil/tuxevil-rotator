@@ -100,9 +100,11 @@ entry from `~/.ollama-rotator/accounts.json` into the active `accounts.json` as
 
 ## Web-Based Login
 
-The dashboard includes a web-based OAuth login flow at `/login`. This is useful for:
+The rotator includes a web-based OAuth login flow at `/login`. This is useful for:
 - Hosted deployments where CLI access is inconvenient
 - Users who prefer a browser-only workflow
+
+The dashboard's **Add account** button (top bar, Accounts page, Settings, or <kbd>⌘K</kbd>) opens `/login` in a new tab when hosted OAuth is configured, and `/login-cli` otherwise.
 
 Set `ANTIGRAVITY_REDIRECT_URI` to the HTTPS callback registered in your OAuth client for hosted deployments.
 
@@ -116,13 +118,14 @@ New accounts usually get a companion project bound automatically during login: i
 
 ## Account Management from Dashboard
 
-The dashboard (`/dashboard`) provides a full account management UI:
-- Add new accounts via web OAuth
-- View account status, quota, timers, and error messages
-- Enable/disable accounts
-- Set account tier (`ultra`, `pro`, `plus`, `free`)
-- Configure per-account fresh-window overrides
-- Remove accounts
+The dashboard's **Accounts** page (`/dashboard/accounts`) shows every account as a card or in a compact list, with its status, quota per model and reset timers, health and last error. From an account's **⋯** menu or its drawer (`/dashboard/accounts/<email>`) you can:
+- Re-enable a disabled account, or restore a quarantined one to rotation
+- Disable or quarantine an account
+- Start an idle quota window, or always allow fresh windows for that account
+- Set the account tier (`ultra`, `pro`, `plus`, `free`)
+- Remove the account
+
+See the [Dashboard guide](dashboard.md#accounts) for the full page.
 
 ## Account Fields in accounts.json
 
@@ -188,7 +191,7 @@ connections and does not install a CA, intercept TLS, or expose a MITM endpoint.
 
 ## Token Auto-Refresh
 
-OAuth tokens are refreshed automatically before expiry. No manual token management is needed. If a token cannot be refreshed (revoked consent, expired session), the account is disabled and a clear error message is shown on the dashboard.
+OAuth tokens are refreshed automatically before expiry. No manual token management is needed. If a token cannot be refreshed (revoked consent, expired session), the account is disabled and the error, with a suggested fix, is shown on its dashboard card and drawer.
 
 ## Donating an Account
 

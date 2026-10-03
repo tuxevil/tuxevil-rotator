@@ -4,5 +4,6 @@
     "noEmit": true,
     "rootDir": "."
   },
-  "include": ["src", "test"]
+  "include": ["src", "test", "scripts/dashboard-dev.ts"],
+  "exclude": ["src/web"]
 }

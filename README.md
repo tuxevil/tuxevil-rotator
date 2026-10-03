@@ -157,7 +157,7 @@ Existing `enc:v1` records remain decryptable during migration; newly written rec
 - **Virtual Keys & access control** — Issue scoped `rk-...` keys for teams, agents, or CI pipelines with per-key model restrictions
 - **Spend logging & audit inspector** — Full request/response audit trail with 6-decimal USD cost estimates for both Antigravity and Ollama traffic (requires PostgreSQL)
 - **Legacy importer** — On startup, automatically merges Ollama Cloud accounts from `~/.ollama-rotator/accounts.json` (the predecessor product) onto existing accounts, idempotently
-- **Web dashboard** — Real-time routing state, quota bars, latency tracking (p50/p95), savings chart, activity heatmap, and routing inspector
+- **Web dashboard** — Live routing health and per-model quota runway, account cards with one-click fixes, a live request tail, token usage and savings, latency (p50/p95), an activity heatmap, and per-model routing decisions
 - **State persistence** — Survives restarts; routing assignments, cooldowns, and flags saved to disk or PostgreSQL
 - **Tool/function calling** — Fully supported in OpenAI and Anthropic formats, including multi-turn and parallel tool calls, with reliable function-name resolution for tool responses across turns. Ollama forwards `function.arguments` as a parsed object (OpenAI sends it as a JSON string and Ollama's Go API rejects that).
 - **Reasoning/thinking visibility** — Interleaved thinking blocks exposed as `reasoning_content` / `thinking_delta` in real time
@@ -279,20 +279,19 @@ How model routing works:
 
 ## Dashboard
 
-After starting the proxy, open `http://localhost:51200/dashboard`.
+After starting the proxy, open `http://localhost:51200/dashboard` and sign in with the admin token (`TUXEVIL_ROTATOR_ADMIN_TOKEN`). A link of the form `/dashboard?token=<token>` signs in directly; either way the browser gets a session cookie and the token is removed from the URL.
 
-The dashboard shows:
-- **Routing state** — real-time status, uptime, requests, protective pause timers
-- **Account cards** — quota bars (Antigravity family buckets `claude` / `gemini`; Ollama monthly usage), per-model timers, health scores, flagged alerts
-- **Token usage & savings** — interactive chart with time ranges and CSV/JSON export (real USD for both providers)
-- **Latency (p50/p95)** — per-model TTFB and total duration
-- **Activity heatmap** — 60-day GitHub-style request intensity grid
-- **Quota forecast** — tier-weighted depletion predictions
-- **Routing inspector** — on-demand modal with candidate scores, health-score breakdown, and rejection reasons
+- **Overview** — whether routing works right now, one row per model pool (Claude, Gemini, Codex, Ollama, OpenCode) with pooled quota, the account serving it, what is next in line, the next reset and how long the quota lasts at the current rate, plus a list of what needs you with the fix one click away
+- **Accounts** — cards with each account's quota per model, or a compact sortable list; each account opens a drawer with its quota windows, routing decisions, health breakdown, limits and every action (re-enable, restore, start idle windows, tier, quarantine, remove)
+- **Requests** — a live tail of requests and rotator events, and with PostgreSQL the full history with payloads and per-key totals
+- **Usage** — token volume by model with 1h–30d ranges, estimated savings at list prices, latency percentiles and a 60-day activity heatmap
+- **Virtual keys** and **Settings** — key management, routing controls and policy, a benchmark, and the raw configuration file
+
+Press <kbd>⌘K</kbd> (<kbd>Ctrl</kbd>+<kbd>K</kbd>) to jump to any page or account or run a quick action, and the bell in the top bar lists what needs you. Light and dark themes follow the system unless you pick one in the profile menu at the bottom of the sidebar; the privacy mask there (or `?mask=1`) hides names, emails and keys for screenshots.
 
 ![Dashboard](dashboard.png)
 
-[Dashboard reference →](docs/adding-accounts.md)
+[Dashboard guide →](docs/dashboard.md)
 
 ## Virtual Keys & Spend Logging
 
@@ -317,6 +316,7 @@ tuxevil-rotator keys generate --alias "cursor-agent" --models "gemini-3.6-flash-
 |-------|------|
 | How It Works | [docs/how-it-works.md](docs/how-it-works.md) |
 | Configuration | [docs/configuration.md](docs/configuration.md) |
+| Dashboard | [docs/dashboard.md](docs/dashboard.md) |
 | Virtual Keys & Spend Logging | [docs/virtual-keys.md](docs/virtual-keys.md) |
 | API Reference | [docs/api-reference.md](docs/api-reference.md) |
 | Compatibility Adapters | [docs/compatibility.md](docs/compatibility.md) |

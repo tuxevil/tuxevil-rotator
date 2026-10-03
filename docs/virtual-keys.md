@@ -24,7 +24,9 @@ Virtual Keys (`rk-...`) let you issue scoped access credentials for individual a
 
 **Via Web UI** (`/dashboard/keys`):
 
-The dashboard provides a full CRUD interface for virtual keys: list, generate, update alias/models/blocked status, and delete.
+The dashboard lists every key with its allowed models, status and last use, and lets you create keys (the raw key is shown once), change a key's allowed models, block or unblock it, and delete it.
+
+![Virtual keys page](images/dashboard-keys.png)
 
 **Via CLI:**
 
@@ -84,7 +86,7 @@ Authorization: Bearer rk-...
 x-rotator-key: rk-...
 x-api-key: rk-...
 
-# URL parameter (for dashboard browser access)
+# URL parameter (for clients that cannot set headers)
 http://localhost:51200/v1/chat/completions?rotator_key=rk-...
 ```
 
@@ -128,13 +130,17 @@ When PostgreSQL is configured, every proxied request is recorded in a persistent
 | Request payload | Full prompt (sanitized: large base64 media replaced with `[inline-media: N bytes]`) |
 | Response payload | Full completion, tool calls, thinking blocks |
 
-### Spend Logs Dashboard (`/dashboard/logs`)
+### Request history in the dashboard (`/dashboard/requests?view=history`)
 
-- **Filterable audit trail** by date range, model, virtual key, status
-- **Payload Inspector** — tabbed viewer for request messages, output choices, tool calls, and Gemini thinking blocks
-- **PII masking** — append `?mask=1` to the URL to redact sensitive content
-- **Column visibility** — show/hide any column
-- **Cost Breakdown** — per-request and aggregated USD estimates
+- **Filterable audit trail** by date range, model, virtual key and outcome; filters live in the URL so a view can be shared
+- **Payload inspector** — expand a row to see the request body, the response and the metadata, each with a copy button
+- **By key** — totals per virtual key for the same filters
+- **Privacy mask** — the profile menu at the bottom of the sidebar (or `?mask=1`) redacts names, emails, keys and IP addresses
+- **Cost breakdown** — per-request and aggregated list-price estimates
+
+![Request history with the payload inspector open](images/dashboard-requests-history.png)
+
+The **Live** view on the same page shows the most recent requests from memory and works without PostgreSQL. See the [Dashboard guide](dashboard.md#requests).
 
 ### REST API
 

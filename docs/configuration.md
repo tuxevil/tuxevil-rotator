@@ -21,6 +21,7 @@ tuxevil-rotator start --config-dir /path/to/config
 | `TUXEVIL_ROTATOR_ENCRYPTION_KEY` | Secret used to encrypt OAuth refresh tokens at rest. A 64-character hexadecimal key is recommended. `ENCRYPTION_KEY` is accepted as a fallback. |
 | `TUXEVIL_ROTATOR_ADMIN_TOKEN` | Admin token for dashboard/API access. If unset, a secure token is auto-generated on first run and saved to `.admin-token` |
 | `TUXEVIL_ROTATOR_BIND_HOST` | Network interface to bind on (default: `0.0.0.0`; set to `127.0.0.1` for local-only) |
+| `TUXEVIL_ROTATOR_CONTAINER` | Set to `1` by the Docker image. Inside a container binding `0.0.0.0` is expected, so the dashboard shows the proxy exposure warning as a note pointing at the published port instead of `bindHost`. Detected automatically under Docker and Podman. |
 | `TUXEVIL_ROTATOR_MAX_BODY_BYTES` | Max accepted proxy request body size in bytes (default: `26214400` = 25 MiB) |
 | `TUXEVIL_ROTATOR_LOG_LEVEL` | Log verbosity: `debug`, `info`, `warn`, `error`, `silent` (default: `info`) |
 | `TUXEVIL_ROTATOR_LOG_RETENTION_DAYS` | Spend log retention in days (default: `30`) |
@@ -119,7 +120,7 @@ request never lands on an Antigravity or Ollama account and vice versa.
 
 ## accounts.json
 
-The main configuration file. Created automatically by the `login` command, and editable by hand or via the dashboard UI.
+The main configuration file. Created automatically by the `login` command, and editable by hand or from the dashboard (**Settings → Configuration**, which can also export and import it).
 
 ```json
 {

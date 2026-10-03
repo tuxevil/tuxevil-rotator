@@ -2,12 +2,15 @@
 
 ## Authentication
 
-**Dashboard and admin routes** (`/dashboard`, `/api/*`) require one of:
+**Admin routes** (`/api/*`) require one of:
 - `Authorization: Bearer <token>`
 - `X-Rotator-Admin-Token: <token>`
-- `?token=<token>` (URL parameter, for browser dashboard access)
+- `?token=<token>` (URL parameter)
+- The dashboard session cookie (see below)
 
-The admin token is auto-generated on first run and saved to `.admin-token`. Override with `TUXEVIL_ROTATOR_ADMIN_TOKEN`.
+The admin token is auto-generated on first run and stored with the rotator's settings. Override with `TUXEVIL_ROTATOR_ADMIN_TOKEN`.
+
+**Dashboard sessions.** The dashboard never keeps the admin token in the page. Opening `/dashboard?token=<token>` or signing in on the dashboard's login screen trades the token for an `HttpOnly`, `SameSite=Strict` session cookie valid for 30 days, and the token is removed from the URL. The cookie holds an HMAC signed with the admin token, so rotating the token signs every browser out. Requests authenticated only by the cookie that change state (`POST`, `PUT`, `DELETE`) must come from the dashboard's own origin (`Sec-Fetch-Site: same-origin`, or a matching `Origin`); otherwise they are refused with `403`. Signing out revokes that session on the server until the rotator restarts (rotate the admin token to invalidate sessions for good). Browsers send cookies to every port on a hostname, so other web services on the same host also receive the session cookie.
 
 **Proxy routes** (`/v1/*`, `/v1internal:*`) run in open mode by default. Once at least one Virtual Key is created in PostgreSQL, all proxy routes require a valid `rk-...` key. See [Virtual Keys](virtual-keys.md).
 
@@ -15,12 +18,21 @@ The admin token is auto-generated on first run and saved to `.admin-token`. Over
 
 ## Dashboard Routes
 
+The dashboard is a single-page app; every view has its own URL. The page shell is static and needs no token; all data comes from the admin API.
+
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/dashboard` | Main accounts dashboard |
-| `GET` | `/dashboard/keys` | Virtual Keys management UI |
-| `GET` | `/dashboard/logs` | Spend Logs & audit inspector |
+| `GET` | `/dashboard` | Overview: routing health, model pools, items that need attention |
+| `GET` | `/dashboard/accounts` | Accounts table (`?status=`, `?q=`, `?provider=`, `?sort=`, `?dir=`) |
+| `GET` | `/dashboard/accounts/<email>` | Accounts table with that account's detail drawer open |
+| `GET` | `/dashboard/requests` | Live request and event tail; `?view=history` for stored spend logs |
+| `GET` | `/dashboard/usage` | Token usage, savings, latency and the activity heatmap (`?range=`) |
+| `GET` | `/dashboard/keys` | Virtual key management |
+| `GET` | `/dashboard/settings` | Routing controls and policy, benchmark, configuration file, appearance |
+| `GET` | `/dashboard/logs` | Redirects to `/dashboard/requests?view=history` |
 | `GET` | `/login` | Web-based account OAuth linking page |
+
+Append `?mask=1` to any dashboard URL to open it with the privacy mask on.
 
 ---
 
@@ -29,7 +41,15 @@ The admin token is auto-generated on first run and saved to `.admin-token`. Over
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/status` | JSON status: accounts, quotas, model routing, flags |
-| `GET` | `/api/events` | SSE stream of real-time rotator events |
+| `GET` | `/api/events` | SSE stream of the full `/api/status` payload on every change |
+| `GET` | `/api/session` | `{ authenticated, authRequired }` for the current browser (no auth needed) |
+| `POST` | `/api/session` | Body `{ "token": "…" }`; sets the dashboard session cookie |
+| `DELETE` | `/api/session` | Revokes the dashboard session and clears its cookie |
+| `GET` | `/api/dashboard/snapshot` | Dashboard overview plus the live request and event tails |
+| `GET` | `/api/dashboard/stream` | SSE: a `snapshot` event, then only changes (`overview`, `accounts`, `requests`, `events`) |
+| `GET` | `/api/dashboard/usage?range=1h\|6h\|24h\|7d\|30d` | Token buckets for the range, list prices per model, all-time totals, latency |
+| `GET` | `/api/dashboard/usage/export?format=csv\|json` | Download the full token usage history |
+| `GET` | `/api/dashboard/activity` | Requests per hour for the last 60 days |
 | `POST` | `/api/enable/<email>` | Re-enable a disabled account |
 | `POST` | `/api/settings/fresh-window-starts/on` | Allow opening new `idle`/fresh windows globally |
 | `POST` | `/api/settings/fresh-window-starts/off` | Block opening new `idle`/fresh windows globally |
@@ -102,6 +122,16 @@ there is no shared-project fallback. Other `/v1internal:*` operations are reject
 | `key` | string | Filter by virtual key hash |
 | `limit` | integer | Max results (default: 100) |
 | `offset` | integer | Pagination offset |
+
+### `/api/dashboard/stream`
+
+Server-sent events for the dashboard. The first event is `snapshot` (the same body as `/api/dashboard/snapshot`). After that the server compares each new rotator state with the previous one and sends only what changed:
+
+- `overview` — the top-level overview sections that changed (routing health, breakers, controls, traffic, …)
+- `accounts` — `{ upsert, remove, order? }`: changed accounts, removed emails, and the new order when it changed
+- `requests` / `events` — entries that were not sent before, newest first, each with an increasing `id`
+
+Countdowns are sent as absolute timestamps (`nextRetryAt`, `nextRefillAt`, breaker `until`), so an idle rotator sends nothing but a keep-alive comment every 25 seconds. Use `/api/events` if you need the full status on every change.
 
 ### `/api/status`
 

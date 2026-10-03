@@ -50,6 +50,6 @@ Do not exceed an average of **80 to 100 requests per account, per day**.
 *   **1200+ requests/day total (Heavy Agentic Work):** 15+ healthy accounts required.
 
 ### Best Practices for Operators
-1.  **Monitor the Dashboard:** Keep an eye on the `requestsSinceRotation` and `totalRequests` metrics.
+1.  **Monitor the Dashboard:** Keep an eye on each account's request counts (total and since the last rotation, in the account drawer) and its daily budget meters.
 2.  **Do Not Retry Blindly:** If the rotator proxy returns a 503 (All accounts exhausted), your consuming agent **must** respect the `retryAfterMs` payload. Do not loop retries on the consumer side.
 3.  **Use Proportional Pooling:** Configure `requestsPerRotation` (default: 5) to evenly distribute load across the active pool rather than draining one account to 0% before switching.

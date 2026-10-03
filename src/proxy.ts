@@ -35,7 +35,6 @@ import {
 } from "./providers/google-antigravity/forward.js";
 export { forwardRequest, SseEventAccumulator, extractUsageFromSseEvent };
 import {
-  serveDashboard,
   serveStatusApi,
   serveConfigApi,
   serveConfigExportApi,
@@ -61,13 +60,22 @@ import {
   serveGetSpendSummaryApi,
   serveGetSpendByKeyApi,
   serveModelsApi,
-  serveDashboardKeys,
-  serveDashboardLogs,
-  serveStaticKeysJs,
-  serveStaticLogsJs,
-  serveStaticCss,
-  serveStaticJs,
+  serveSessionInfoApi,
+  serveCreateSessionApi,
+  serveDeleteSessionApi,
+  redirectDashboardTokenLink,
+  serveDashboardSnapshotApi,
+  serveDashboardUsageApi,
+  serveDashboardActivityApi,
+  serveDashboardUsageExportApi,
 } from "./dashboard.js";
+import {
+  prewarmDashboard,
+  serveDashboardAsset,
+  serveDashboardShell,
+} from "./dashboard-app.js";
+import { DashboardLiveHub } from "./dashboard-live.js";
+import { isDbConfigured } from "./db-store.js";
 import {
   handleHostedCallback,
   serveLoginLanding,
@@ -2174,11 +2182,18 @@ export function startProxy(
     }, SSE_THROTTLE_MS);
   };
 
+  const liveHub = new DashboardLiveHub({
+    getStatus: () => rotator.getStatus(),
+    capabilities: () => ({ database: isDbConfigured() }),
+  });
+  prewarmDashboard();
+
   // Hook into rotator state changes to trigger SSE
   const origSaveState = rotator.saveState.bind(rotator);
   rotator.saveState = (): Promise<void> => {
     const write = origSaveState();
     scheduleSseBroadcast();
+    liveHub.schedule();
     return write;
   };
 
@@ -2198,22 +2213,27 @@ export function startProxy(
       return;
     }
 
-    if (method === "GET" && (pathname === "/" || pathname === "/dashboard")) {
-      if (!requireAdmin(req, res)) return;
+    if (method === "GET" && pathname === "/") {
+      const query = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+      res.writeHead(302, { Location: `/dashboard${query}`, "Cache-Control": "no-store" });
+      res.end();
+      return;
+    }
+
+    if (method === "GET" && pathname.startsWith("/dashboard/assets/")) {
+      void serveDashboardAsset(req, res, pathname);
+      return;
+    }
+
+    // The app shell is static and holds no data; the app signs in through
+    // /api/session and every data route below stays admin-only.
+    if (
+      method === "GET" &&
+      (pathname === "/dashboard" || pathname.startsWith("/dashboard/"))
+    ) {
+      if (redirectDashboardTokenLink(req, res)) return;
       trackFeature("dashboard");
-      serveDashboard(res);
-      return;
-    }
-
-    if (method === "GET" && pathname === "/dashboard/keys") {
-      if (!requireAdmin(req, res)) return;
-      serveDashboardKeys(res);
-      return;
-    }
-
-    if (method === "GET" && pathname === "/dashboard/logs") {
-      if (!requireAdmin(req, res)) return;
-      serveDashboardLogs(res);
+      void serveDashboardShell(res);
       return;
     }
 
@@ -2223,23 +2243,48 @@ export function startProxy(
       return;
     }
 
-    if (method === "GET" && pathname === "/static/dashboard.css") {
-      serveStaticCss(res);
+    if (pathname === "/api/session") {
+      if (method === "GET") {
+        serveSessionInfoApi(req, res);
+        return;
+      }
+      if (method === "POST") {
+        void serveCreateSessionApi(req, res);
+        return;
+      }
+      if (method === "DELETE") {
+        serveDeleteSessionApi(req, res);
+        return;
+      }
+    }
+
+    if (method === "GET" && pathname === "/api/dashboard/snapshot") {
+      if (!requireAdmin(req, res)) return;
+      serveDashboardSnapshotApi(req, res, liveHub);
       return;
     }
 
-    if (method === "GET" && pathname === "/static/dashboard.js") {
-      serveStaticJs(res);
+    if (method === "GET" && pathname === "/api/dashboard/stream") {
+      if (!requireAdmin(req, res)) return;
+      liveHub.addClient(res);
       return;
     }
 
-    if (method === "GET" && pathname === "/static/dashboard-keys.js") {
-      serveStaticKeysJs(res);
+    if (method === "GET" && pathname === "/api/dashboard/usage") {
+      if (!requireAdmin(req, res)) return;
+      serveDashboardUsageApi(req, res, rotator);
       return;
     }
 
-    if (method === "GET" && pathname === "/static/dashboard-logs.js") {
-      serveStaticLogsJs(res);
+    if (method === "GET" && pathname === "/api/dashboard/usage/export") {
+      if (!requireAdmin(req, res)) return;
+      serveDashboardUsageExportApi(req, res, rotator);
+      return;
+    }
+
+    if (method === "GET" && pathname === "/api/dashboard/activity") {
+      if (!requireAdmin(req, res)) return;
+      serveDashboardActivityApi(req, res, rotator);
       return;
     }
 
@@ -2786,6 +2831,7 @@ export function startProxy(
   const originalClose = server.close.bind(server);
   server.close = ((callback?: (err?: Error) => void) => {
     serverClosing.abort();
+    liveHub.close();
     closeAllAudioWebSockets(serverClosing.signal);
     const forceCloseTimer = setTimeout(() => {
       for (const socket of audioUpgradeSockets) socket.destroy();

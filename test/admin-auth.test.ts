@@ -4,13 +4,22 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  DASHBOARD_SESSION_COOKIE,
+  DASHBOARD_SESSION_TTL_MS,
+  clearDashboardSessionCookie,
+  createDashboardSession,
+  dashboardSessionCookie,
   ensureAdminToken,
   generateAdminToken,
   getConfiguredAdminToken,
   getRequestAdminToken,
   isAdminAuthorized,
+  isAdminTokenValid,
+  isSameOriginRequest,
   readPersistedAdminToken,
+  readRequestCookie,
   setPersistedAdminToken,
+  verifyDashboardSession,
   writePersistedAdminToken,
 } from "../src/admin-auth.js";
 import { initDb, getCachedAdminToken } from "../src/db-store.js";
@@ -223,5 +232,117 @@ describe("admin token generation and persistence", () => {
       !preview.includes("fedcba9876"),
       "second half of the token must not leak",
     );
+  });
+});
+
+describe("dashboard session cookie", () => {
+  const now = Date.UTC(2026, 9, 3, 12, 0, 0);
+
+  function withSession(
+    token: string,
+    extra: Record<string, string> = {},
+    method = "GET",
+  ) {
+    const { value } = createDashboardSession(token);
+    return {
+      url: "/api/status",
+      method,
+      headers: {
+        cookie: `theme=dark; ${DASHBOARD_SESSION_COOKIE}=${encodeURIComponent(value)}`,
+        ...extra,
+      },
+    };
+  }
+
+  it("signs sessions with the admin token and expires them", () => {
+    const session = createDashboardSession("secret", now);
+    assert.equal(session.expiresAt, now + DASHBOARD_SESSION_TTL_MS);
+    assert.ok(!session.value.includes("secret"), "the cookie never contains the token");
+    assert.equal(verifyDashboardSession(session.value, "secret", now + 1000), true);
+    assert.equal(verifyDashboardSession(session.value, "rotated", now + 1000), false);
+    assert.equal(verifyDashboardSession(session.value, "secret", session.expiresAt + 1), false);
+    const [expires, signature] = session.value.split(".");
+    assert.equal(verifyDashboardSession(`${Number(expires) + 1}.${signature}`, "secret", now), false);
+    assert.equal(verifyDashboardSession(`${expires}.${signature.slice(1)}x`, "secret", now), false);
+    assert.equal(verifyDashboardSession("garbage", "secret", now), false);
+    assert.equal(verifyDashboardSession(null, "secret", now), false);
+  });
+
+  it("reads cookies by exact name", () => {
+    const req = { headers: { cookie: "a=1; tuxevil_session_x=2; tuxevil_session=abc%2Edef" } };
+    assert.equal(readRequestCookie(req, DASHBOARD_SESSION_COOKIE), "abc.def");
+    assert.equal(readRequestCookie(req, "missing"), null);
+  });
+
+  it("authorizes reads with a valid session cookie", () => {
+    assert.equal(isAdminAuthorized(withSession("secret"), "secret"), true);
+    assert.equal(isAdminAuthorized(withSession("other"), "secret"), false);
+  });
+
+  it("requires same-origin writes when only the cookie authenticates", () => {
+    assert.equal(isAdminAuthorized(withSession("secret", {}, "POST"), "secret"), false);
+    assert.equal(
+      isAdminAuthorized(withSession("secret", { "sec-fetch-site": "same-origin" }, "POST"), "secret"),
+      true,
+    );
+    assert.equal(
+      isAdminAuthorized(withSession("secret", { "sec-fetch-site": "same-site" }, "POST"), "secret"),
+      false,
+      "another port on the same host is same-site but not same-origin",
+    );
+    assert.equal(
+      isAdminAuthorized(
+        withSession("secret", { origin: "http://localhost:51200", host: "localhost:51200" }, "PUT"),
+        "secret",
+      ),
+      true,
+    );
+    assert.equal(
+      isAdminAuthorized(
+        withSession("secret", { origin: "http://evil.example", host: "localhost:51200" }, "DELETE"),
+        "secret",
+      ),
+      false,
+    );
+    assert.equal(
+      isAdminAuthorized(
+        withSession("secret", { origin: "https://rotator.example", host: "127.0.0.1:51200", "x-forwarded-host": "rotator.example" }, "POST"),
+        "secret",
+      ),
+      true,
+      "reverse proxies that rewrite Host still match the forwarded host",
+    );
+  });
+
+  it("keeps header and query tokens working without an origin", () => {
+    const req = { url: "/api/enable/x", method: "POST", headers: { "x-rotator-admin-token": "secret" } };
+    assert.equal(isAdminAuthorized(req, "secret"), true);
+    assert.equal(isAdminAuthorized({ url: "/api/enable/x?token=secret", method: "POST", headers: {} }, "secret"), true);
+  });
+
+  it("compares tokens without accepting near misses", () => {
+    assert.equal(isAdminTokenValid("secret", "secret"), true);
+    assert.equal(isAdminTokenValid("secret ", "secret"), false);
+    assert.equal(isAdminTokenValid("", "secret"), false);
+    assert.equal(isAdminTokenValid(null, "secret"), false);
+    assert.equal(isAdminTokenValid(null, null), true, "no configured token means open access");
+  });
+
+  it("detects same-origin requests", () => {
+    assert.equal(isSameOriginRequest({ headers: { "sec-fetch-site": "same-origin" } }), true);
+    assert.equal(isSameOriginRequest({ headers: { "sec-fetch-site": "cross-site", origin: "http://a", host: "a" } }), false);
+    assert.equal(isSameOriginRequest({ headers: { origin: "not a url", host: "a" } }), false);
+    assert.equal(isSameOriginRequest({ headers: {} }), false);
+  });
+
+  it("builds an HttpOnly, SameSite=Strict cookie", () => {
+    const cookie = dashboardSessionCookie("v", { secure: true });
+    assert.match(cookie, /^tuxevil_session=v; /);
+    assert.match(cookie, /HttpOnly/);
+    assert.match(cookie, /SameSite=Strict/);
+    assert.match(cookie, /Path=\//);
+    assert.match(cookie, /Secure/);
+    assert.doesNotMatch(dashboardSessionCookie("v", { secure: false }), /Secure/);
+    assert.match(clearDashboardSessionCookie(false), /Max-Age=0/);
   });
 });

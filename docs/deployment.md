@@ -58,6 +58,8 @@ See [Setting up PostgreSQL](integrations/setup-postgresql.md) for a full setup g
 
 By default the compose file binds to `127.0.0.1` only. To expose on the LAN, change the port mapping to `51200:51200` and ensure you are behind a firewall or reverse proxy.
 
+Inside the container the rotator always listens on `0.0.0.0`, and it cannot see which host address the port is published on. The dashboard therefore lists **Proxy listens on all interfaces** as a note rather than a warning: the native and `/v1` proxy routes reach as far as the published port.
+
 **Linux permissions:**
 
 On Linux, ensure `docker-data` is writable by UID 1000:
@@ -132,6 +134,7 @@ server {
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection '';
         proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
         proxy_buffering off;
         proxy_cache off;
         proxy_read_timeout 600s;
@@ -140,7 +143,9 @@ server {
 }
 ```
 
-The `proxy_buffering off` and long `proxy_read_timeout` are important for SSE streaming.
+The `proxy_buffering off` and long `proxy_read_timeout` are important for SSE streaming, both for model responses and for the dashboard's live updates.
+
+The dashboard signs in with a session cookie. Forwarding `Host` lets the rotator confirm that dashboard actions come from its own page (without it they fail with `403`), and `X-Forwarded-Proto` marks the cookie `Secure` when the proxy serves HTTPS.
 
 ---
 

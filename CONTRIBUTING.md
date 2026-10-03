@@ -61,10 +61,31 @@ npm test
 
 ```
 src/           # Runtime TypeScript source
+src/web/       # Dashboard single-page app (Preact + TypeScript)
 test/          # Test suite (run with: npm test)
 bin/           # CLI entry point
+scripts/       # Development scripts (dashboard dev server, etc.)
 tools/         # Ancillary tools (telemetry receiver, etc.)
 ```
+
+## Working on the Dashboard
+
+The dashboard in `src/web` is bundled in memory by esbuild when the rotator starts, so there is no separate build step. To work on it without provider credentials, run the dashboard dev server:
+
+```bash
+npm run dashboard:dev
+```
+
+It serves the real dashboard routes and admin API against a simulated rotator with sample accounts and live traffic, and rebuilds the bundle on every page load. Open `http://localhost:8899/dashboard?token=dev-token`. The PostgreSQL-backed pages (virtual keys, request history, benchmark) are answered with fixtures.
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `MOCK_PORT` | `8899` | Port to listen on |
+| `MOCK_TOKEN` | `dev-token` | Admin token; set it empty to run without sign-in |
+| `MOCK_DB` | on | `0` simulates a rotator without PostgreSQL |
+| `MOCK_SCENARIO` | `degraded` | `healthy`, `degraded`, `paused`, `empty` or `large` |
+
+Take documentation screenshots from the dev server so they never show real accounts.
 
 ## Coding Conventions
 

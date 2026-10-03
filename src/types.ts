@@ -650,6 +650,8 @@ export interface StatusResponse {
     adminTokenConfigured: boolean;
     warning: string | null;
     bindHost: string;
+    /** Running in a container, where binding 0.0.0.0 is expected. */
+    inContainer?: boolean;
   };
   routingDiagnostics: Record<string, RoutingModelDiagnostics>;
   ollamaModels: string[];

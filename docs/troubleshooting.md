@@ -2,7 +2,7 @@
 
 ## Account shows `flagged` status
 
-Google detected potential abuse or a policy enforcement signal. Review the exact error message on the dashboard card.
+Google detected potential abuse or a policy enforcement signal. The dashboard shows the account as **Quarantined**; review the exact error message on its card or in its drawer (`/dashboard/accounts/<email>`).
 
 Flagged accounts are **quarantined** and cannot be re-enabled via `/api/enable/<email>` until the underlying provider-side block is resolved. Options:
 
@@ -41,9 +41,17 @@ This should not happen — each model routes independently. Agent 1 using Gemini
 - If virtual keys are configured: ensure the agent is using a valid `rk-...` key in the `Authorization: Bearer` header
 - If no virtual keys: any non-empty string works as the API key
 
-## Dashboard shows "token expired" or admin token issues
+## Dashboard keeps asking for the admin token
 
-After upgrading to v2.3.0+, the auto-generated admin token is regenerated. Check logs on startup for the new token, or set `TUXEVIL_ROTATOR_ADMIN_TOKEN` explicitly in your environment.
+The dashboard signs in with a session cookie signed by the admin token, so it shows the sign-in screen again when:
+
+- the admin token changed: every session signed with the old token stops working. Sign in with the current token (`TUXEVIL_ROTATOR_ADMIN_TOKEN`, or the generated one in `.admin-token` in the config directory), or set `TUXEVIL_ROTATOR_ADMIN_TOKEN` explicitly so it stays the same
+- the 30-day session expired, or you signed out
+- the browser blocks cookies for the rotator's host
+
+## Dashboard actions fail with `403` behind a reverse proxy
+
+Actions that change state (enable, restore, policy changes, …) are refused with *"Blocked: the request did not come from the dashboard's own origin"* when the rotator cannot confirm they came from the dashboard's own page. Browsers send `Sec-Fetch-Site` over HTTPS and to `localhost`; otherwise the rotator compares the request's `Origin` with its `Host` (or `X-Forwarded-Host`) header. Make the reverse proxy forward the original host, for example `proxy_set_header Host $host;` in nginx (see [Deployment](deployment.md#reverse-proxy-with-nginx)).
 
 ## Login fails at project discovery
 
@@ -60,9 +68,9 @@ from `chatgpt.com/backend-api/codex` (or from the OAuth token endpoint) sets
 `reloginRequired: true` on the affected credential only — Antigravity and Ollama
 state are not touched. The same flag is set for OAuth errors with code
 `invalid_grant` or `refresh_token_reused` (the one-time refresh token was
-consumed by another client). The dashboard surfaces a `FLAGGED` badge for the
-Codex email and the rotator stops routing Codex requests through it until you
-re-authenticate:
+consumed by another client). The account's dashboard drawer shows the Codex
+credential as rejected, with the reason, and the rotator stops routing Codex
+requests through it until you re-authenticate:
 
 ```bash
 tuxevil-rotator login --provider openai-codex

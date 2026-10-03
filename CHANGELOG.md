@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Rebuilt web dashboard**: the dashboard is now a TypeScript + Preact single-page app (`src/web`), bundled in memory by esbuild at startup, so there is still no separate build step. It replaces about 8,600 lines of string-built HTML, global-function JavaScript and CSS in `src/dashboard.ts` and `src/static/`.
+  - **Organized around models.** A new Overview answers whether routing works and for how long: one row per quota pool (Claude, Gemini, Codex, Ollama, OpenCode) with pooled quota weighted by tier, the serving account, the next accounts in line, the next reset and a burn-rate estimate. Each row expands into the routing decisions that used to sit in the Routing Inspector modal.
+  - **Inline attention list.** Quarantined, erroring and disabled accounts, open circuit breakers, unroutable models, protective pauses and security warnings appear on the Overview with the fixing action next to each, replacing the header-badge modal.
+  - **Account cards, list and drawer.** Accounts show as cards (quota per model with reset countdowns and a Start button for idle windows, requests, health and last use, plus the error and the fix for accounts out of service) or as a compact sortable list; filters, sort and the view are in the URL and the view is remembered. Each account opens a drawer at `/dashboard/accounts/<email>` with quota windows, per-model routing decisions, the health-score breakdown, daily budgets and every action.
+  - **One Requests page.** It has a live tail of the in-memory request log with rotator and proxy events interleaved, and (with PostgreSQL) the stored history with payload inspector and per-key totals, replacing Spend Logs and the old request-log and recent-events panels.
+  - **Usage and Settings pages.** Usage holds the token chart, savings by model, latency percentiles and the 60-day heatmap. Settings holds routing controls, a routing-policy form, the benchmark, the configuration file editor with import/export, appearance and project information.
+  - **Shareable URLs.** Every view, filter and the open drawer is in the URL. `/dashboard/logs` redirects to the request history.
+- **Dashboard data API**: `/api/dashboard/snapshot`, `/api/dashboard/usage`, `/api/dashboard/activity` and `/api/dashboard/usage/export` split the old all-in-one status payload. `/api/dashboard/stream` sends a snapshot and then only what changed (changed accounts, overview sections, new requests and events) instead of the full status every second; countdowns are absolute timestamps, so an idle rotator sends nothing. `/api/status` and `/api/events` are unchanged.
+- **Visual design**: an app-style shell. A top bar (brand and live status, sidebar toggle, add account, search and a "Needs you" inbox) and an icon rail that expands to labels frame the page in a floating, rounded canvas; the account drawer and dialogs float the same way. <kbd>⌘K</kbd> opens a command palette for pages, accounts and quick actions, and theme, privacy mask and sign-out live in a profile menu at the foot of the rail. Light and dark themes (system by default), neutral quota bars that turn amber or red only when a pool runs low or empty, one status vocabulary (Serving, Ready, Cooling down, Out of quota, Erroring, Disabled, Quarantined), and layouts that work on phones, where the rail becomes a slide-over sheet and the drawer a bottom sheet. The support prompt is a dismissible note in the sidebar instead of a modal.
+
+### Security
+
+- **Dashboard session cookie**: the admin token is no longer kept in `localStorage` or put in URLs by the dashboard. `/dashboard?token=…` links and the new sign-in screen exchange it for an `HttpOnly`, `SameSite=Strict` cookie (an HMAC keyed by the admin token, valid for 30 days) and strip the token from the address bar. Cookie-authenticated writes must be same-origin, and a live session that fails that check gets `403` instead of being signed out. Signing out revokes the session on the server until the next restart. Tokens stored by older dashboards are migrated once and deleted.
+- **Content Security Policy**: dashboard pages are served with `script-src 'self'`, `style-src 'self'`, `frame-ancestors 'none'` and no inline handlers or styles.
+
+### Improved
+
+- **Token usage chart**: the headline numbers describe the selected range (tokens, requests, peak and estimated savings), with all-time totals shown separately. Ranges are 1h, 6h, 24h, 7d and 30d, each built on the granularity the rotator stores (per minute, 5 minutes, hour, day), so older hourly data is no longer drawn as one spike at the top of each hour. The axis uses real clock times and dates on round ticks, bars show a hover breakdown per model, and legend entries hide or highlight a model. Savings use the server's model price list instead of a copy in the browser.
+
+### Added
+
+- **Dashboard dev server**: `npm run dashboard:dev` serves the real dashboard routes against a simulated rotator (scenarios: `MOCK_SCENARIO=healthy|degraded|paused|empty|large`, `MOCK_DB=0` for no PostgreSQL), rebuilding the bundle on every page load.
+
+### Fixed
+
+- **Token usage rollup**: period keys are UTC but were compared as local time, and hour keys did not parse at all. On hosts ahead of UTC, minute buckets were folded into hours too early (immediately at UTC+12), which emptied the 1h and 6h charts; hour buckets were never rolled up, so the stored hourly history grew without bound. Minutes are now kept for 12 hours and hours for 61 days in every timezone. **On the first request after upgrading, hour buckets older than 61 days are folded into monthly totals**; all-time totals are unchanged and the 60-day heatmap and every chart range keep their data.
+- **All-time token totals**: the totals, per-model token counts and savings skipped any minute, hour or day bucket whose parent period had already started rolling up, so they left out up to an hour of traffic from about 12 hours earlier and shifted as buckets rolled. Rollups move buckets rather than copy them, so the totals now add every tier.
+- **Docker exposure warning**: every Docker install showed a security warning, titled "Admin routes are exposed", because the rotator has to listen on `0.0.0.0` inside a container. The title now names what is exposed (the proxy routes, or the admin routes when no admin token is set), and inside a container (the image sets `TUXEVIL_ROTATOR_CONTAINER=1`; Docker and Podman are also detected) the proxy warning is a note that points at the published port, so it no longer counts in the "Needs you" bell.
+
+### Documentation
+
+- **Dashboard guide**: new `docs/dashboard.md` covers sign-in, navigation and the command palette, the status vocabulary, every page and the privacy mask, with screenshots taken from the dashboard dev server's sample data. `CONTRIBUTING.md` documents `npm run dashboard:dev`.
+- **Updated for the new dashboard**: account management, troubleshooting (sign-in sessions, `403` behind a reverse proxy, quarantined accounts, rejected Codex credentials), the nginx example (`X-Forwarded-Proto`), virtual keys and request history.
+
 ## [3.11.0] - 2026-10-03
 
 ### Added
