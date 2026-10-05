@@ -6,6 +6,10 @@
 
 - **Codex authentication visibility**: Rejected Codex credentials now appear in the dashboard's Needs you list and the Accounts Needs attention filter, with a direct link to the affected account.
 
+### Fixed
+
+- **Codex reauthentication state**: A successful Codex login now clears the previous provider rejection and cached Codex access token, so reauthenticated accounts leave Needs attention immediately.
+
 ## [4.0.0] - 2026-10-05
 
 ### Changed

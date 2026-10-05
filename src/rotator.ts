@@ -4302,6 +4302,9 @@ export class AccountRotator {
   }
 
   async addOrUpdateAccount(accountConfig: AccountConfig): Promise<void> {
+    const receivesCodexCredential = accountConfig.credentials?.some(
+      (credential) => credential.provider === "openai-codex",
+    );
     const existingIndex = this.accounts.findIndex(
       (account) => account.config.email === accountConfig.email,
     );
@@ -4319,6 +4322,20 @@ export class AccountRotator {
       existing.consecutiveErrors = 0;
       existing.accessToken = null;
       existing.tokenExpires = 0;
+      if (receivesCodexCredential) {
+        if (existing.invalidProviders) {
+          delete existing.invalidProviders["openai-codex"];
+          if (Object.keys(existing.invalidProviders).length === 0) {
+            delete existing.invalidProviders;
+          }
+        }
+        if (existing.providerTokens) {
+          delete existing.providerTokens["openai-codex"];
+          if (Object.keys(existing.providerTokens).length === 0) {
+            delete existing.providerTokens;
+          }
+        }
+      }
       this.config.accounts[existingIndex] = existing.config;
       this.log(`${accountConfig.email}: account updated via hosted login`);
     } else {
