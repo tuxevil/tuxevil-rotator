@@ -72,7 +72,7 @@ describe("dashboard app", () => {
     assert.match(html, /<meta charset="utf-8">/);
     assert.match(html, /<meta name="viewport" content="width=device-width, initial-scale=1">/);
     assert.match(html, /<script type="module" src="\/dashboard\/assets\/app\.[0-9a-f]{12}\.js"><\/script>/);
-    assert.doesNotMatch(html, /<script>|<script\s+(?!type="module" src=)/, "no inline scripts");
+    assert.doesNotMatch(html, /<script>|<script\s+(?!type="module" src=)/i, "no inline scripts");
     assert.doesNotMatch(html, /\son[a-z]+=/i, "no inline event handlers");
     assert.doesNotMatch(html, /\sstyle=/i, "no inline styles");
     assert.doesNotMatch(html, /token/i, "the shell never carries the admin token");
