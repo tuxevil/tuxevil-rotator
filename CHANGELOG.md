@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Improved
+
+- **Codex authentication visibility**: Rejected Codex credentials now appear in the dashboard's Needs you list and the Accounts Needs attention filter, with a direct link to the affected account.
+
 ## [4.0.0] - 2026-10-05
 
 ### Changed

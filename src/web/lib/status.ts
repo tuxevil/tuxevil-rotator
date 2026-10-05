@@ -71,11 +71,15 @@ export function isCooling(account: { status: AccountState }): boolean {
   return account.status === "cooldown" || account.status === "exhausted";
 }
 
-export function needsAttention(account: { status: AccountState }): boolean {
+export function needsAttention(account: {
+  status: AccountState;
+  invalidProviders?: Record<string, string>;
+}): boolean {
   return (
     account.status === "error" ||
     account.status === "disabled" ||
-    account.status === "flagged"
+    account.status === "flagged" ||
+    Boolean(account.invalidProviders?.["openai-codex"])
   );
 }
 

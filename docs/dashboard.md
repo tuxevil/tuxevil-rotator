@@ -51,7 +51,7 @@ Quota bars stay neutral and turn amber when a pool drops below 20% and red when 
 The Overview answers whether routing works and for how long:
 
 - **Routing**: the routing state, how many accounts can serve, and requests and tokens over the last hour. Below it, counts of accounts that can serve (Serving or Ready), are cooling down and need attention, and the total requests served.
-- **Needs you**: quarantined, erroring and disabled accounts, open circuit breakers, models no account can serve, protective pauses and security warnings, each with the action that fixes it (**Restore**, **Re-enable**, **Disable**, **Reset breaker**, **Inspect**). Lower-priority notes are collapsed under **Show notes**.
+- **Needs you**: rejected Codex credentials, quarantined, erroring and disabled accounts, open circuit breakers, models no account can serve, protective pauses and security warnings, each with an action to inspect or fix it. Lower-priority notes are collapsed under **Show notes**.
 - **Models**: one row per quota pool (Claude, Gemini, Codex, Ollama session and weekly, OpenCode) with the pooled quota left across accounts in service (weighted by tier), the account serving it (the one whose status reads **Serving**), the next accounts in line with the policy's pick for the next rotation first, the next reset, and how long the quota lasts at the current rate. A pool is marked **Running low**, **Empty** or **Blocked** (breaker open, or no account with quota).
 - **Recent problems**: failed requests and error events since the rotator started.
 - **Controls**: the **Allow fresh windows** and **Auto-warmup** switches, applied to every account immediately.
@@ -66,7 +66,7 @@ Expanding a model row shows the routing decision for that pool: the active polic
 
 Accounts are shown as cards or as a compact sortable list; the toggle next to the search box switches between them and the choice is remembered in the browser.
 
-- **Filters**: All, Can serve, Cooling down and Needs attention, plus a provider filter, a sort order (account, status, quota, health, requests, last used) and a search box. They are kept in the URL (`?status=`, `?provider=`, `?sort=`, `?dir=`, `?q=`).
+- **Filters**: All, Can serve, Cooling down and Needs attention (including accounts with a rejected Codex credential), plus a provider filter, a sort order (account, status, quota, health, requests, last used) and a search box. They are kept in the URL (`?status=`, `?provider=`, `?sort=`, `?dir=`, `?q=`).
 - **Cards** show the status, providers and tier, which models the account is serving, the quota per pool with its reset countdown (or **Start** for an idle window), requests, health and last use. Erroring, disabled and quarantined accounts also show the last error, and the last two a **Re-enable** or **Restore** button.
 - **Actions**: the **⋯** menu on each card or row has Open details, Re-enable, Restore to rotation, Disable, Quarantine, Always allow fresh windows (or Follow global fresh-window policy) and Remove account.
 - **Add account** opens the provider sign-in page in a new tab: `/login` when hosted OAuth is configured, otherwise `/login-cli`, which walks through the CLI flow. See [Adding Accounts](adding-accounts.md).

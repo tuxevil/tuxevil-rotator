@@ -127,6 +127,18 @@ export function buildAttention(
   }
 
   for (const account of accounts) {
+    const codexCredentialError = account.invalidProviders?.["openai-codex"];
+    if (codexCredentialError) {
+      items.push({
+        id: `codex-credential:${account.email}`,
+        severity: "warning",
+        title: `Codex credential rejected for ${name(account.email)}`,
+        detail: truncate(codexCredentialError, 220),
+        hint: "Open this account to review the rejected Codex credential and re-authenticate it.",
+        actions: [{ kind: "open-account", email: account.email }],
+      });
+    }
+
     if (account.status === "flagged") {
       items.push({
         id: `flagged:${account.email}`,
