@@ -107,3 +107,16 @@ No browser visual session or production verification was performed. Dashboard
 changes are covered by view-model tests and web typechecking. Existing account
 identities remain confined to the already administrative dashboard contracts;
 this preparation is not itself a safe public response DTO.
+
+## PR review corrections
+
+Codex reset-only windows may supply a compatibility zero usage without a usage
+measurement. The parser now tracks valid supplied usage separately, and only
+those windows produce a derived observed percentage. Missing, invalid and
+out-of-range usage retain their previous router-facing values but have unknown
+observed percentage, including Spark. Snapshot/cache reuse preserves this flag.
+
+Overview Inspect alerts still address router model keys. Their target lookup now
+uses a dedicated data attribute instead of constructing an obsolete row ID.
+When several providers share the same router key, Inspect selects the first
+matching row; it does not invent provider identity for an unscoped alert.

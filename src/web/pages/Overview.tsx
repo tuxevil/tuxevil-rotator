@@ -1,3 +1,4 @@
+import { findPoolTarget } from "../lib/pool-navigation.js";
 // Overview: is routing working, how long will each model last, and what
 // needs the operator. Model pools come first; accounts are one click away.
 
@@ -282,7 +283,7 @@ function AttentionActionButton({ action }: { action: AttentionAction }): JSX.Ele
         <Button
           size="sm"
           variant="ghost"
-          onClick={() => document.getElementById(`pool-${action.model}`)?.scrollIntoView({ behavior: "smooth", block: "center" })}
+          onClick={() => findPoolTarget(document.querySelectorAll<HTMLElement>("[data-pool-model]"), action.model)?.scrollIntoView({ behavior: "smooth", block: "center" })}
         >
           Inspect
         </Button>
@@ -389,7 +390,7 @@ function PoolRow({ pool, expanded, onToggle }: { pool: ModelPool; expanded: bool
   const name = masker.value.name;
   return (
     <>
-      <tr id={`pool-${encodeURIComponent(pool.id)}`} class={`pool-row${expanded ? " is-open" : ""}`}>
+      <tr data-pool-model={pool.key} id={`pool-${encodeURIComponent(pool.id)}`} class={`pool-row${expanded ? " is-open" : ""}`}>
         <th scope="row">
           <div class="pool-name">
             <span>{pool.name}</span>

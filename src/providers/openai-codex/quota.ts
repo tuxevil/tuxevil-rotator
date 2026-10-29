@@ -18,6 +18,8 @@ export const CODEX_UNSTARTED_TIMER_THRESHOLD_SECONDS =
   30 * 24 * 60 * 60 - 5 * 60;
 
 export interface CodexQuotaWindow {
+  /** False/absent for compatibility defaults, never evidence of measured usage. */
+  usageReported?: boolean;
   usedPercent: number;
   percentRemaining: number;
   resetAt: string | null;
@@ -67,6 +69,7 @@ export function parseCodexQuotaWindow(value: unknown): CodexQuotaWindow | null {
   const reset = resetAt(window);
   const usedPercent = Math.max(0, Math.min(100, used ?? 0));
   return {
+    usageReported: used !== null && used >= 0 && used <= 100,
     usedPercent,
     percentRemaining: Math.max(0, Math.min(100, 100 - usedPercent)),
     resetAt: reset.at,
@@ -137,7 +140,7 @@ function visibleResetTime(window: CodexQuotaWindow): string | null {
   return timerType(window) === "fresh" ? null : window.resetAt;
 }
 
-export function codexQuotaRows(snapshot: CodexQuotaSnapshot): ModelQuota[] {
+export function codexQuotaRows(snapshot: CodexQuotaSnapshot, observedAt?: number): ModelQuota[] {
   const dominant = dominantWindow(snapshot);
   const rows: ModelQuota[] = [{
     modelKey: CODEX_QUOTA_MODEL_KEY,
@@ -159,6 +162,14 @@ export function codexQuotaRows(snapshot: CodexQuotaSnapshot): ModelQuota[] {
       resetTime: visibleResetTime(spark),
       timerType: timerType(spark),
     });
+  }
+  if (observedAt !== undefined) {
+    for (const row of rows) {
+      const windows = row.modelKey === CODEX_QUOTA_MODEL_KEY ? [dominant] :
+        [snapshot.spark?.primary, snapshot.spark?.secondary].filter((window): window is CodexQuotaWindow => Boolean(window));
+      const selected = windows.reduce((a, b) => a.usedPercent >= b.usedPercent ? a : b);
+      row.observation = observeQuota(row, observedAt, selected.usageReported === true ? "derived" : "unknown", "reported");
+    }
   }
   return rows;
 }
@@ -244,8 +255,7 @@ function applyQuotaRows(account: AccountRuntime, snapshot: CodexQuotaSnapshot, o
   const other = (account.quota ?? []).filter(
     (quota) => quota.providerId !== CODEX_PROVIDER_ID,
   );
-  const codexRows = codexQuotaRows(snapshot);
-  for (const quota of codexRows) quota.observation = observeQuota(quota, observedAt, "derived", "reported");
+  const codexRows = codexQuotaRows(snapshot, observedAt);
   account.quota = sortQuotaPools([...other, ...codexRows]);
 
   account.lastPollByProvider ??= {};

@@ -476,3 +476,21 @@ it("keeps the original observation timestamp on Codex quota cache hits", async (
   assert.deepEqual(account.quota[0].observation, observation);
   clearCodexQuotaCache();
 });
+
+
+it("keeps defaulted Codex usage unknown without changing routing percentages", () => {
+  for (const used of [undefined, "invalid", -1, 101]) {
+    const snapshot = parseCodexUsageResponse({ rate_limit: { primary_window: {
+      used_percent: used, reset_after_seconds: 3600,
+    } }, additional_rate_limits: [{ limit_name: "spark", rate_limit: {
+      primary_window: { reset_after_seconds: 3600 },
+    } }] })!;
+    const legacy = codexQuotaRows(snapshot);
+    const observed = codexQuotaRows(snapshot, 1234);
+    assert.deepEqual(observed.map(({ observation: _observation, ...row }) => row), legacy);
+    assert.ok(observed.every(row => row.observation?.remainingPercent === null));
+    assert.ok(observed.every(row => row.observation?.percentageSource === "unknown"));
+  }
+  const snapshot = parseCodexUsageResponse({ rate_limit: { primary_window: { used_percent: 0 } } })!;
+  assert.equal(codexQuotaRows(snapshot, 1234)[0].observation?.remainingPercent, 100);
+});
