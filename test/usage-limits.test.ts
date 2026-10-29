@@ -130,3 +130,20 @@ it("keeps provider-qualified pools distinct and unpolled providers explicitly un
   assert.equal(unknown.remainingPercent, null);
   assert.equal(unknown.accountsConsidered, 1);
 });
+
+
+it("exports partial coverage separately from unknown fleet capacity", async () => {
+  const overview = fixtureOverview();
+  delete overview.accounts[1].quota[0].observation;
+  const response = buildUsageLimitsSnapshot(overview, INSTANCE, NOW);
+  const claude = response.pools.find(pool => pool.name === "claude")!;
+  assert.equal(claude.knowledge, "unknown");
+  assert.equal(claude.remainingPercent, null);
+  assert.equal(claude.accountsWithQuota, null);
+  assert.deepEqual(claude.quotaCoverage, { knownAccounts: 1, totalAccounts: 2 });
+  assert.equal(claude.partialObservation?.remainingPercent, 80);
+  assert.equal(claude.partialObservation?.accountsWithQuota, 1);
+  const fixture = JSON.parse(await readFile(new URL("./fixtures/usage-limits/v1/partial.json", import.meta.url), "utf8"));
+  assert.deepEqual(response, fixture);
+  assert.doesNotMatch(JSON.stringify(response), /secret.invalid|SECRET_|private-/);
+});

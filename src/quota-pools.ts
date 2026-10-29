@@ -39,6 +39,14 @@ export interface ModelPool {
   /** Collision-safe observability identity; key remains the router's model key. */
   id: string;
   observedCapacity: number | null;
+  quotaCoverage: { knownAccounts: number; totalAccounts: number };
+  partialObservation: {
+    remainingPercent: number;
+    accountsWithQuota: number;
+    percentageBasis: "tier-estimate" | "included-credits";
+    observedAt: number | null;
+    freshness: "fresh" | "stale" | "unknown";
+  } | null;
   catalogAccessible: boolean | null;
   observedWithQuota: number | null;
   eligibleNow: number | null;
@@ -208,12 +216,26 @@ export function buildPools(overview: DashboardOverview, now: number): ModelPool[
     else if (availableCapacity === 0) state = "empty";
     else if (availableCapacity < 20) state = "low";
 
-    const known = pool.members.length > 0 && pool.members.every(({ quota }) =>
-      quota.observation?.percentageSource !== "unknown" &&
-      quota.observation?.remainingPercent != null && Number.isFinite(quota.observation.remainingPercent));
-    const observedMembers = pool.members.map((member) => ({ ...member, quota: {
-      ...member.quota, percentRemaining: member.quota.observation?.remainingPercent ?? 0,
+    const measured = pool.members.filter(({ quota }) => {
+      const observation = quota.observation;
+      return observation && ["reported", "derived", "estimated"].includes(observation.percentageSource)
+        && observation.remainingPercent !== null && Number.isFinite(observation.remainingPercent)
+        && observation.remainingPercent >= 0 && observation.remainingPercent <= 100;
+    });
+    const known = pool.members.length > 0 && measured.length === pool.members.length;
+    const observedMembers = measured.map(member => ({ ...member, quota: {
+      ...member.quota, percentRemaining: member.quota.observation!.remainingPercent!,
     } }));
+    const partialAges = measured.map(({ quota }) => quotaFreshness(quota, now, 15 * 60_000));
+    const partialFreshness = partialAges.includes("unknown") ? "unknown" as const
+      : partialAges.includes("stale") ? "stale" as const : "fresh" as const;
+    const partialObservation: ModelPool["partialObservation"] = measured.length > 0 && !known ? {
+      remainingPercent: pooledCapacity(observedMembers),
+      accountsWithQuota: observedMembers.filter(({ quota }) => quota.percentRemaining > 0 || (quota.credits?.purchasedUsd ?? 0) > 0).length,
+      percentageBasis: measured.some(({ quota }) => quota.credits) ? "included-credits" : "tier-estimate",
+      observedAt: partialFreshness === "unknown" ? null : Math.min(...measured.map(({ quota }) => quota.observation!.observedAt)),
+      freshness: partialFreshness,
+    } : null;
     const ages = pool.members.map(({ quota }) => quotaFreshness(quota, now, 15 * 60_000));
     const freshness = ages.length === 0 || ages.includes("unknown") ? "unknown"
       : ages.includes("stale") ? "stale" : "fresh";
@@ -231,6 +253,8 @@ export function buildPools(overview: DashboardOverview, now: number): ModelPool[
       key,
       id,
       catalogAccessible: pool.members.some(({ quota }) => quota.observation?.catalogAccessible === true) ? true : null,
+      quotaCoverage: { knownAccounts: measured.length, totalAccounts: pool.members.length },
+      partialObservation,
       observedCapacity: known ? pooledCapacity(observedMembers) : null,
       observedWithQuota: known ? observedMembers.filter(({ quota }) => quota.percentRemaining > 0 || (quota.credits?.purchasedUsd ?? 0) > 0).length : null,
       eligibleNow,

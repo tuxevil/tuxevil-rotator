@@ -38,6 +38,14 @@ export interface UsageLimitsPoolV1 {
   providerId: string;
   knowledge: "known" | "unknown" | "not-applicable";
   remainingPercent: number | null;
+  quotaCoverage: { knownAccounts: number; totalAccounts: number };
+  partialObservation: {
+    remainingPercent: number;
+    accountsWithQuota: number;
+    percentageBasis: "tier-estimate" | "included-credits";
+    observedAt: number | null;
+    freshness: "fresh" | "stale" | "unknown";
+  } | null;
   percentageBasis: "tier-estimate" | "included-credits" | "unknown";
   accountsWithQuota: number | null;
   accountsEligible: number | null;
@@ -65,6 +73,14 @@ export function buildUsageLimitsSnapshot(overview: DashboardOverview, instanceId
       providerId: pool.provider,
       knowledge: pool.observedCapacity === null ? "unknown" as const : "known" as const,
       remainingPercent: pool.observedCapacity,
+      quotaCoverage: { knownAccounts: pool.quotaCoverage.knownAccounts, totalAccounts: pool.quotaCoverage.totalAccounts },
+      partialObservation: pool.partialObservation ? {
+        remainingPercent: pool.partialObservation.remainingPercent,
+        accountsWithQuota: pool.partialObservation.accountsWithQuota,
+        percentageBasis: pool.partialObservation.percentageBasis,
+        observedAt: pool.partialObservation.observedAt,
+        freshness: pool.partialObservation.freshness,
+      } : null,
       percentageBasis: pool.capacityBasis,
       accountsWithQuota: pool.observedWithQuota,
       accountsEligible: pool.eligibleNow,
@@ -84,6 +100,7 @@ export function buildUsageLimitsSnapshot(overview: DashboardOverview, instanceId
     })) : [{
       scope: "provider" as const,
       id: JSON.stringify([group.provider, null]), name: group.provider, providerId: group.provider,
+      quotaCoverage: { knownAccounts: 0, totalAccounts: group.accounts.length }, partialObservation: null,
       knowledge: "unknown" as const, remainingPercent: null, percentageBasis: "unknown" as const,
       accountsWithQuota: null, accountsEligible: null, accountsConsidered: group.accounts.length,
       availability: "unknown" as const, nextResetAt: null, resetBasis: "unknown" as const,

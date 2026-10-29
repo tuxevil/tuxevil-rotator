@@ -10,6 +10,11 @@
       "providerId": "google-antigravity",
       "knowledge": "known",
       "remainingPercent": 73,
+      "quotaCoverage": {
+        "knownAccounts": 2,
+        "totalAccounts": 2
+      },
+      "partialObservation": null,
       "percentageBasis": "tier-estimate",
       "accountsWithQuota": 2,
       "accountsEligible": null,
@@ -30,6 +35,11 @@
       "providerId": "ollama",
       "knowledge": "known",
       "remainingPercent": 25,
+      "quotaCoverage": {
+        "knownAccounts": 1,
+        "totalAccounts": 1
+      },
+      "partialObservation": null,
       "percentageBasis": "included-credits",
       "accountsWithQuota": 1,
       "accountsEligible": null,
@@ -54,6 +64,11 @@
       "providerId": "opencode-zen",
       "knowledge": "unknown",
       "remainingPercent": null,
+      "quotaCoverage": {
+        "knownAccounts": 0,
+        "totalAccounts": 1
+      },
+      "partialObservation": null,
       "percentageBasis": "unknown",
       "accountsWithQuota": null,
       "accountsEligible": null,

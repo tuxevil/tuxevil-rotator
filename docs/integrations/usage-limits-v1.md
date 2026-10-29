@@ -158,7 +158,7 @@ No merge, deployment, routing-policy change or T3 source change is included.
 
 ## Verification and limits
 
-Full `npm run check`: 1,316 passing tests, two skipped, server/web/test types
+Full `npm run check`: 1,319 passing tests, two skipped, server/web/test types
 passing, ESLint zero errors (17 existing warnings). Production dependency audit:
 zero vulnerabilities. Packaging dry run includes both new API modules.
 
@@ -183,3 +183,21 @@ those workflows until it is retargeted after authorized integration of #44.
 The successful CI/CodeQL results on #44 validate the preparatory base, not the
 new endpoint code. Do not treat local type/lint/test/coverage checks or the
 production dependency audit as a completed CodeQL run for this new PR.
+
+## Additive partial-coverage fields
+
+`quotaCoverage: { knownAccounts, totalAccounts }` is included for each record.
+`partialObservation` is null for complete or wholly unknown quota coverage.
+For partial coverage it contains `remainingPercent`, `accountsWithQuota`,
+`percentageBasis`, `observedAt` and `freshness`, all scoped only to accounts with
+valid, explicitly sourced percentage observations. Its percentage uses the same
+shared tier/allowance weighting as the dashboard. Never promote it to a fleet
+percentage or silently include unknown accounts in its denominator.
+
+The original top-level record fields keep their semantics: unknown fleet
+`remainingPercent` and `accountsWithQuota` stay null and knowledge stays unknown.
+Eligibility is independent. Subset freshness does not establish freshness of the
+unknown portion. The additional fixture `v1/partial.json` demonstrates one known
+Claude observation and one unknown account, with 80% for the measured subset
+and no fleet percentage. Clients unaware of these added fields can safely
+continue displaying unknown fleet quota.

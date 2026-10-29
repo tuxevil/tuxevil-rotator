@@ -386,6 +386,7 @@ function ProvidersPanel({ providers }: { providers: ProviderGroup[] }): JSX.Elem
 
 function PoolRow({ pool, expanded, onToggle }: { pool: ModelPool; expanded: boolean; onToggle: () => void }): JSX.Element {
   const state = POOL_STATE[pool.state];
+  const partial = pool.partialObservation;
   const estimate = estimateText(pool);
   const name = masker.value.name;
   return (
@@ -405,20 +406,23 @@ function PoolRow({ pool, expanded, onToggle }: { pool: ModelPool; expanded: bool
         <td data-label="Remaining">
           <div class="pool-capacity">
             {pool.observedCapacity !== null && <Meter value={pool.observedCapacity} label={`${pool.name} pooled ${pool.credits ? "included credits" : "quota"} remaining`} />}
-            <span class="num">{pool.observedCapacity === null ? "Quota unknown" : `${pool.observedCapacity}%`}</span>
+            <span class="num">{pool.observedCapacity !== null ? `${pool.observedCapacity}%`
+              : partial ? `${partial.remainingPercent}% in known accounts` : "Quota unknown"}</span>
           </div>
-          {pool.credits && (
+          {partial && <div class="cell-sub">Partial quota · coverage {pool.quotaCoverage.knownAccounts}/{pool.quotaCoverage.totalAccounts} accounts</div>}
+          {pool.credits && pool.observedCapacity !== null && (
             <div class="cell-sub num">
               {formatUsd(pool.credits.balanceUsd)} / {formatUsd(pool.credits.allowanceUsd)} included
               {pool.credits.purchasedUsd > 0 && <> · {formatUsd(pool.credits.purchasedUsd)} purchased</>}
             </div>
           )}
           <div class="cell-sub">
-            {pool.observedWithQuota ?? "Unknown"} of {pluralize(pool.members.length, "account")} with quota
+            {partial ? `${partial.accountsWithQuota} of ${pool.quotaCoverage.knownAccounts} known accounts with quota`
+              : `${pool.observedWithQuota ?? "Unknown"} of ${pluralize(pool.members.length, "account")} with quota`}
             {" · "}{pool.eligibleNow ?? "Unknown"} eligible now
           </div>
           {pool.catalogAccessible && <div class="cell-sub">Catalog accessible</div>}
-          <div class="cell-sub">{pool.capacityBasis === "tier-estimate" ? "Estimated relative capacity · " : ""}{pool.freshness === "unknown" ? "Freshness unknown" : pool.freshness === "stale" ? "Stale observation" : "Recent observation"}</div>
+          <div class="cell-sub">{(partial?.percentageBasis ?? pool.capacityBasis) === "tier-estimate" ? "Estimated relative capacity · " : ""}{(partial?.freshness ?? pool.freshness) === "unknown" ? "Freshness unknown" : (partial?.freshness ?? pool.freshness) === "stale" ? "Stale observation" : "Recent observation"}</div>
         </td>
         <td data-label="Serving">
           {pool.serving ? (
