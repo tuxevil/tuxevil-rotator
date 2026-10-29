@@ -137,3 +137,14 @@ continues to come independently from routing diagnostics. Full-fleet
 observedCapacity/observedWithQuota stay null until coverage is complete.
 Zero measured accounts retain Quota unknown; accessible OpenCode catalogs remain
 unknown quota. Full-fleet monetary balances are hidden while coverage is partial.
+
+## Compact quota-bar presentation
+
+The Providers row preserves its original meter-plus-percentage layout for both
+complete and partial observations. A partial bar describes only the measured
+subset; its visible X/Y coverage note and accessible label make that scope
+explicit. Unknown quota uses the same bar footprint with a neutral patterned
+track and a dash, with no numeric fill or ARIA percentage. It never represents
+unknown quota as empty or full. Freshness/basis details move to the cell tooltip
+to keep rows compact; stale data retains a visible warning. These changes are
+presentation only and do not alter the API or aggregation semantics.

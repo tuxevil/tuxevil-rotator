@@ -387,6 +387,15 @@ function ProvidersPanel({ providers }: { providers: ProviderGroup[] }): JSX.Elem
 function PoolRow({ pool, expanded, onToggle }: { pool: ModelPool; expanded: boolean; onToggle: () => void }): JSX.Element {
   const state = POOL_STATE[pool.state];
   const partial = pool.partialObservation;
+  const capacity = pool.observedCapacity ?? partial?.remainingPercent ?? null;
+  const basis = partial?.percentageBasis ?? pool.capacityBasis;
+  const freshness = partial?.freshness ?? pool.freshness;
+  const capacityHint = [
+    capacity === null ? "Quota not reported" : `${capacity}% remaining`,
+    partial ? `Known subset only: ${pool.quotaCoverage.knownAccounts}/${pool.quotaCoverage.totalAccounts} accounts measured` : "",
+    basis === "tier-estimate" ? "Estimated relative capacity" : "",
+    freshness === "unknown" ? "Freshness unknown" : freshness === "stale" ? "Stale observation" : "Recent observation",
+  ].filter(Boolean).join(" · ");
   const estimate = estimateText(pool);
   const name = masker.value.name;
   return (
@@ -403,13 +412,12 @@ function PoolRow({ pool, expanded, onToggle }: { pool: ModelPool; expanded: bool
             </Pill>
           )}
         </th>
-        <td data-label="Remaining">
+        <td data-label="Remaining" title={capacityHint}>
           <div class="pool-capacity">
-            {pool.observedCapacity !== null && <Meter value={pool.observedCapacity} label={`${pool.name} pooled ${pool.credits ? "included credits" : "quota"} remaining`} />}
-            <span class="num">{pool.observedCapacity !== null ? `${pool.observedCapacity}%`
-              : partial ? `${partial.remainingPercent}% in known accounts` : "Quota unknown"}</span>
+            <Meter value={capacity} label={`${pool.name}: ${capacityHint}`} />
+            <span class="num">{capacity === null ? "—" : `${capacity}%`}</span>
           </div>
-          {partial && <div class="cell-sub">Partial quota · coverage {pool.quotaCoverage.knownAccounts}/{pool.quotaCoverage.totalAccounts} accounts</div>}
+          {partial && <div class="cell-sub">Partial · {pool.quotaCoverage.knownAccounts}/{pool.quotaCoverage.totalAccounts} accounts measured</div>}
           {pool.credits && pool.observedCapacity !== null && (
             <div class="cell-sub num">
               {formatUsd(pool.credits.balanceUsd)} / {formatUsd(pool.credits.allowanceUsd)} included
@@ -417,12 +425,12 @@ function PoolRow({ pool, expanded, onToggle }: { pool: ModelPool; expanded: bool
             </div>
           )}
           <div class="cell-sub">
-            {partial ? `${partial.accountsWithQuota} of ${pool.quotaCoverage.knownAccounts} known accounts with quota`
-              : `${pool.observedWithQuota ?? "Unknown"} of ${pluralize(pool.members.length, "account")} with quota`}
-            {" · "}{pool.eligibleNow ?? "Unknown"} eligible now
+            {capacity === null ? (pool.catalogAccessible ? "Catalog accessible · quota unknown" : "Quota unknown")
+              : partial ? `${partial.accountsWithQuota}/${pool.quotaCoverage.knownAccounts} measured accounts with quota`
+              : `${pool.observedWithQuota} of ${pluralize(pool.members.length, "account")} with quota`}
+            {" · "}{pool.eligibleNow ?? "Unknown"} eligible
           </div>
-          {pool.catalogAccessible && <div class="cell-sub">Catalog accessible</div>}
-          <div class="cell-sub">{(partial?.percentageBasis ?? pool.capacityBasis) === "tier-estimate" ? "Estimated relative capacity · " : ""}{(partial?.freshness ?? pool.freshness) === "unknown" ? "Freshness unknown" : (partial?.freshness ?? pool.freshness) === "stale" ? "Stale observation" : "Recent observation"}</div>
+          {freshness === "stale" && <div class="cell-sub tone-text-warn">Stale observation</div>}
         </td>
         <td data-label="Serving">
           {pool.serving ? (
