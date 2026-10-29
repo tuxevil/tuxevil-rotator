@@ -176,3 +176,10 @@ the catalog-access observation, not a measured remaining allowance. Source
 measurement failures remain reflected through aging observations; the snapshot
 cannot manufacture a last successful quota time for legacy rows. The endpoint
 has no per-provider last-error text or independent polling status.
+
+Local `npm run coverage` also passes its configured thresholds. The repository
+CI workflows filter pull requests to `main`; this stacked PR does not trigger
+those workflows until it is retargeted after authorized integration of #44.
+The successful CI/CodeQL results on #44 validate the preparatory base, not the
+new endpoint code. Do not treat local type/lint/test/coverage checks or the
+production dependency audit as a completed CodeQL run for this new PR.
