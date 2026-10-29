@@ -1,3 +1,5 @@
+import { createUsageLimitsHandler, USAGE_LIMITS_PATH } from "./usage-limits.js";
+import { carriesUsageReadToken } from "./usage-limits-auth.js";
 // HTTP reverse proxy - forwards requests to Antigravity with credential rotation
 
 import {
@@ -2335,10 +2337,21 @@ export function startProxy(
     return write;
   };
 
+  const usageLimits = createUsageLimitsHandler(() => liveHub.snapshot().overview);
   const server = createServer((req, res) => {
     const method = req.method?.toUpperCase();
     const url = req.url || "";
     const pathname = url.split("?")[0];
+
+    if (pathname === USAGE_LIMITS_PATH) {
+      void usageLimits(req, res);
+      return;
+    }
+    if (carriesUsageReadToken(req)) {
+      res.writeHead(403, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      res.end('{"error":"read_credential_scope"}');
+      return;
+    }
 
     // CORS headers for API consumers (e.g. MindWhisperAI, local frontends)
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -2979,6 +2992,10 @@ export function startProxy(
   const serverClosing = new AbortController();
 
   server.on("upgrade", (req, socket) => {
+    if (carriesUsageReadToken(req)) {
+      socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+      return;
+    }
     const url = req.url || "";
     const pathname = url.split("?")[0];
     if (
