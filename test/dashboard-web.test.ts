@@ -752,3 +752,44 @@ describe("traceable quota observations", () => {
     assert.equal(pool.observedNextResetAt, NOW + H);
   });
 });
+
+it("retains partial observed quota coverage without inventing a fleet percentage", () => {
+  const q = quota("claude", 80, { observation: {
+    observedAt: NOW, percentageSource: "derived", remainingPercent: 80,
+    resetSource: "reported", resetAt: null,
+  } });
+  const missing = quota("claude", 0);
+  const [pool] = buildPools(overview({ accounts: [
+    account("measured", { quota: [q] }), account("unknown", { quota: [missing] }),
+  ] }), NOW);
+  assert.equal(pool.observedCapacity, null);
+  assert.deepEqual(pool.quotaCoverage, { knownAccounts: 1, totalAccounts: 2 });
+  assert.equal(pool.partialObservation?.remainingPercent, 80);
+  assert.equal(pool.partialObservation?.accountsWithQuota, 1);
+  assert.equal(pool.partialObservation?.freshness, "fresh");
+  assert.equal(pool.partialObservation?.observedAt, NOW);
+  assert.equal(pool.partialObservation?.percentageBasis, "tier-estimate");
+  assert.equal(pool.eligibleNow, null);
+});
+
+
+it("keeps partial freshness scoped to measured accounts and preserves unknown catalog quota", () => {
+  const known = quota("claude", 0, { observation: {
+    observedAt: NOW - H, percentageSource: "derived", remainingPercent: 0,
+    resetSource: "unknown", resetAt: null,
+  } });
+  const unknown = quota("claude", 100);
+  const state = overview({ accounts: [account("old", { quota: [known] }), account("missing", { quota: [unknown] })] });
+  const [pool] = buildPools(state, NOW);
+  assert.equal(pool.freshness, "unknown");
+  assert.equal(pool.partialObservation?.freshness, "stale");
+  assert.equal(pool.partialObservation?.observedAt, NOW - H);
+  assert.equal(pool.partialObservation?.remainingPercent, 0);
+  assert.equal(pool.partialObservation?.accountsWithQuota, 0);
+  delete known.observation;
+  const [empty] = buildPools(state, NOW);
+  assert.equal(empty.partialObservation, null);
+  assert.deepEqual(empty.quotaCoverage, { knownAccounts: 0, totalAccounts: 2 });
+  known.observation = { observedAt: NOW, percentageSource: "derived", remainingPercent: 101, resetSource: "unknown", resetAt: null };
+  assert.equal(buildPools(state, NOW)[0].partialObservation, null);
+});

@@ -120,3 +120,31 @@ Overview Inspect alerts still address router model keys. Their target lookup now
 uses a dedicated data attribute instead of constructing an obsolete row ID.
 When several providers share the same router key, Inspect selects the first
 matching row; it does not invent provider identity for an unscoped alert.
+
+## Partial measurement coverage
+
+An incomplete pool no longer hides every known observation in the Providers
+view. `quotaCoverage` counts accounts with a valid, explicitly sourced observed
+percentage against all considered pool members. When this coverage is partial,
+`partialObservation` contains the existing weighted capacity formula applied
+only to that measured subset, its positive-quota count, basis and its own oldest
+timestamp/freshness. Unknown accounts never enter that calculation as zero or
+100. No alternative formula or routing-policy calculation is introduced.
+
+The UI labels this as “% in known accounts” with “Partial quota · coverage X/Y
+accounts”. It shows no full-fleet percentage bar for a partial value. Eligibility
+continues to come independently from routing diagnostics. Full-fleet
+observedCapacity/observedWithQuota stay null until coverage is complete.
+Zero measured accounts retain Quota unknown; accessible OpenCode catalogs remain
+unknown quota. Full-fleet monetary balances are hidden while coverage is partial.
+
+## Compact quota-bar presentation
+
+The Providers row preserves its original meter-plus-percentage layout for both
+complete and partial observations. A partial bar describes only the measured
+subset; its visible X/Y coverage note and accessible label make that scope
+explicit. Unknown quota uses the same bar footprint with a neutral patterned
+track and a dash, with no numeric fill or ARIA percentage. It never represents
+unknown quota as empty or full. Freshness/basis details move to the cell tooltip
+to keep rows compact; stale data retains a visible warning. These changes are
+presentation only and do not alter the API or aggregation semantics.

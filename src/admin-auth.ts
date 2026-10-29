@@ -1,3 +1,4 @@
+import { isUsageReadToken, carriesUsageReadToken } from "./usage-limits-auth.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   createHash,
@@ -277,7 +278,7 @@ export function hasValidDashboardSession(
   req: AdminAuthRequest,
   expectedToken: string | null = getConfiguredAdminToken(),
 ): boolean {
-  if (!expectedToken) return false;
+  if (!expectedToken || isUsageReadToken(expectedToken)) return false;
   const value = readRequestCookie(req, DASHBOARD_SESSION_COOKIE);
   loadPersistedRevocations();
   if (persistedRevocationsLoadError && isSettingsRepositoryInitialized()) {
@@ -291,6 +292,7 @@ export function isAdminTokenValid(
   candidate: string | null | undefined,
   expectedToken: string | null = getConfiguredAdminToken(),
 ): boolean {
+  if (isUsageReadToken(candidate)) return false;
   if (!expectedToken) return true;
   return typeof candidate === "string" && safeEqual(candidate, expectedToken);
 }
@@ -299,6 +301,7 @@ export function isAdminAuthorized(
   req: AdminAuthRequest,
   expectedToken: string | null = getConfiguredAdminToken(),
 ): boolean {
+  if (carriesUsageReadToken(req) || isUsageReadToken(expectedToken)) return false;
   if (!expectedToken) return true;
   if (isAdminTokenValid(getRequestAdminToken(req), expectedToken)) return true;
   if (!hasValidDashboardSession(req, expectedToken)) return false;

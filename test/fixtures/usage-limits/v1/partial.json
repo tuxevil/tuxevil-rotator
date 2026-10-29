@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "instanceId": "40000000-0000-4000-8000-000000000001",
+  "generatedAt": 1800000000000,
+  "pools": [
+    {
+      "id": "[\"google-antigravity\",\"claude\"]",
+      "scope": "pool",
+      "name": "claude",
+      "providerId": "google-antigravity",
+      "knowledge": "unknown",
+      "remainingPercent": null,
+      "quotaCoverage": {
+        "knownAccounts": 1,
+        "totalAccounts": 2
+      },
+      "partialObservation": {
+        "remainingPercent": 80,
+        "accountsWithQuota": 1,
+        "percentageBasis": "tier-estimate",
+        "observedAt": 1800000000000,
+        "freshness": "fresh"
+      },
+      "percentageBasis": "unknown",
+      "accountsWithQuota": null,
+      "accountsEligible": null,
+      "accountsConsidered": 2,
+      "availability": "unknown",
+      "nextResetAt": 1800003600000,
+      "resetBasis": "reported",
+      "observedAt": null,
+      "freshness": "unknown",
+      "quotaUnit": "unknown",
+      "credits": null,
+      "catalogAccessible": null
+    },
+    {
+      "id": "[\"ollama\",\"monthly\"]",
+      "scope": "pool",
+      "name": "monthly",
+      "providerId": "ollama",
+      "knowledge": "known",
+      "remainingPercent": 25,
+      "quotaCoverage": {
+        "knownAccounts": 1,
+        "totalAccounts": 1
+      },
+      "partialObservation": null,
+      "percentageBasis": "included-credits",
+      "accountsWithQuota": 1,
+      "accountsEligible": null,
+      "accountsConsidered": 1,
+      "availability": "unknown",
+      "nextResetAt": 1800003600000,
+      "resetBasis": "estimated",
+      "observedAt": 1800000000000,
+      "freshness": "fresh",
+      "quotaUnit": "usd",
+      "credits": {
+        "balanceUsd": 5,
+        "allowanceUsd": 20,
+        "purchasedUsd": 3
+      },
+      "catalogAccessible": null
+    },
+    {
+      "id": "[\"opencode-zen\",\"opencode-zen\"]",
+      "scope": "pool",
+      "name": "opencode-zen",
+      "providerId": "opencode-zen",
+      "knowledge": "unknown",
+      "remainingPercent": null,
+      "quotaCoverage": {
+        "knownAccounts": 0,
+        "totalAccounts": 1
+      },
+      "partialObservation": null,
+      "percentageBasis": "unknown",
+      "accountsWithQuota": null,
+      "accountsEligible": null,
+      "accountsConsidered": 1,
+      "availability": "unknown",
+      "nextResetAt": null,
+      "resetBasis": "unknown",
+      "observedAt": 1800000000000,
+      "freshness": "fresh",
+      "quotaUnit": "unknown",
+      "credits": null,
+      "catalogAccessible": true
+    }
+  ]
+}
