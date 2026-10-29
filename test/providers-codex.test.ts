@@ -27,6 +27,8 @@ import {
   CODEX_QUOTA_MODEL_KEY,
   CODEX_UNSTARTED_TIMER_THRESHOLD_SECONDS,
   codexQuotaRows,
+  fetchCodexQuota,
+  clearCodexQuotaCache,
   parseCodexUsageResponse,
 } from "../src/providers/openai-codex/quota.js";
 import {
@@ -450,4 +452,27 @@ describe("openai-codex import and payload", () => {
       function: { name: "lookup", arguments: '{"q":"x"}' },
     });
   });
+});
+
+it("keeps the original observation timestamp on Codex quota cache hits", async () => {
+  clearCodexQuotaCache();
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    return Response.json({ rate_limit: { primary_window: { used_percent: 25 } } });
+  };
+  const account = {
+    config: { email: "observation-cache@test", credentials: [{ provider: "openai-codex", providerAccountId: "observation-cache" }] },
+    providerTokens: { "openai-codex": { accessToken: "test", tokenExpires: Date.now() + 60_000 } },
+    quota: [],
+  } as unknown as AccountRuntime;
+  const ctx = { log: () => {}, reportQuotaPollFlag: () => {} } as unknown as Parameters<typeof fetchCodexQuota>[1];
+  await fetchCodexQuota(account, ctx);
+  const observation = structuredClone(account.quota[0].observation);
+  assert.equal(observation?.percentageSource, "derived");
+  assert.equal(observation?.remainingPercent, 75);
+  await fetchCodexQuota(account, ctx);
+  assert.equal(calls, 1);
+  assert.deepEqual(account.quota[0].observation, observation);
+  clearCodexQuotaCache();
 });

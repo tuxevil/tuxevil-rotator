@@ -344,7 +344,18 @@ export interface ModelSpecConfig {
 }
 
 // Per-model quota info for an account
+/** Observability only: never an input to routing policy. Missing means unknown. */
+export interface QuotaObservation {
+  observedAt: number;
+  percentageSource: "reported" | "derived" | "estimated" | "unknown";
+  remainingPercent: number | null;
+  resetSource: "reported" | "estimated" | "unknown";
+  resetAt: string | null;
+  catalogAccessible?: boolean;
+}
+
 export interface ModelQuota {
+  observation?: QuotaObservation;
   modelKey: string;
   displayName: string;
   /** Owner of this quota pool when the account has several providers. */

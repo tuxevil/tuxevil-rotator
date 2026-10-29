@@ -1,3 +1,4 @@
+import { observeQuota } from "../../quota-observation.js";
 // Google Antigravity quota polling: fetch per-model quota from the internal
 // fetchAvailableModels endpoint and classify timer windows.
 
@@ -157,6 +158,8 @@ export function extractQuotas(
       quotas.push({
         modelKey: config.key,
         displayName: config.display,
+        observation: observeQuota({ percentRemaining: Math.round(remainingFraction * 100), resetTime },
+          now, modelInfo.quotaInfo.remainingFraction === undefined ? "unknown" : "derived", "reported"),
         percentRemaining: Math.round(remainingFraction * 100),
         resetTime,
         timerType,

@@ -382,4 +382,21 @@ describe("provider health from the real catalog and routing snapshot", () => {
     assert.equal(monthly.withQuota, 1);
     assert.equal(pools.find((pool) => pool.key === "gemini")!.capacity, 80);
   });
+  it("keeps routing diagnostics and candidate decisions identical with observation metadata", () => {
+    const rotator = makeRotator([mixedAccount]);
+    const [runtime] = runtimeAccounts(rotator);
+    runtime.quota = [quota("gemini", "google-antigravity", 80), quota("monthly", "ollama", 50)];
+    const before = rotator.getStatus().routingDiagnostics;
+    const candidate = rotator.getAutoRoutingCandidateStatus("new-ollama-model", "ollama");
+    for (const percentageSource of ["reported", "derived", "estimated", "unknown"] as const) {
+      for (const q of runtime.quota) q.observation = {
+        observedAt: 1, percentageSource, remainingPercent: percentageSource === "unknown" ? null : 13,
+        resetSource: "estimated", resetAt: null,
+      };
+      assert.deepEqual(rotator.getStatus().routingDiagnostics, before);
+      assert.deepEqual(rotator.getAutoRoutingCandidateStatus("new-ollama-model", "ollama"), candidate);
+      assert.deepEqual(runtime.quota.map(q => q.percentRemaining), [80, 50]);
+    }
+  });
+
 });

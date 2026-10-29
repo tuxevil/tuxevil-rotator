@@ -1,3 +1,4 @@
+import { observeQuota } from "../../quota-observation.js";
 // Ollama Cloud quota polling: `GET /api/balance` → included credits/windows.
 //
 // Ported from the ollama-rotator project (same author) into the
@@ -80,6 +81,9 @@ export async function fetchProviderUsage(
     fresh.forEach(
       (q) => (q.providerId = "ollama"),
     );
+    const observedAt = Date.now();
+    for (const quota of fresh) quota.observation = observeQuota(quota, observedAt,
+      !legacy && !quota.credits ? "reported" : "derived", legacy ? "estimated" : "reported");
     account.quota = sortQuotaPools([...otherProviders, ...fresh]);
     account.lastQuotaPoll = Date.now();
     const polledAt = new Date(account.lastQuotaPoll).toISOString();

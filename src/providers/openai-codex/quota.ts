@@ -1,3 +1,4 @@
+import { observeQuota } from "../../quota-observation.js";
 import type { AccountRuntime, ModelQuota } from "../../types.js";
 import type { QuotaFetchContext } from "../adapter.js";
 import { getAccountProxyDispatcher } from "../proxy-dispatcher.js";
@@ -196,7 +197,7 @@ export async function fetchCodexQuota(
   const key = cacheKey(account);
   const cached = quotaCache.get(key);
   if (cached && Date.now() - cached.fetchedAt < CODEX_QUOTA_CACHE_TTL_MS) {
-    applyQuotaRows(account, cached.snapshot);
+    applyQuotaRows(account, cached.snapshot, cached.fetchedAt);
     return;
   }
   const token = getCodexTokenState(account).accessToken;
@@ -230,19 +231,21 @@ export async function fetchCodexQuota(
     if (!response.ok) return;
     const snapshot = parseCodexUsageResponse(await response.json());
     if (!snapshot) return;
-    quotaCache.set(key, { fetchedAt: Date.now(), snapshot });
-    applyQuotaRows(account, snapshot);
+    const fetchedAt = Date.now();
+    quotaCache.set(key, { fetchedAt, snapshot });
+    applyQuotaRows(account, snapshot, fetchedAt);
     account.lastQuotaPoll = Date.now();
   } catch {
     // Quota is best-effort and never blocks a generation request.
   }
 }
 
-function applyQuotaRows(account: AccountRuntime, snapshot: CodexQuotaSnapshot): void {
+function applyQuotaRows(account: AccountRuntime, snapshot: CodexQuotaSnapshot, observedAt: number): void {
   const other = (account.quota ?? []).filter(
     (quota) => quota.providerId !== CODEX_PROVIDER_ID,
   );
   const codexRows = codexQuotaRows(snapshot);
+  for (const quota of codexRows) quota.observation = observeQuota(quota, observedAt, "derived", "reported");
   account.quota = sortQuotaPools([...other, ...codexRows]);
 
   account.lastPollByProvider ??= {};

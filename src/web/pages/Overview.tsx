@@ -365,7 +365,7 @@ function ProvidersPanel({ providers }: { providers: ProviderGroup[] }): JSX.Elem
             </thead>
             <tbody>
               {providers.flatMap((group) => group.pools.length > 0 ? group.pools.map((pool) => (
-                <PoolRow key={pool.key} pool={pool} expanded={open === pool.key} onToggle={() => setOpen(open === pool.key ? null : pool.key)} />
+                <PoolRow key={pool.id} pool={pool} expanded={open === pool.id} onToggle={() => setOpen(open === pool.id ? null : pool.id)} />
               )) : [
                   <tr key={group.provider}>
                     <th scope="row">{providerLabel(group.provider)}</th>
@@ -389,7 +389,7 @@ function PoolRow({ pool, expanded, onToggle }: { pool: ModelPool; expanded: bool
   const name = masker.value.name;
   return (
     <>
-      <tr id={`pool-${pool.key}`} class={`pool-row${expanded ? " is-open" : ""}`}>
+      <tr id={`pool-${encodeURIComponent(pool.id)}`} class={`pool-row${expanded ? " is-open" : ""}`}>
         <th scope="row">
           <div class="pool-name">
             <span>{pool.name}</span>
@@ -403,8 +403,8 @@ function PoolRow({ pool, expanded, onToggle }: { pool: ModelPool; expanded: bool
         </th>
         <td data-label="Remaining">
           <div class="pool-capacity">
-            <Meter value={pool.capacity} label={`${pool.name} pooled ${pool.credits ? "included credits" : "quota"} remaining`} />
-            <span class="num">{pool.capacity}%</span>
+            {pool.observedCapacity !== null && <Meter value={pool.observedCapacity} label={`${pool.name} pooled ${pool.credits ? "included credits" : "quota"} remaining`} />}
+            <span class="num">{pool.observedCapacity === null ? "Quota unknown" : `${pool.observedCapacity}%`}</span>
           </div>
           {pool.credits && (
             <div class="cell-sub num">
@@ -413,8 +413,11 @@ function PoolRow({ pool, expanded, onToggle }: { pool: ModelPool; expanded: bool
             </div>
           )}
           <div class="cell-sub">
-            {pool.withQuota} of {pluralize(pool.members.length, "account")} with quota
+            {pool.observedWithQuota ?? "Unknown"} of {pluralize(pool.members.length, "account")} with quota
+            {" · "}{pool.eligibleNow ?? "Unknown"} eligible now
           </div>
+          {pool.catalogAccessible && <div class="cell-sub">Catalog accessible</div>}
+          <div class="cell-sub">{pool.capacityBasis === "tier-estimate" ? "Estimated relative capacity · " : ""}{pool.freshness === "unknown" ? "Freshness unknown" : pool.freshness === "stale" ? "Stale observation" : "Recent observation"}</div>
         </td>
         <td data-label="Serving">
           {pool.serving ? (
@@ -451,7 +454,8 @@ function PoolRow({ pool, expanded, onToggle }: { pool: ModelPool; expanded: bool
           )}
         </td>
         <td data-label="Next reset">
-          <Countdown until={pool.nextResetAt} />
+          <Countdown until={pool.observedNextResetAt} />
+          {pool.resetBasis === "estimated" && <span class="muted"> (estimated)</span>}
         </td>
         <td class={`hide-sm num${estimate.tone ? ` tone-text-${estimate.tone}` : ""}`} title={estimate.title} data-label="Lasts">
           {estimate.text}
