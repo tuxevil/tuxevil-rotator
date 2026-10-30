@@ -8,7 +8,7 @@ While stopped, the stored configuration was locked in a database transaction and
 
 Post-start checks confirmed all 48 accounts in status and access diagnostics. Runtime retained tier-first routing, model-choice semantic selection, semantic shadow false, affinity false and stall escalation false. Those policies were not activated or modified by this rollout. Informational policy shadow is enabled; automatic access-rule enforcement remains absent.
 
-A single real beam request returned HTTP200 and the expected integer. Its model-access-policy-shadow event recorded enforced=false and policyState=unknown. The success observation appeared through the administrator API and in the PostgreSQL model_access_evidence setting. Unknown is appropriate because the Ollama seed list is pending independent verification; observed request success does not promote a global rule.
+A single real beam request returned HTTP200 and the expected integer. Its model-access-policy-shadow event recorded enforced=false and policyState=unknown. The success observation appeared through the administrator API and in the PostgreSQL model_access_evidence setting. In this request the plan and plan source were unknown, so no verified account-plan rule could be applied. The Ollama seed list is independently provisional as well; observed request success does not establish a plan or promote a global rule.
 
 Old worker PID: 3124564. New worker PID after the managed stop/start: 3136646. Private preparation files holding environment/admin credentials were removed after validation. The live service remains running with shadow enabled. The sanitized result artifact is model-access-shadow-production-rollout-results.json.
 
