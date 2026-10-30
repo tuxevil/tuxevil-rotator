@@ -554,3 +554,43 @@ it("budgets inline images independently of encoded byte length and reserves Gemi
   const openAIImage = { messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64," + "x".repeat(500_000) } }] }] };
   assert.ok(estimateAutoRoutingTokens(openAIImage) < 10_000);
 });
+
+it("pins continuations while isolating tenants and rechecking permissions, asks and TTL", async (t) => {
+  const rotator = fakeRotator("");
+  const config = rotator.getConfig().typesafeRouting!;
+  config.enabled = false;
+  config.sessionAffinity = true;
+  config.sessionAffinityTtlSeconds = 10;
+  const now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const request: AutoRoutingRequest = { route: "openai-chat", tenantId: "tenant-a", input: { metadata: { session_id: "shared" }, messages: [{ role: "user", content: "first task" }] } };
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "typesafe-disabled");
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "session-continuation");
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, { ...request, tenantId: "tenant-b" }))?.reason, "typesafe-disabled");
+  const restricted = { ...request, isModelAllowed: (model: string) => model === "gemini-pro" };
+  const alternative = await selectAutoRoutingTarget(rotator, catalog, restricted);
+  assert.equal(alternative?.candidate.modelId, "gemini-pro");
+  assert.notEqual(alternative?.reason, "session-continuation");
+  request.input = { metadata: { session_id: "shared" }, messages: [{ role: "user", content: "new task" }] };
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "typesafe-disabled");
+  t.mock.method(Date, "now", () => now + 10_001);
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "typesafe-disabled");
+  config.sessionAffinity = false;
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "typesafe-disabled");
+});
+
+it("drops an unavailable pin and bypasses affinity without tenant identity or in shadow mode", async () => {
+  const rotator = fakeRotator("");
+  const config = rotator.getConfig().typesafeRouting!;
+  config.enabled = false;
+  config.sessionAffinity = true;
+  const request: AutoRoutingRequest = { route: "openai-chat", tenantId: "tenant", input: { metadata: { session_id: "s" }, messages: [{ role: "user", content: "hello" }] } };
+  await selectAutoRoutingTarget(rotator, catalog, request);
+  rotator.getAutoRoutingCandidateStatus = (_model, provider) => ({ available: provider !== "ollama", operationalScore: 0.5, poolKey: provider });
+  const next = await selectAutoRoutingTarget(rotator, catalog, request);
+  assert.equal(next?.candidate.modelId, "gemini-pro");
+  assert.equal(next?.reason, "typesafe-disabled");
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, { ...request, tenantId: undefined }))?.reason, "typesafe-disabled");
+  config.shadowMode = true;
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "typesafe-disabled");
+});

@@ -58,6 +58,14 @@ describe("validators", () => {
 		assert.equal(result.ok, true);
 	});
 
+	it("validates session affinity configuration", () => {
+        assert.equal(validateConfig({ accounts: [], typesafeRouting: { sessionAffinity: true, sessionAffinityTtlSeconds: 1800 } }).ok, true);
+        for (const sessionAffinityTtlSeconds of [0, -1, 86401, 1.5]) {
+            assert.equal(validateConfig({ accounts: [], typesafeRouting: { sessionAffinityTtlSeconds } }).ok, false);
+        }
+        assert.equal(validateConfig({ accounts: [], typesafeRouting: { sessionAffinity: "yes" } }).ok, false);
+    });
+
 	it("validates the optional TypeSafe shadow-mode flag", () => {
 		const enabled = validateConfig({
 			accounts: [],

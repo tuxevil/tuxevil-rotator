@@ -320,6 +320,12 @@ export function validateConfig(value: unknown): ValidationResult<Config> {
 			errors.push("config.typesafeRouting must be an object when provided");
 		} else {
 			const routing = value.typesafeRouting;
+            if (routing.sessionAffinity !== undefined && typeof routing.sessionAffinity !== "boolean") {
+                errors.push("config.typesafeRouting.sessionAffinity must be a boolean");
+            }
+            if (routing.sessionAffinityTtlSeconds !== undefined && (!isNonNegativeInteger(routing.sessionAffinityTtlSeconds) || routing.sessionAffinityTtlSeconds < 1 || routing.sessionAffinityTtlSeconds > 86400)) {
+                errors.push("config.typesafeRouting.sessionAffinityTtlSeconds must be an integer between 1 and 86400");
+            }
 			if (routing.enabled !== undefined && typeof routing.enabled !== "boolean") {
 				errors.push("config.typesafeRouting.enabled must be a boolean");
 			}

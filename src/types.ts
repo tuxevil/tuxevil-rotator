@@ -168,6 +168,10 @@ export interface Config {
 }
 
 export interface TypeSafeRoutingConfig {
+  /** Reuse a valid model for tool continuations with metadata.session_id. */
+  sessionAffinity?: boolean;
+  /** Absolute pin lifetime, seconds; default 1800, maximum 86400. */
+  sessionAffinityTtlSeconds?: number;
   /** Explicit opt-in. When omitted, a configured apiKey enables the feature. */
   enabled?: boolean;
   /** TypeSafe API key. Persisted encrypted by the settings layer. */

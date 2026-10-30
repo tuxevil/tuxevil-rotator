@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { choice, TypeSafeClient } from "@typesafe-ai/sdk";
 import type { Config } from "./types.js";
 import { isEncryptedSecret, isRedactedSecret } from "./token-encryption.js";
@@ -55,6 +56,7 @@ export interface AutoRoutingRequest {
   input: unknown;
   requestedModel?: string;
   maxContextWindow?: number;
+  tenantId?: string;
   isModelAllowed?: (model: string) => boolean;
 }
 
@@ -638,6 +640,28 @@ async function selectAutoRoutingTargetInternal(
   }
 }
 
+interface SessionPin {
+  provider: string;
+  model: string;
+  askHash: string;
+  expiresAt: number;
+}
+const sessionPins = new WeakMap<AutoRoutingRotator, Map<string, SessionPin>>();
+const MAX_SESSION_PINS = 2048;
+
+function sessionIdentity(request: AutoRoutingRequest): { key: string; askHash: string } | null {
+  const root = asRecord(request.input);
+  const session = asRecord(root?.metadata)?.session_id;
+  // No implicit global anonymous session. The caller supplies an isolated tenant.
+  if (!request.tenantId || typeof session !== "string" || !session.trim() || session.length > 256) return null;
+  const ask = collectDecisionMessages(request.input).user.at(-1);
+  if (!ask) return null;
+  return {
+    key: createHash("sha256").update(JSON.stringify([request.tenantId, request.route, session])).digest("hex"),
+    askHash: createHash("sha256").update(ask).digest("hex"),
+  };
+}
+
 /** Emits metadata only: never prompts, tool output, credentials or endpoint URLs. */
 export async function selectAutoRoutingTarget(
   rotator: AutoRoutingRotator,
@@ -646,7 +670,30 @@ export async function selectAutoRoutingTarget(
 ): Promise<AutoRoutingSelection | null> {
   const started = performance.now();
   const diagnostics: Record<string, unknown> = {};
-  const selection = await selectAutoRoutingTargetInternal(rotator, catalog, request, diagnostics);
+  const config = rotator.getConfig?.().typesafeRouting;
+  const identity = config?.sessionAffinity && !config.shadowMode ? sessionIdentity(request) : null;
+  let pins = sessionPins.get(rotator);
+  if (!pins) { pins = new Map(); sessionPins.set(rotator, pins); }
+  for (const [key, pin] of pins) if (pin.expiresAt <= Date.now()) pins.delete(key);
+  const pin = identity ? pins.get(identity.key) : undefined;
+  let selection: AutoRoutingSelection | null = null;
+  if (pin && identity && pin.askHash === identity.askHash) {
+    const eligible = buildAutoRoutingCandidates(rotator, catalog.filter(entry => entry.modelId === pin.model && entry.providerId === pin.provider), request);
+    if (eligible.candidates[0]) {
+      selection = { candidate: eligible.candidates[0], mode: "deterministic", reason: "session-continuation" };
+      Object.assign(diagnostics, { affinity: "hit", pinned_candidate_count: 1 });
+    }
+  }
+  if (!selection) {
+    if (identity) pins.delete(identity.key);
+    selection = await selectAutoRoutingTargetInternal(rotator, catalog, request, diagnostics);
+    if (identity && selection) {
+      const configuredTtl = config?.sessionAffinityTtlSeconds ?? 1800;
+      const ttl = Number.isFinite(configuredTtl) ? Math.max(1, Math.min(86400, configuredTtl)) : 1800;
+      if (pins.size >= MAX_SESSION_PINS) pins.delete(pins.keys().next().value!);
+      pins.set(identity.key, { provider: selection.candidate.providerId, model: selection.candidate.modelId, askHash: identity.askHash, expiresAt: Date.now() + ttl * 1000 });
+    }
+  }
   console.info("[tuxevil-rotator]", JSON.stringify({
     event: "auto-routing-decision",
     route: request.route,

@@ -70,6 +70,8 @@ export function applyConfigDefaults(config: Config): Config {
 					maxCandidates: config.typesafeRouting.maxCandidates ?? 32,
 					shortlistSize: config.typesafeRouting.shortlistSize ?? 12,
 					maxExcerptChars: config.typesafeRouting.maxExcerptChars ?? 12_000,
+					sessionAffinity: config.typesafeRouting.sessionAffinity ?? false,
+					sessionAffinityTtlSeconds: config.typesafeRouting.sessionAffinityTtlSeconds ?? 1800,
 				}
 				: undefined,
 		providerOrder: config.providerOrder,
