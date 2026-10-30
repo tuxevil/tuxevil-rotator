@@ -711,7 +711,7 @@ export async function selectAutoRoutingTarget(
     const escalated = await selectAutoRoutingTargetInternal(rotator, alternatives, request, diagnostics);
     if (escalated) {
       selection = { ...escalated, reason: "session-stall-escalation" };
-      pins.set(identity.key, { ...pin, provider: escalated.candidate.providerId, model: escalated.candidate.modelId, escalated: true });
+      if (pins.get(identity.key) === pin) pins.set(identity.key, { ...pin, provider: escalated.candidate.providerId, model: escalated.candidate.modelId, escalated: true });
       diagnostics.stall_escalation = true;
     }
   }

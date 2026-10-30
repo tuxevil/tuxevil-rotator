@@ -626,3 +626,33 @@ it("keeps the existing pin when escalation alternatives are unauthorized", async
   assert.equal(result?.reason, "session-continuation");
   assert.equal(result?.candidate.modelId, "local-fast");
 });
+
+it("does not overwrite a newer task pin when an older escalation finishes late", async (t) => {
+  const rotator = fakeRotator("http://classifier.invalid");
+  const config = rotator.getConfig().typesafeRouting!;
+  Object.assign(config, { enabled: false, sessionAffinity: true, stallEscalation: true });
+  const oldInput = { metadata: { session_id: "race" }, messages: [{ role: "user", content: "old task" }] as unknown[] };
+  const request: AutoRoutingRequest = { route: "anthropic", tenantId: "tenant", input: oldInput };
+  await selectAutoRoutingTarget(rotator, catalog, request);
+  oldInput.messages.push(...Array.from({ length: 3 }, () => ({ role: "user", content: [{ type: "tool_result", is_error: true, content: "failed" }] })));
+  let release!: () => void;
+  let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  t.mock.method(globalThis, "fetch", async () => {
+    entered();
+    await pending;
+    return new Response(JSON.stringify({ answers: { task_effort: { choice: "medium", confidence: 0.9 }, selected_model: { choice: "candidate_0", confidence: 0.9 } } }), { headers: { "content-type": "application/json" } });
+  });
+  config.enabled = true;
+  const oldSelection = selectAutoRoutingTarget(rotator, catalog, request);
+  await started;
+  config.enabled = false;
+  const newer = { ...request, input: { metadata: { session_id: "race" }, messages: [{ role: "user", content: "new task" }] } };
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, newer))?.candidate.modelId, "local-fast");
+  release();
+  await oldSelection;
+  const continuation = await selectAutoRoutingTarget(rotator, catalog, newer);
+  assert.equal(continuation?.reason, "session-continuation");
+  assert.equal(continuation?.candidate.modelId, "local-fast");
+});

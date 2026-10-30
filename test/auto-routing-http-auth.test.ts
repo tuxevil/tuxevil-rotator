@@ -1,0 +1,66 @@
+import { it } from "node:test";
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import pg from "pg";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { AccountRotator } from "../src/rotator.js";
+
+it("enforces virtual keys over HTTP before auto selection and excludes forbidden models", async (t) => {
+  // Dynamic imports ensure this isolated test process chooses the mocked PG repository.
+  const directory = await mkdtemp(join(tmpdir(), "auto-http-auth-"));
+  process.env.TUXEVIL_ROTATOR_DIR = directory;
+  process.env.TUXEVIL_ROTATOR_DATABASE_URL = "postgres://test.invalid/isolated";
+  let models = ["forbidden-model"];
+  let blocked = false;
+  t.mock.method(pg.Pool.prototype, "query", async (sql: string) => {
+    if (sql.includes("COUNT(*)")) return { rows: [{ count: "1" }] };
+    if (sql.includes("SELECT * FROM rotator_virtual_keys WHERE")) return { rows: [{ token_hash: "test-hash", key_name: "test", key_alias: "test", models, blocked, created_at: "2026-01-01" }] };
+    return { rows: [] };
+  });
+  const db = await import("../src/db-store.js");
+  await db.initDb();
+  const { clearVirtualKeyCache } = await import("../src/virtual-keys.js");
+  const { handleOpenAIChatCompletions } = await import("../src/compat.js");
+  const observed: string[] = [];
+  const rotator = {
+    getConfig: () => ({ accounts: [], typesafeRouting: { enabled: false } }),
+    getOllamaModels: () => ["allowed-model", "forbidden-model"],
+    getCodexModels: () => [],
+    hasActiveProvider: (provider: string) => provider === "ollama",
+    getAutoRoutingCandidateStatus: (model: string) => { observed.push(model); return { available: false, operationalScore: 0 }; },
+  } as unknown as AccountRotator;
+  const server = createServer((req, res) => { void handleOpenAIChatCompletions(req, res, rotator).catch(() => { res.statusCode = 500; res.end(); }); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const send = (key?: string) => fetch(`http://127.0.0.1:${address.port}/v1/chat/completions`, {
+    method: "POST", headers: { "content-type": "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) },
+    body: JSON.stringify({ model: "auto", messages: [{ role: "user", content: "hello" }] }),
+  });
+  try {
+    assert.equal((await send()).status, 401);
+    blocked = true;
+    assert.equal((await send("rk-test")).status, 403);
+    assert.deepEqual(observed, []);
+    blocked = false;
+    models = ["allowed-model"];
+    clearVirtualKeyCache();
+    // No account is available, but only the authorized model reaches health checks.
+    assert.equal((await send("rk-test")).status, 503);
+    assert.deepEqual(observed, ["allowed-model"]);
+    observed.length = 0;
+    models = ["absent-model"];
+    clearVirtualKeyCache();
+    assert.equal((await send("rk-test")).status, 503);
+    assert.deepEqual(observed, []);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await db.closeDb();
+    delete process.env.TUXEVIL_ROTATOR_DATABASE_URL;
+    delete process.env.TUXEVIL_ROTATOR_DIR;
+    await rm(directory, { recursive: true, force: true });
+  }
+});

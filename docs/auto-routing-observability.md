@@ -41,3 +41,7 @@ This is a capability-based recovery attempt, not a measured quality tier upgrade
 Auto routing reads Ollama context windows from the existing `/api/show` cache rather than assuming 128,000 tokens. Catalog refresh starts background discovery in batches of four; selection performs no network I/O. Missing or expired entries use `OLLAMA_NUM_CTX` / `OLLAMA_CONTEXT_LENGTH`, with the existing 8,192 default. A model may therefore be excluded from a large request until discovery completes.
 
 A discovered context length is the model's published upper bound, not a guarantee of provider runtime allocation. This change does not alter `/v1/models` advertising or infer vision/tool/reasoning capabilities from model names. Those metadata improvements remain separate.
+
+## Regression coverage
+
+`test/auto-routing-http-auth.test.ts` exercises a real local HTTP server with mocked PostgreSQL queries and an isolated settings directory. It covers missing/blocked keys, permission filtering before operational checks, and no permitted candidate. It does not certify PostgreSQL behavior or successful upstream completion. Selector tests separately cover authorized alternatives, pin revalidation and late escalation completion after a newer task has replaced the pin.
