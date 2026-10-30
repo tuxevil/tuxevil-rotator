@@ -715,3 +715,25 @@ it("restricts disabled-classifier fallback and old session pins to the configure
   config.effortPools = { low: ["ollama/absent"] };
   assert.equal(await selectAutoRoutingTarget(rotator, catalog, request), null);
 });
+
+it("does not overwrite a newer task pin when ordinary classification finishes late", async (t) => {
+  const rotator = fakeRotator("http://classifier.invalid");
+  const config = rotator.getConfig().typesafeRouting!;
+  config.sessionAffinity = true;
+  let release!: () => void;
+  let entered!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  t.mock.method(globalThis, "fetch", async () => {
+    entered(); await pending;
+    return new Response(JSON.stringify({ answers: { task_effort: { choice: "medium", confidence: 0.9 }, selected_model: { choice: "candidate_0", confidence: 0.9 } } }), { headers: { "content-type": "application/json" } });
+  });
+  const request: AutoRoutingRequest = { route: "openai-chat", tenantId: "tenant", input: { metadata: { session_id: "normal-race" }, messages: [{ role: "user", content: "old task" }] } };
+  const old = selectAutoRoutingTarget(rotator, catalog, request);
+  await started;
+  config.enabled = false;
+  const newer = { ...request, input: { metadata: { session_id: "normal-race" }, messages: [{ role: "user", content: "new task" }] } };
+  await selectAutoRoutingTarget(rotator, catalog, newer);
+  release(); await old;
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, newer))?.reason, "session-continuation");
+});

@@ -748,7 +748,7 @@ export async function selectAutoRoutingTarget(
   for (const [key, pin] of pins) if (pin.expiresAt <= Date.now()) pins.delete(key);
   const pin = identity ? pins.get(identity.key) : undefined;
   let selection: AutoRoutingSelection | null = null;
-  if (pin && identity && pin.askHash === identity.askHash && !pin.escalated
+  if (pin?.model && identity && pin.askHash === identity.askHash && !pin.escalated
     && config?.stallEscalation && hasStalledToolExecution(request.input)) {
     pin.escalated = true; // Reserve the single attempt before awaiting concurrent requests.
     const alternatives = catalog.filter(entry => entry.reasoning && (entry.modelId !== pin.model || entry.providerId !== pin.provider));
@@ -760,7 +760,7 @@ export async function selectAutoRoutingTarget(
       diagnostics.stall_escalation = true;
     }
   }
-  if (!selection && pin && identity && pin.askHash === identity.askHash) {
+  if (!selection && pin?.model && identity && pin.askHash === identity.askHash) {
     const eligible = buildAutoRoutingCandidates(rotator, catalog.filter(entry => entry.modelId === pin.model && entry.providerId === pin.provider), request);
     if (eligible.candidates[0]) {
       selection = { candidate: eligible.candidates[0], mode: "deterministic", reason: "session-continuation" };
@@ -768,13 +768,19 @@ export async function selectAutoRoutingTarget(
     }
   }
   if (!selection) {
-    if (identity) pins.delete(identity.key);
-    selection = await selectAutoRoutingTargetInternal(rotator, catalog, request, diagnostics);
-    if (identity && selection) {
-      const configuredTtl = config?.sessionAffinityTtlSeconds ?? 1800;
-      const ttl = Number.isFinite(configuredTtl) ? Math.max(1, Math.min(86400, configuredTtl)) : 1800;
+    const reservation: SessionPin = { provider: "", model: "", askHash: identity?.askHash ?? "", expiresAt: Date.now() + 30_000 };
+    if (identity) {
+      pins.delete(identity.key);
       if (pins.size >= MAX_SESSION_PINS) pins.delete(pins.keys().next().value!);
-      pins.set(identity.key, { provider: selection.candidate.providerId, model: selection.candidate.modelId, askHash: identity.askHash, expiresAt: Date.now() + ttl * 1000 });
+      pins.set(identity.key, reservation);
+    }
+    selection = await selectAutoRoutingTargetInternal(rotator, catalog, request, diagnostics);
+    if (identity && pins.get(identity.key) === reservation) {
+      if (selection) {
+        const configuredTtl = config?.sessionAffinityTtlSeconds ?? 1800;
+        const ttl = Number.isFinite(configuredTtl) ? Math.max(1, Math.min(86400, configuredTtl)) : 1800;
+        pins.set(identity.key, { provider: selection.candidate.providerId, model: selection.candidate.modelId, askHash: identity.askHash, expiresAt: Date.now() + ttl * 1000 });
+      } else pins.delete(identity.key);
     }
   }
   console.info("[tuxevil-rotator]", JSON.stringify({
