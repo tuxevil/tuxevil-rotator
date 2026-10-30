@@ -2398,6 +2398,7 @@ async function completeViaRotator(
             : format === "ollama"
               ? parseOllamaNdjson(raw)
               : parseAntigravitySse(raw);
+          if (format === "ollama" && completion.streamError) throw new Error(completion.streamError);
           if (completion.inputTokens > 0 || completion.outputTokens > 0) {
             rotator.recordTokenUsage(
               context.displayModelKey,

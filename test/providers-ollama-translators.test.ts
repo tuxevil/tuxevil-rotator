@@ -261,3 +261,23 @@ describe("parseOllamaNdjson", () => {
     assert.equal(completion.outputTokens, 4);
   });
 });
+it("rejects Ollama error and malformed bodies instead of producing empty successes", () => {
+  assert.ok(parseOllamaNdjson('{"error":"private upstream detail"}').streamError);
+  assert.ok(parseOllamaNdjson('not-json').streamError);
+  assert.ok(parseOllamaNdjson('{"done":true,"message":{"content":""}}').streamError);
+  assert.doesNotMatch(parseOllamaNdjson('{"error":"private upstream detail"}').streamError ?? "", /private upstream detail/);
+});
+
+it("preserves Ollama reasoning and output-limit finish reasons", () => {
+  const result = parseOllamaNdjson(JSON.stringify({ message: { content: "", thinking: "reasoning" }, done: true, done_reason: "length", eval_count: 32 }));
+  assert.equal(result.thinkingText, "reasoning");
+  assert.equal(result.finishReason, "MAX_TOKENS");
+  assert.equal(result.streamError, undefined);
+});
+
+
+it("accepts pretty-printed nonstreaming Ollama JSON", () => {
+  const result = parseOllamaNdjson(JSON.stringify({ message: { content: "answer" }, done: true, eval_count: 1 }, null, 2));
+  assert.equal(result.text, "answer");
+  assert.equal(result.streamError, undefined);
+});

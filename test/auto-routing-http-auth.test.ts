@@ -27,11 +27,13 @@ it("enforces virtual keys over HTTP before auto selection and excludes forbidden
   const endpoints = OLLAMA_CHAT_ENDPOINTS as string[];
   const originalEndpoints = [...endpoints];
   let forwardedModel: unknown;
+  let providerError = false;
   const upstream = createServer((req, res) => {
     let body = "";
     req.on("data", chunk => { body += String(chunk); });
     req.on("end", () => {
       forwardedModel = JSON.parse(body).model;
+      if (providerError) { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ error: "private-provider-error" })); return; }
       res.setHeader("content-type", "application/x-ndjson");
       res.end(JSON.stringify({ model: "allowed-model", message: { role: "assistant", content: "hello back" }, done: true, prompt_eval_count: 3, eval_count: 2 }) + "\n");
     });
@@ -54,6 +56,7 @@ it("enforces virtual keys over HTTP before auto selection and excludes forbidden
     getSafetyJitterMs: () => 0,
     getGlobalDelayMs: () => 0,
     recordUpstreamAttempt: () => {},
+    markError: () => {},
     recordRequest: () => false,
     finishRequest: () => {},
     recordLatency: () => {},
@@ -99,7 +102,11 @@ it("enforces virtual keys over HTTP before auto selection and excludes forbidden
     const payload = await success.json() as { choices: { message: { content: string } }[] };
     assert.equal(payload.choices[0].message.content, "hello back");
     assert.equal(forwardedModel, "allowed-model");
-    assert.deepEqual(observed, ["allowed-model"]);
+    providerError = true;
+    const invalid = await send("rk-test");
+    assert.equal(invalid.status, 502);
+    assert.doesNotMatch(await invalid.text(), /private-provider-error/);
+    assert.deepEqual(observed, ["allowed-model", "allowed-model"]);
   } finally {
     endpoints.splice(0, endpoints.length, ...originalEndpoints);
     upstream.closeAllConnections();

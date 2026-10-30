@@ -211,18 +211,30 @@ export function parseOllamaNdjson(raw: string): CompatCompletion {
   let inputTokens = 0;
   let outputTokens = 0;
   let text = "";
+  let thinkingText = "";
+  let streamError: string | undefined;
+  let finishReason: string | undefined;
+  let terminal = false;
   const toolCalls: OpenAIToolCall[] = [];
-  for (const chunk of raw.split(/\r?\n/)) {
+  let chunks = raw.split(/\r?\n/);
+  // Nonstreaming Ollama may return one pretty-printed JSON object.
+  try { const single: unknown = JSON.parse(raw); if (isRecord(single)) chunks = [JSON.stringify(single)]; } catch { /* NDJSON */ }
+  for (const chunk of chunks) {
     const line = chunk.trim();
     if (!line) continue;
     try {
       const parsed = JSON.parse(line) as Record<string, unknown>;
+      if (!isRecord(parsed)) { streamError = "Invalid Ollama response"; continue; }
+      if (parsed.error !== undefined) { streamError = "Ollama returned an upstream error"; continue; }
       if (parsed.done === true) {
+        terminal = true;
+        if (parsed.done_reason === "length") finishReason = "MAX_TOKENS";
         inputTokens = (parsed.prompt_eval_count as number) ?? 0;
         outputTokens = (parsed.eval_count as number) ?? 0;
       }
       const msg = isRecord(parsed.message) ? parsed.message : null;
       if (msg) {
+        if (typeof msg.thinking === "string") thinkingText += msg.thinking;
         if (typeof msg.content === "string" && msg.content) {
           text += msg.content;
         }
@@ -244,10 +256,15 @@ export function parseOllamaNdjson(raw: string): CompatCompletion {
         }
       }
     } catch {
-      // Ignore malformed NDJSON lines
+      streamError = "Malformed Ollama response";
     }
   }
+  if (!terminal) streamError ??= "Ollama response ended without a completion record";
+  if (!text && !thinkingText && toolCalls.length === 0) streamError ??= "Ollama returned no completion content";
   return {
+    ...(thinkingText ? { thinkingText } : {}),
+    ...(streamError ? { streamError } : {}),
+    ...(finishReason ? { finishReason } : {}),
     text,
     inputTokens,
     outputTokens,
