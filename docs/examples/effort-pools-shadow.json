@@ -1,0 +1,23 @@
+{
+  "typesafeRouting": {
+    "selectionPolicy": "effort-pools",
+    "effortPools": {
+      "low": [
+        "ollama/beam"
+      ],
+      "medium": [
+        "ollama/beam",
+        "ollama/minimax-m3.1-flash"
+      ],
+      "high": [
+        "ollama/nemotron-3-ultra"
+      ],
+      "max": [
+        "ollama/deepseek-v4.1-flash:1017"
+      ]
+    },
+    "shadowMode": true,
+    "sessionAffinity": false,
+    "stallEscalation": false
+  }
+}

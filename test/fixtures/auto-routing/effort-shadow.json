@@ -1,0 +1,6 @@
+[
+  {"id":"routine","expectedEffort":"low","prompt":"¿Cuánto es 2 + 2?"},
+  {"id":"bounded-implementation","expectedEffort":"medium","prompt":"Implementa una función TypeScript que agrupe pedidos por cliente, sume importes e ignore pedidos cancelados. Explica cómo manejarías importes decimales sin perder precisión."},
+  {"id":"distributed-debugging","expectedEffort":"high","prompt":"Investiga una duplicación intermitente de cobros en un sistema distribuido: el worker confirma el cargo, pierde la conexión antes de guardar el estado y el mensaje se reentrega. Diseña idempotencia, reconciliación y pruebas de fallas, comparando transacciones, outbox y restricciones únicas."},
+  {"id":"broad-architecture","expectedEffort":"max","prompt":"Diseña y justifica una migración gradual sin downtime de un sistema financiero multi-región con 500 millones de movimientos, escrituras concurrentes y regulación por residencia de datos. Debes demostrar invariantes de saldo y ausencia de doble gasto durante particiones, resolver conflictos entre disponibilidad y consistencia, diseñar rollback sin perder operaciones y un plan de verificación formal y pruebas de caos."}
+]
