@@ -58,6 +58,17 @@ describe("validators", () => {
 		assert.equal(result.ok, true);
 	});
 
+    it("validates effort-first pools and policy names", () => {
+        assert.equal(validateConfig({ accounts: [], typesafeRouting: { selectionPolicy: "effort-pools", effortPools: { low: ["ollama/beam"] } } }).ok, true);
+        for (const typesafeRouting of [
+            { selectionPolicy: "unknown" },
+            { selectionPolicy: "effort-pools" },
+            { effortPools: { low: [] } },
+            { effortPools: { low: ["beam"] } },
+            { effortPools: { typo: ["ollama/beam"] } },
+        ]) assert.equal(validateConfig({ accounts: [], typesafeRouting }).ok, false);
+    });
+
 	it("validates session affinity configuration", () => {
         assert.equal(validateConfig({ accounts: [], typesafeRouting: { sessionAffinity: true, sessionAffinityTtlSeconds: 1800 } }).ok, true);
         for (const sessionAffinityTtlSeconds of [0, -1, 86401, 1.5]) {

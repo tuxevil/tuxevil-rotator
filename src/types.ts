@@ -168,6 +168,9 @@ export interface Config {
 }
 
 export interface TypeSafeRoutingConfig {
+  /** Classify effort then select operationally from explicit pools; default model-choice. */
+  selectionPolicy?: "model-choice" | "effort-pools";
+  effortPools?: Partial<Record<"low" | "medium" | "high" | "max", string[]>>;
   /** Reuse a valid model for tool continuations with metadata.session_id. */
   sessionAffinity?: boolean;
   /** Once per pinned task, seek a reasoning model after three consecutive tool errors. */

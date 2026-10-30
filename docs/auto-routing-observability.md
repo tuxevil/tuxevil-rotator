@@ -49,3 +49,27 @@ A discovered context length is the model's published upper bound, not a guarante
 ## Classifier uncertainty diagnostics
 
 Valid model-choice responses also log `classifier_selected_model`, `classifier_confidence`, `classifier_min_confidence`, `classifier_top_probability`, `classifier_probability_margin`, `classifier_effort` and `classifier_effort_confidence`, including when low confidence triggers fallback. Missing probability data is null. These describe the classifier answer, not independently measured quality, and are distinct from the served model/confidence. Full distributions and request text are omitted.
+
+## Optional effort-first pools
+
+`typesafeRouting.selectionPolicy` defaults to `model-choice`. Set it to `effort-pools` to ask Jev only for `task_effort` (low, medium, high or max), then select the best operational candidate inside an explicit pool. Model names/operational scores are excluded from classifier state in this mode. Example configuration fragment:
+
+```json
+{
+  "typesafeRouting": {
+    "enabled": true,
+    "selectionPolicy": "effort-pools",
+    "effortPools": {
+      "low": ["ollama/beam"],
+      "medium": ["ollama/beam"]
+    },
+    "shadowMode": true
+  }
+}
+```
+
+API credentials are configured separately. Pools contain exact `providerId/modelId` identifiers, not aliases or patterns. Model IDs can contain additional slashes. Configure high/max from measured task performance; there is no built-in claim that a model is a quality tier. Partial maps are supported: a missing tier falls back explicitly.
+
+The selected pool is filtered for authorization, route, context, capabilities and availability before selection, independently of the original shortlist. Existing operational ordering chooses within it. Reasons distinguish selected, missing, unavailable, low-confidence and shadow outcomes. Missing/unavailable pools and uncertain effort fall back to normal operational selection; pools are preferences, not access-control allowlists. Jev disabled/error/circuit-open behavior is unchanged.
+
+Shadow mode serves the normal deterministic model and logs `effort_pool_model`, `effort_pool_provider`, eligible count and effort confidence. It does not generate the recommended completion. In live effort-pool mode the returned confidence describes task-effort classification, not certainty that the chosen model is optimal. Affinity can retain a pool-selected model on continuations; stall escalation still limits alternatives to reasoning-capable candidates.

@@ -320,6 +320,20 @@ export function validateConfig(value: unknown): ValidationResult<Config> {
 			errors.push("config.typesafeRouting must be an object when provided");
 		} else {
 			const routing = value.typesafeRouting;
+            if (routing.selectionPolicy !== undefined && !["model-choice", "effort-pools"].includes(String(routing.selectionPolicy))) {
+                errors.push("config.typesafeRouting.selectionPolicy must be model-choice or effort-pools");
+            }
+            if (routing.effortPools !== undefined || routing.selectionPolicy === "effort-pools") {
+                if (!isRecord(routing.effortPools)) {
+                    errors.push("config.typesafeRouting.effortPools must be an object");
+                } else {
+                    for (const [effort, pool] of Object.entries(routing.effortPools)) {
+                        if (!["low", "medium", "high", "max"].includes(effort) || !Array.isArray(pool) || pool.length === 0 || pool.length > 128 || pool.some(id => typeof id !== "string" || !/^[^/\s]+\/.+/.test(id))) {
+                            errors.push("config.typesafeRouting.effortPools must contain nonempty pools of provider/model IDs for low, medium, high or max");
+                        }
+                    }
+                }
+            }
             if (routing.stallEscalation !== undefined && typeof routing.stallEscalation !== "boolean") {
                 errors.push("config.typesafeRouting.stallEscalation must be a boolean");
             }

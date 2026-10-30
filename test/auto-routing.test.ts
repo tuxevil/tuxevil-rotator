@@ -673,3 +673,33 @@ it("keeps low-confidence evidence in metadata without lowering the routing thres
   assert.ok(Math.abs(event.classifier_probability_margin - 0.2) < 1e-10);
   assert.doesNotMatch(logs.join(""), /private task|test-typesafe-key/);
 });
+
+it("classifies effort without model-choice and selects an eligible configured pool outside the global shortlist", async () => {
+  let received: Record<string, unknown> = {};
+  const baseURL = await startServer(body => { received = body; return { status: 200, body: { answers: { task_effort: { choice: "high", confidence: 0.9 } } } }; });
+  const rotator = fakeRotator(baseURL);
+  Object.assign(rotator.getConfig().typesafeRouting!, { selectionPolicy: "effort-pools", shortlistSize: 1, effortPools: { high: ["google-antigravity/gemini-pro"] } });
+  const request: AutoRoutingRequest = { route: "openai-chat", input: { messages: [{ role: "user", content: "investigate" }] } };
+  const selected = await selectAutoRoutingTarget(rotator, catalog, request);
+  assert.equal(selected?.reason, "typesafe-effort-pool-selected");
+  assert.equal(selected?.candidate.modelId, "gemini-pro");
+  assert.deepEqual(Object.keys(received.questions as object), ["task_effort"]);
+  const forbidden = await selectAutoRoutingTarget(rotator, catalog, { ...request, isModelAllowed: id => id === "local-fast" });
+  assert.equal(forbidden?.reason, "typesafe-effort-pool-unavailable");
+  assert.equal(forbidden?.candidate.modelId, "local-fast");
+  rotator.getConfig().typesafeRouting!.shadowMode = true;
+  const shadow = await selectAutoRoutingTarget(rotator, catalog, request);
+  assert.equal(shadow?.candidate.modelId, "local-fast");
+  assert.equal(shadow?.mode, "shadow");
+});
+
+it("retains deterministic fallback for uncertain effort and missing pools", async () => {
+  let confidence = 0.1;
+  const baseURL = await startServer(() => ({ status: 200, body: { answers: { task_effort: { choice: "medium", confidence } } } }));
+  const rotator = fakeRotator(baseURL);
+  rotator.getConfig().typesafeRouting!.selectionPolicy = "effort-pools";
+  const request: AutoRoutingRequest = { route: "openai-chat", input: { messages: [{ role: "user", content: "hello" }] } };
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "typesafe-effort-low-confidence");
+  confidence = 0.9;
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "typesafe-effort-pool-missing");
+});
