@@ -31,6 +31,7 @@ import {
   buildChatRequest,
   newTranscription,
   CASES,
+  complianceJobs,
   complianceRequest,
   DEFAULT_PARAMETERS,
   emptyResult,
@@ -40,6 +41,7 @@ import {
   newDocument,
   newId,
   newPanel,
+  runnableComplianceModels,
   userMessage,
   VERDICT_LABELS,
   type CaseId,
@@ -79,10 +81,6 @@ const VERDICT_TONES: Record<Verdict, Tone> = {
 const CANCELLED_MESSAGE = "Request cancelled.";
 const errorText = (err: unknown): string =>
   err instanceof Error ? err.message : String(err);
-/** Saved or imported selections may still hold an audio-only model; those
- * can't answer chat requests, so they are shown but never run. */
-const runnableComplianceModels = (d: PlaygroundDocument): string[] =>
-  d.complianceModels.filter((model) => !isAudioOnlyModel(model));
 /** Seconds keep playgrounds saved in the same minute apart; under the privacy
  * mask every title reads "Saved playground". */
 const savedAt = (ms: number): string =>
@@ -383,20 +381,10 @@ export function PlaygroundPage(): JSX.Element {
     );
   }
   async function runCompliance(retry = false): Promise<void> {
-    if (!doc || !runnableComplianceModels(doc).length || !doc.cases.length)
-      return;
+    if (!doc) return;
+    const jobs = complianceJobs(doc, retry);
+    if (!jobs.length) return;
     const documentId = doc.id;
-    const failed = doc.results.filter(
-      (r) => r.verdict === "failed" || r.verdict === "error",
-    );
-    const jobs = runnableComplianceModels(doc).map((model) => ({
-      model,
-      cases: doc.cases.filter(
-        (caseId) =>
-          !retry ||
-          failed.some((r) => r.model === model && r.caseId === caseId),
-      ),
-    }));
     if (jobs.some((job) => !available.includes(job.model))) {
       toast("Select enabled models before running compliance.", "error");
       return;
@@ -511,11 +499,15 @@ export function PlaygroundPage(): JSX.Element {
       Stop all
     </Button>
   );
-  const selectedCount = doc.complianceModels.length;
-  const testCount = runnableComplianceModels(doc).length * doc.cases.length;
-  const failedCount = doc.results.filter(
-    (r) => r.verdict === "failed" || r.verdict === "error",
-  ).length;
+  const selectedCount = runnableComplianceModels(doc).length;
+  const testCount = complianceJobs(doc).reduce(
+    (sum, job) => sum + job.cases.length,
+    0,
+  );
+  const failedCount = complianceJobs(doc, true).reduce(
+    (sum, job) => sum + job.cases.length,
+    0,
+  );
   const progressLabel = progress
     ? `Running ${progress.done}/${progress.total}`
     : "";
@@ -771,7 +763,7 @@ export function PlaygroundPage(): JSX.Element {
                     {selectedCount} of {MAX_COMPLIANCE_MODELS} selected
                   </span>
                   <span class="spacer" />
-                  {selectedCount > 0 && !running && (
+                  {doc.complianceModels.length > 0 && !running && (
                     <button
                       type="button"
                       class="link-button"

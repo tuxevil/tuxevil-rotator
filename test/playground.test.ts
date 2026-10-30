@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   applyCompletion,
   buildChatRequest,
+  complianceJobs,
   complianceRequest,
   emptyResult,
   errorVerdict,
@@ -10,6 +11,7 @@ import {
   isAudioOnlyModel,
   newDocument,
   newPanel,
+  runnableComplianceModels,
   SseDecoder,
   userMessage,
 } from "../src/web/lib/playground.js";
@@ -376,5 +378,63 @@ describe("API compliance evaluators", () => {
     // Gemini models transcribe audio and also serve Chat Completions.
     for (const id of ["gemini-3.8-flash-low", "gpt-5.6-terra"])
       assert.equal(isAudioOnlyModel(id), false, id);
+  });
+
+  it("scopes compliance jobs and retries to selected runnable models and cases", () => {
+    const doc = newDocument();
+    doc.complianceModels = ["whisper-1", "model-a", "model-b"];
+    doc.cases = ["basic", "json"];
+    assert.deepEqual(runnableComplianceModels(doc), ["model-a", "model-b"]);
+    assert.deepEqual(complianceJobs(doc), [
+      { model: "model-a", cases: ["basic", "json"] },
+      { model: "model-b", cases: ["basic", "json"] },
+    ]);
+
+    const turn = {
+      request: complianceRequest("model-a", "json"),
+      result: emptyResult(),
+    };
+    doc.results = [
+      {
+        model: "whisper-1",
+        caseId: "basic",
+        verdict: "error",
+        explanation: "Audio only",
+        turn,
+      },
+      {
+        model: "model-a",
+        caseId: "basic",
+        verdict: "passed",
+        explanation: "OK",
+        turn,
+      },
+      {
+        model: "model-a",
+        caseId: "json",
+        verdict: "failed",
+        explanation: "Invalid JSON",
+        turn,
+      },
+      {
+        model: "model-b",
+        caseId: "basic",
+        verdict: "passed",
+        explanation: "OK",
+        turn,
+      },
+      {
+        model: "model-b",
+        caseId: "tools",
+        verdict: "error",
+        explanation: "Unchecked case should not retry",
+        turn,
+      },
+    ];
+    assert.deepEqual(complianceJobs(doc, true), [
+      { model: "model-a", cases: ["json"] },
+    ]);
+    doc.cases = ["basic"];
+    assert.deepEqual(complianceJobs(doc, true), []);
   });
 });

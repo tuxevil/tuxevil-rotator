@@ -138,6 +138,33 @@ export const VERDICT_LABELS: Record<Verdict, string> = {
 export function isAudioOnlyModel(id: string): boolean {
   return /^whisper(?:-1)?$/i.test(id.trim());
 }
+/**
+ * Saved or imported selections may still hold an audio-only model; those
+ * cannot answer chat requests, so they are shown in the picker but never run.
+ */
+export function runnableComplianceModels(
+  doc: Pick<PlaygroundDocument, "complianceModels">,
+): string[] {
+  return doc.complianceModels.filter((model) => !isAudioOnlyModel(model));
+}
+export function complianceJobs(
+  doc: Pick<PlaygroundDocument, "complianceModels" | "cases" | "results">,
+  retry = false,
+): Array<{ model: string; cases: CaseId[] }> {
+  const failed = doc.results.filter(
+    (r) => r.verdict === "failed" || r.verdict === "error",
+  );
+  return runnableComplianceModels(doc)
+    .map((model) => ({
+      model,
+      cases: doc.cases.filter(
+        (caseId) =>
+          !retry ||
+          failed.some((r) => r.model === model && r.caseId === caseId),
+      ),
+    }))
+    .filter((job) => job.cases.length > 0);
+}
 // randomUUID requires a secure context; getRandomValues also works on LAN HTTP dashboards.
 export const newId = (): string =>
   typeof crypto.randomUUID === "function"
