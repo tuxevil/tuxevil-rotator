@@ -1,0 +1,32 @@
+[
+  {
+    "id": "knapsack",
+    "prompt": "Mochila 0/1, capacidad 17, objetos (peso,valor): [(3, 8), (4, 10), (5, 14), (7, 19), (8, 20), (9, 25), (2, 5)]. Cada objeto se puede usar una sola vez. ¿Valor total máximo? Responde únicamente el número entero, sin explicación.",
+    "expected": "47"
+  },
+  {
+    "id": "weighted-intervals",
+    "prompt": "Trabajos (inicio,fin,beneficio): [(0, 3, 8), (1, 4, 9), (3, 5, 6), (4, 7, 13), (5, 8, 11), (7, 9, 7), (8, 11, 12), (9, 12, 15)]. Intervalos [inicio,fin); puedes elegir trabajos sin solapamiento. ¿Beneficio máximo? Responde únicamente el número entero, sin explicación.",
+    "expected": "44"
+  },
+  {
+    "id": "assignment",
+    "prompt": "Asigna una columna distinta a cada fila de esta matriz de costos 5x5, minimizando la suma: [[9, 2, 7, 8, 6], [6, 4, 3, 7, 5], [5, 8, 1, 8, 3], [7, 6, 9, 4, 2], [8, 5, 2, 9, 7]]. ¿Costo mínimo? Responde únicamente el número entero, sin explicación.",
+    "expected": "17"
+  },
+  {
+    "id": "grid-paths",
+    "prompt": "Cuadrícula con coordenadas fila,columna de 0 a 6. Desde (0,0) a (6,6), sólo puedes bajar o ir a la derecha. Celdas bloqueadas: [(1, 2), (2, 2), (3, 4), (4, 1), (5, 5)]. ¿Cuántos caminos válidos hay? Responde únicamente el número entero, sin explicación.",
+    "expected": "75"
+  },
+  {
+    "id": "topological-orders",
+    "prompt": "Grafo dirigido de nodos 0 a 6 y aristas [(0, 3), (1, 3), (1, 4), (2, 4), (3, 5), (4, 5), (4, 6)]. ¿Cuántos órdenes topológicos distintos tiene? Responde únicamente el número entero, sin explicación.",
+    "expected": "42"
+  },
+  {
+    "id": "subset-count",
+    "prompt": "Lista [2, 3, 5, 7, 11, 13, 17, 19, 23]. ¿Cuántos subconjuntos distintos suman exactamente 41? Cada elemento puede usarse como máximo una vez; el orden no importa. Responde únicamente el número entero, sin explicación.",
+    "expected": "9"
+  }
+]

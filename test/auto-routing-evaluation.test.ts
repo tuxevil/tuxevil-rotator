@@ -19,3 +19,26 @@ it("compares identical tasks, alternates model order and records failures withou
   assert.throws(() => parseRoutingEvalCases([]));
   assert.throws(() => parseRoutingEvalCases([cases[0], cases[0]]));
 });
+
+it("records partial results and skips a model after its operational failure budget", async () => {
+  const tasks = parseRoutingEvalCases([{ id: "one", prompt: "p", expected: "ok" }, { id: "two", prompt: "q", expected: "ok" }]);
+  let calls = 0;
+  const persisted: string[] = [];
+  const rows = await evaluateRouting(tasks, ["unavailable"], async () => {
+    calls += 1;
+    throw Object.assign(new Error("private-provider-error"), { status: 402 });
+  }, { maxFailuresPerModel: 1, onResult: async row => { persisted.push(row.error ?? ""); } });
+  assert.equal(calls, 1);
+  assert.deepEqual(persisted, ["http-402", "model-skipped-after-failure"]);
+  assert.deepEqual(rows.map(row => row.passed), [false, false]);
+  assert.doesNotMatch(JSON.stringify(rows), /private-provider-error/);
+});
+
+it("flags empty HTTP-success completions as operational failures instead of reasoning errors", async () => {
+  const cases = parseRoutingEvalCases([{ id: "a", prompt: "p", expected: "1" }, { id: "b", prompt: "q", expected: "2" }]);
+  const rows = await evaluateRouting(cases, ["model"], async () => ({ choices: [{ message: { content: "" }, finish_reason: "stop" }] }), { maxFailuresPerModel: 1 });
+  assert.equal(rows[0].error, "empty-completion");
+  assert.equal(rows[0].answerChars, 0);
+  assert.equal(rows[0].finishReason, "stop");
+  assert.equal(rows[1].error, "model-skipped-after-failure");
+});
