@@ -490,3 +490,44 @@ it("keeps Anthropic tool results and harness reminders out of the human ask", as
   const context = state.request_context as Record<string, unknown>;
   assert.equal(context.latest_user_request, "Fix typo");
 });
+
+it("allows exactly one recovery probe and closes the circuit on success", async (t) => {
+  let calls = 0;
+  const baseURL = await startServer(() => {
+    calls += 1;
+    if (calls === 1) return { status: 503, body: {} };
+    return { status: 200, body: { answers: {
+      task_effort: { choice: "medium", confidence: 0.9 },
+      selected_model: { choice: "candidate_0", confidence: 0.9 },
+    } } };
+  });
+  const rotator = fakeRotator(baseURL);
+  const request: AutoRoutingRequest = { route: "openai-chat", input: { messages: [{ role: "user", content: "hello" }] } };
+  const now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  await selectAutoRoutingTarget(rotator, catalog, request);
+  t.mock.method(Date, "now", () => now + 30_001);
+  const probe = selectAutoRoutingTarget(rotator, catalog, request);
+  const concurrent = await selectAutoRoutingTarget(rotator, catalog, request);
+  assert.equal(concurrent?.reason, "typesafe-circuit-open");
+  assert.equal((await probe)?.mode, "typesafe");
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.mode, "typesafe");
+  assert.equal(calls, 3);
+});
+
+it("logs decision metadata and exclusion counts without request content or secrets", async (t) => {
+  const logs: string[] = [];
+  t.mock.method(console, "info", (...values: unknown[]) => logs.push(values.join(" ")));
+  const rotator = fakeRotator("private-endpoint", "private-key");
+  rotator.getConfig().typesafeRouting!.enabled = false;
+  await selectAutoRoutingTarget(rotator, catalog, {
+    route: "openai-chat", input: { messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "https://private-image" } }, { type: "text", text: "secret-prompt" }] }] },
+  });
+  const event = JSON.parse(logs[0].slice(logs[0].indexOf("{")));
+  assert.equal(event.event, "auto-routing-decision");
+  assert.equal(event.excluded.vision, 1);
+  assert.equal(event.shortlist_count, 1);
+  assert.equal(event.reason, "typesafe-disabled");
+  assert.equal(typeof event.routing_latency_ms, "number");
+  assert.doesNotMatch(logs.join(""), /secret-prompt|private-key|private-endpoint|private-image/);
+});

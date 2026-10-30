@@ -373,7 +373,7 @@ export function buildAutoRoutingCandidates(
   rotator: AutoRoutingRotator,
   catalog: AutoRoutingCatalogEntry[],
   request: AutoRoutingRequest,
-): { candidates: AutoRoutingCandidate[]; requirements: RoutingRequirements } {
+): { candidates: AutoRoutingCandidate[]; requirements: RoutingRequirements; excluded: Record<string, number>; eligibleCount: number } {
   const requirements = getRequirements(request.input);
   // Conservative UTF-8 byte estimate; includes schemas and reserves output space.
   const root = asRecord(request.input);
@@ -381,21 +381,23 @@ export function buildAutoRoutingCandidates(
   const requiredTokens = Math.ceil(Buffer.byteLength(JSON.stringify(request.input) ?? "", "utf8") / 3)
     + (Number.isFinite(outputTokens) && outputTokens > 0 ? outputTokens : 4096);
   const candidates: AutoRoutingCandidate[] = [];
+  const excluded: Record<string, number> = {};
+  const reject = (reason: string): void => { excluded[reason] = (excluded[reason] ?? 0) + 1; };
   for (const entry of catalog) {
-    if (requiredTokens > entry.contextWindow * 0.95) continue;
-    if (request.route === "gemini" && entry.providerId !== "google-antigravity") continue;
-    if (request.route === "openai-responses" && entry.responses === false) continue;
-    if (request.maxContextWindow !== undefined && entry.contextWindow < request.maxContextWindow) continue;
-    if (requirements.hasImages && !entry.multimodal) continue;
-    if (requirements.hasTools && !entry.tools) continue;
-    if (requirements.requiresReasoning && !entry.reasoning) continue;
-    if (rotator.hasActiveProvider && !rotator.hasActiveProvider(entry.providerId)) continue;
+    if (requiredTokens > entry.contextWindow * 0.95) { reject("context"); continue; }
+    if (request.route === "gemini" && entry.providerId !== "google-antigravity") { reject("wire-format"); continue; }
+    if (request.route === "openai-responses" && entry.responses === false) { reject("wire-format"); continue; }
+    if (request.maxContextWindow !== undefined && entry.contextWindow < request.maxContextWindow) { reject("context"); continue; }
+    if (requirements.hasImages && !entry.multimodal) { reject("vision"); continue; }
+    if (requirements.hasTools && !entry.tools) { reject("tools"); continue; }
+    if (requirements.requiresReasoning && !entry.reasoning) { reject("reasoning"); continue; }
+    if (rotator.hasActiveProvider && !rotator.hasActiveProvider(entry.providerId)) { reject("provider-inactive"); continue; }
 
     const status = rotator.getAutoRoutingCandidateStatus?.(entry.modelId, entry.providerId) ?? {
       available: true,
       operationalScore: 0.5,
     };
-    if (!status.available) continue;
+    if (!status.available) { reject("unavailable"); continue; }
     candidates.push({
       ...entry,
       id: `candidate_${candidates.length}`,
@@ -419,6 +421,8 @@ export function buildAutoRoutingCandidates(
   );
   const candidatePool = diverseShortlist(candidates, maxCandidates);
   return {
+    excluded,
+    eligibleCount: candidates.length,
     candidates: diverseShortlist(candidatePool, shortlistSize),
     requirements,
   };
@@ -435,14 +439,16 @@ function deterministicSelection(
 const classifierBreakers = new WeakMap<AutoRoutingRotator, { retryAt: number; probing: boolean; identity: string }>();
 const CLASSIFIER_COOLDOWN_MS = 30_000;
 
-export async function selectAutoRoutingTarget(
+async function selectAutoRoutingTargetInternal(
   rotator: AutoRoutingRotator,
   catalog: AutoRoutingCatalogEntry[],
   request: AutoRoutingRequest,
+  diagnostics: Record<string, unknown>,
 ): Promise<AutoRoutingSelection | null> {
   const config = rotator.getConfig?.().typesafeRouting;
   const excerptLimit = Math.max(256, Math.min(50_000, config?.maxExcerptChars ?? DEFAULT_MAX_EXCERPT_CHARS));
-  const { candidates, requirements } = buildAutoRoutingCandidates(rotator, catalog, request);
+  const { candidates, requirements, excluded, eligibleCount } = buildAutoRoutingCandidates(rotator, catalog, request);
+  Object.assign(diagnostics, { excluded, eligible_count: eligibleCount, shortlist_count: candidates.length });
   if (candidates.length === 0) return null;
 
   const deterministic = (reason: string): AutoRoutingSelection | null =>
@@ -491,6 +497,7 @@ export async function selectAutoRoutingTarget(
     })),
   };
 
+  const classifierStarted = performance.now();
   try {
     const client = new TypeSafeClient({
       apiKey,
@@ -513,6 +520,7 @@ export async function selectAutoRoutingTarget(
         ),
       },
     });
+    diagnostics.classifier_latency_ms = Math.round((performance.now() - classifierStarted) * 100) / 100;
     breaker.retryAt = 0;
     breaker.probing = false;
     const effortAnswer = asRecord(answer.answers.task_effort);
@@ -597,10 +605,35 @@ export async function selectAutoRoutingTarget(
       reason,
     };
   } catch {
+    diagnostics.classifier_latency_ms = Math.round((performance.now() - classifierStarted) * 100) / 100;
     breaker.retryAt = Date.now() + CLASSIFIER_COOLDOWN_MS;
     breaker.probing = false;
     // Jev is an optional semantic layer. A transport, timeout, or malformed
     // answer must never make an otherwise routable request fail closed.
     return deterministic("typesafe-error");
   }
+}
+
+/** Emits metadata only: never prompts, tool output, credentials or endpoint URLs. */
+export async function selectAutoRoutingTarget(
+  rotator: AutoRoutingRotator,
+  catalog: AutoRoutingCatalogEntry[],
+  request: AutoRoutingRequest,
+): Promise<AutoRoutingSelection | null> {
+  const started = performance.now();
+  const diagnostics: Record<string, unknown> = {};
+  const selection = await selectAutoRoutingTargetInternal(rotator, catalog, request, diagnostics);
+  console.info("[tuxevil-rotator]", JSON.stringify({
+    event: "auto-routing-decision",
+    route: request.route,
+    model: selection?.candidate.modelId ?? null,
+    provider: selection?.candidate.providerId ?? null,
+    mode: selection?.mode ?? null,
+    reason: selection?.reason ?? "no-eligible-candidates",
+    confidence: selection?.confidence ?? null,
+    routing_latency_ms: Math.round((performance.now() - started) * 100) / 100,
+    catalog_count: catalog.length,
+    ...diagnostics,
+  }));
+  return selection;
 }
