@@ -1,3 +1,4 @@
+import { serveModelAccessApi } from "./model-access-api.js";
 import { createUsageLimitsHandler, USAGE_LIMITS_PATH } from "./usage-limits.js";
 import { carriesUsageReadToken } from "./usage-limits-auth.js";
 // HTTP reverse proxy - forwards requests to Antigravity with credential rotation
@@ -2479,6 +2480,12 @@ export function startProxy(
         }
         res.end("<h1>Internal login error</h1>");
       });
+      return;
+    }
+
+    if (method === "GET" && pathname === "/api/model-access") {
+      if (!requireAdmin(req, res)) return;
+      serveModelAccessApi(res, rotator.getConfig(), new URL(req.url ?? "/", "http://localhost").searchParams);
       return;
     }
 

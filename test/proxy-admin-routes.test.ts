@@ -66,6 +66,22 @@ describe("proxy admin routes", () => {
     }
   });
 
+  it("protects access diagnostics and explains dated rules without exposing secrets", async () => {
+    const { rotator } = makeRotator();
+    server = await startTestProxy({ ...rotator, getConfig: () => ({ accounts: [{ email: "test@example.com", projectId: "p", refreshToken: "private-refresh", provider: "google-antigravity", tier: "free" }] }) });
+    const port = (server.address() as AddressInfo).port;
+    const base = `http://127.0.0.1:${port}/api/model-access`;
+    assert.equal((await fetch(base)).status, 401);
+    const headers = { "x-rotator-admin-token": "secret" };
+    const response = await fetch(base + "?provider=google-antigravity&model=claude-sonnet-4-6&plan=free&at=2026-11-02", { headers });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    const body = await response.json() as { decision: { state: string } };
+    assert.equal(body.decision.state, "blocked");
+    assert.doesNotMatch(JSON.stringify(body), /private-refresh/);
+    assert.equal((await fetch(base + "?provider=google-antigravity", { headers })).status, 400);
+  });
+
   it("matches dynamic admin routes by pathname while preserving query-token auth", async () => {
     const { rotator, state } = makeRotator();
     server = await startTestProxy(rotator);

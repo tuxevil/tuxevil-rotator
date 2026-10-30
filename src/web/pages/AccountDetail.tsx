@@ -35,7 +35,7 @@ import {
   StatusPill,
 } from "../components/ui.js";
 import { accountMenuItems } from "./Accounts.js";
-import { providerPath } from "../state/router.js";
+import { BASE, providerPath } from "../state/router.js";
 
 export function AccountDetail({ email, onClose }: { email: string; onClose: () => void }): JSX.Element {
   const data = overview.value!;
@@ -73,6 +73,7 @@ export function AccountDetail({ email, onClose }: { email: string; onClose: () =
         </Button>
       </header>
 
+      <section class="detail-section"><Link href={`${BASE}/models?accessAccount=${encodeURIComponent(account.id ?? "")}#model-access`}>Inspect model access rules</Link></section>
       <section class={`detail-status tone-${meta.tone}`}>
         <div class="detail-status-line">
           <StatusPill status={account.status} />

@@ -1,3 +1,4 @@
+import { ModelAccessPanel } from "./ModelAccess.js";
 // Models: which providers serve traffic, in what order, and which models
 // clients can call. The provider drawer lives at /dashboard/models/<provider>.
 
@@ -157,6 +158,7 @@ export function ModelsPage(): JSX.Element {
       <ProvidersPanel state={state} providers={providers} />
       <EffortRoutingPanel state={state} change={change} />
       <ModelsPanel state={state} />
+      <ModelAccessPanel />
       <Drawer open={Boolean(drawerId)} onClose={closeDrawer} label="Provider details">
         {drawerId &&
           (drawerSummary ? (

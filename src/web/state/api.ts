@@ -1,3 +1,4 @@
+import type { AccessReport } from "../../model-access-api.js";
 // Typed client for the admin API. Auth rides on the HttpOnly session cookie,
 // so no token is ever handled in page JavaScript.
 
@@ -189,6 +190,7 @@ export const api = {
   deleteKey: (hash: string) => request("DELETE", `/api/keys/${enc(hash)}`),
   models: () => request<{ ok: true; data: ModelCatalogEntry[] }>("GET", "/api/models"),
 
+  modelAccess: (params = new URLSearchParams()) => request<AccessReport>("GET", `/api/model-access?${params}`),
   catalog: () => request<ModelCatalogResponse>("GET", "/api/catalog"),
   refreshCatalog: () => request<ModelCatalogResponse>("POST", "/api/catalog/refresh"),
   setProviderEnabled: (id: string, on: boolean) =>
