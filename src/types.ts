@@ -97,6 +97,8 @@ export interface AccountConfig {
 }
 
 export interface Config {
+  /** Log informational account/model policy comparisons without enforcing them. */
+  modelAccessShadow?: boolean;
   accounts: AccountConfig[];
   requestsPerRotation: number;
   proxyPort: number;

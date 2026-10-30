@@ -21,4 +21,24 @@ Codex and Ollama seed lists are operator-reported and deliberately pending indep
 
 Account plans are inferred only for single-provider accounts with an unambiguous stored free/plus/ultra tier. Generic Pro is unknown because paid versus trial is unresolved. Linked-provider accounts have no inferred provider plan. A plan query parameter is an explicit simulation assumption; it does not persist or change an account. An OpenCode client declaration always remains conditional, never proof of genuine origin or guaranteed provider acceptance.
 
-This release does not change routing or enforce this registry. It does not yet collect per-account request observations or log per-request policy comparisons in shadow. Those should be added with scoped evidence and expiry before enabling any enforcement. This initial UI/API is read-only; rule editing is through reviewed source changes.
+This release does not change routing or enforce this registry. It collects scoped observations as described below, but logs policy comparisons only with the opt-in setting below. Rule editing remains through reviewed source changes; provider plan declarations use the authenticated API below.
+
+## Provider plans and observed access
+
+`PUT /api/model-access/plan` accepts `{ "accountId": "…", "provider": "openai-codex", "plan": "free" }` using administrator authentication. The provider must be connected to that account. Plans are operator declarations, not independently verified subscriptions; they expire after 30 days. The dashboard's save button makes this distinction explicit. A stored provider declaration takes precedence over a generic single-provider tier, while an explicit query plan remains a simulation override.
+
+Private evidence uses the existing settings repository (`model_access_evidence` in PostgreSQL or owner-only `model-access-evidence.json` in file mode). Raw credentials are not stored; evidence carries a credential fingerprint. Account identity or credential changes invalidate earlier evidence. For accounts whose identity includes a key fingerprint, changing one provider credential may invalidate all linked evidence conservatively.
+
+The actual rotation paths capture successful completions and HTTP/transport outcomes. Records are scoped to account, provider, selected model, credential and declared client class. Only the latest record for that scope is retained, capped at 2000 observations and 2000 plan declarations. Success expires after one day; authentication/quota/transport after five minutes; unknown, payment-or-plan, explicit entitlement and client restrictions after one hour. No raw prompt, response, user-agent, provider error text or secret is retained.
+
+Generic 400/403 stays unknown. HTTP401 means authentication, 429 quota, and 402 payment-or-plan. Only allowlisted structured error codes produce an entitlement/client restriction classification. OpenCode user-agent detection is a declaration, not verified origin. A successful completion demonstrates that one request worked, not unrestricted plan access or every capability. HTTP success with a subsequent parsing failure is not recorded as successful model access.
+
+Observation persistence is best effort, debounced by 250ms and flushed during graceful shutdown; a crash can lose recent observations. Plan API success awaits persistence. Evidence is informational and does not override the documented policy state or alter selection, retries, cooldowns or authorization. Capture is skipped when the settings repository is not initialized. Comparison-only routing shadow is available through the opt-in setting below.
+
+The `at` query controls policy-date simulation; stored plan and observation summaries represent the current unexpired evidence, not a historical account ledger. API responses omit credential fingerprints. Evidence cannot establish that a user-agent declaration is genuine, and observed successes do not broaden virtual-key access or documented plan rules.
+
+## Opt-in policy shadow
+
+Set top-level `modelAccessShadow: true` to emit `model-access-policy-shadow` events before each upstream rotation attempt. Default is false. Events contain a hashed account identifier, provider/model, plan and plan source, client declaration, policy state, rule IDs and `wouldBlock`. `enforced` is always false. No prompt, raw user-agent, credentials or provider error text is logged. Unknown/provisional access is not reported as would-block.
+
+The comparison uses the actual selected account and its current credential-scoped plan declaration (or a conservative single-provider tier inference). It does not alter requests, authorization, selection, retries or cooldowns. A would-block finding depends on the recorded plan, which may still be an operator declaration rather than a provider-verified subscription. Observe these findings before considering any enforcement.

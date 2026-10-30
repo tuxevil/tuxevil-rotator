@@ -190,6 +190,7 @@ export const api = {
   deleteKey: (hash: string) => request("DELETE", `/api/keys/${enc(hash)}`),
   models: () => request<{ ok: true; data: ModelCatalogEntry[] }>("GET", "/api/models"),
 
+  declareProviderPlan: (accountId: string, provider: string, plan: string) => request<AccessReport>("PUT", "/api/model-access/plan", { accountId, provider, plan }),
   modelAccess: (params = new URLSearchParams()) => request<AccessReport>("GET", `/api/model-access?${params}`),
   catalog: () => request<ModelCatalogResponse>("GET", "/api/catalog"),
   refreshCatalog: () => request<ModelCatalogResponse>("POST", "/api/catalog/refresh"),

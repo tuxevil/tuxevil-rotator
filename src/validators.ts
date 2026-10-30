@@ -315,6 +315,7 @@ export function validateConfig(value: unknown): ValidationResult<Config> {
 			}
 		}
 	}
+	if (value.modelAccessShadow !== undefined && typeof value.modelAccessShadow !== "boolean") errors.push("config.modelAccessShadow must be a boolean");
 	if (value.typesafeRouting !== undefined) {
 		if (!isRecord(value.typesafeRouting)) {
 			errors.push("config.typesafeRouting must be an object when provided");

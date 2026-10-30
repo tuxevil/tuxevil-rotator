@@ -31,7 +31,8 @@ export function ModelAccessPanel(): JSX.Element {
   useEffect(() => {
     if (selected && !selected.providers.includes(provider)) setProvider(selected.providers[0] ?? "google-antigravity");
   }, [selected, provider]);
-  const effectivePlan = plan || selected?.inferredPlan || "unknown";
+  const declaredPlan = selected?.providerPlans.find(p => p.provider === provider);
+  const effectivePlan = plan || declaredPlan?.plan || selected?.inferredPlan || "unknown";
   const rules = report?.rules.filter(r => r.modelPrefix.toLowerCase().includes(ruleFilter.toLowerCase()) && r.provider === provider && ((effectivePlan === "unknown" || !accountId && !plan) || r.plans.includes(effectivePlan) || r.plans.includes("*"))) ?? [];
   const inspect = async () => {
     setBusy(true); setError("");
@@ -41,8 +42,15 @@ export function ModelAccessPanel(): JSX.Element {
       if (plan) params.set("plan", plan);
       if (at) params.set("at", at);
       const result = await api.modelAccess(params);
-      setDecision(result); setDecisionKey(formKey);
+      setReport(result); setDecision(result); setDecisionKey(formKey);
     } catch { setError("Check the selected account, provider and model."); }
+    finally { setBusy(false); }
+  };
+  const savePlan = async () => {
+    if (!accountId || !plan) return;
+    setBusy(true); setError("");
+    try { setReport(await api.declareProviderPlan(accountId, provider, plan)); setPlan(""); setDecision(null); }
+    catch { setError("Provider plan could not be persisted."); }
     finally { setBusy(false); }
   };
   return <Panel id="model-access" title="Model access" subtitle="Informational rules only. Quota, credentials, capabilities and routing are checked separately.">
@@ -55,9 +63,15 @@ export function ModelAccessPanel(): JSX.Element {
       <label>Model ID<input value={model} onInput={e => setModel(e.currentTarget.value)} maxLength={256} /></label>
     </div>
     <p>Plan: {effectivePlan}. {selected && selected.providers.length > 1 ? "Linked providers need separate plan evidence." : "Pro without billing evidence remains unknown."} Client identity is not verified here.</p>
+    <p>{declaredPlan ? `Stored provider declaration: ${declaredPlan.plan}, expires ${new Date(declaredPlan.expiresAt).toISOString()}.` : "No current provider-specific plan declaration."}</p>
+    <Button onClick={() => { void savePlan(); }} disabled={busy || !accountId || !plan}>Save provider plan declaration</Button>
     <Button onClick={() => { void inspect(); }} disabled={busy || !report || !model}>{busy ? "Checking…" : "Explain access"}</Button>
     {error && <p role="alert">{error}</p>}
     {decisionKey === formKey && decision?.decision && <div role="status"><strong>{decision.decision.state}</strong><p>{decision.decision.reason}</p><p>Plan source: {decision.planSource}. This result does not grant access.</p></div>}
+    {selected && <details><summary>Recent account observations ({selected.observations.filter(o => o.provider === provider).length})</summary>
+      <p>Latest result per model and declared client. No plan inference or routing blocks are created.</p>
+      <div class="table-wrap"><table><thead><tr><th>Model</th><th>Client</th><th>Result</th><th>HTTP</th><th>Observed</th><th>Expires</th></tr></thead><tbody>{selected.observations.filter(o => o.provider === provider).map(o => <tr key={`${o.provider}/${o.model}/${o.client}`}><td>{o.model}</td><td>{o.client}</td><td>{o.kind}</td><td>{o.status ?? "—"}</td><td>{new Date(o.observedAt).toISOString()}</td><td>{new Date(o.expiresAt).toISOString()}</td></tr>)}</tbody></table></div>
+    </details>}
     <label>Filter rule models<input value={ruleFilter} onInput={e => setRuleFilter(e.currentTarget.value)} /></label>
     <div class="table-wrap"><table><thead><tr><th>Model / family</th><th>Plans</th><th>Declared access</th><th>Evidence</th><th>Availability ends</th><th>Notes / source</th></tr></thead><tbody>{rules.map(r => <tr key={r.id}><td>{r.modelPrefix}</td><td>{r.plans.join(", ")}</td><td>{r.state}</td><td>{r.evidence}<br />{r.verifiedAt}<br />Review: {r.reviewAfter}</td><td>{r.validUntil ?? "Not specified"}</td><td>{r.note}<br />{r.source.startsWith("https://") ? <a href={r.source} target="_blank" rel="noreferrer">Source</a> : r.source}</td></tr>)}</tbody></table></div>
     {!report && !error && <p>Loading access rules…</p>}

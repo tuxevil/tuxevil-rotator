@@ -289,6 +289,8 @@ export async function main(): Promise<void> {
     stopPendingSessionReaper();
     await closeProxyDispatchers();
     const { closeDb } = await import("./db-store.js");
+    const { persistAccessEvidence } = await import("./access-evidence.js");
+    await persistAccessEvidence().catch(() => {});
     await closeDb();
     clearTimeout(forceExitTimer);
     process.exit(0);

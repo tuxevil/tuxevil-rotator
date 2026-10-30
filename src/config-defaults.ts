@@ -27,6 +27,7 @@ function safeStreamRecoveryMaxRetries(value: number | undefined): number {
 export function applyConfigDefaults(config: Config): Config {
 	return {
 		proxyPort: config.proxyPort || 51200,
+		modelAccessShadow: config.modelAccessShadow ?? false,
 		bindHost: config.bindHost || rotatorEnv("BIND_HOST") || "0.0.0.0",
 		routingPolicy: config.routingPolicy || "timer-first",
 		requestsPerRotation: config.requestsPerRotation || 5,

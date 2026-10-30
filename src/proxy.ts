@@ -1,4 +1,5 @@
-import { serveModelAccessApi } from "./model-access-api.js";
+import { observeAccessAttempt, logAccessPolicyShadow } from "./access-evidence.js";
+import { serveModelAccessApi, serveProviderPlanApi } from "./model-access-api.js";
 import { createUsageLimitsHandler, USAGE_LIMITS_PATH } from "./usage-limits.js";
 import { carriesUsageReadToken } from "./usage-limits-auth.js";
 // HTTP reverse proxy - forwards requests to Antigravity with credential rotation
@@ -1377,6 +1378,7 @@ export async function withRotation<T>(
       rotator,
     );
 
+    let accessHttpStatus: number | null = null;
     try {
       const provider = providerAdapterForModel(account, model, rotator, providerId);
       if (requestIsOff(provider.id)) return modelOffOutcome();
@@ -1417,6 +1419,7 @@ export async function withRotation<T>(
         if (attempt < maxRetries) continue;
         return sendNoAccountsAvailable(`${provider.id} turned off for ${label}`);
       }
+      if (rotator.getConfig?.().modelAccessShadow === true) logAccessPolicyShadow(account.config, provider.id, model, originalHeaders);
       rotator.recordUpstreamAttempt(account);
       const forwarded = await provider.forwardRequest(
         account,
@@ -1425,6 +1428,7 @@ export async function withRotation<T>(
         signal,
       );
       const { response, endpoint } = forwarded;
+      accessHttpStatus = response.status;
       const context: RotationAttemptContext = {
         account,
         label,
@@ -1442,6 +1446,7 @@ export async function withRotation<T>(
         selectionReason: body.selectionReason,
       };
 
+      if (!response.ok) observeAccessAttempt(account.config, provider.id, model, originalHeaders, response.status);
       const action = await classifyUpstreamResponse(
         response,
         endpoint,
@@ -1452,6 +1457,7 @@ export async function withRotation<T>(
       );
 
       if (action.kind !== "success") {
+        observeAccessAttempt(account.config, provider.id, model, originalHeaders, response.status, action.errorText);
         const decision = await handleUpstreamAccountAction({
           action,
           provider,
@@ -1472,6 +1478,7 @@ export async function withRotation<T>(
 
       // success
       const result = await onSuccess(response, context);
+      observeAccessAttempt(account.config, provider.id, model, originalHeaders, response.ok && result && typeof result === "object" && "streamError" in result && result.streamError ? 502 : response.status);
       const shouldRotate = rotator.recordRequest(account, model, providerId);
       const inTokens =
         result && typeof result === "object" && "inputTokens" in result
@@ -1497,6 +1504,7 @@ export async function withRotation<T>(
       if (signal?.aborted) {
         return { ok: false, status: 499, errorText: "Client closed request" };
       }
+      if (accessHttpStatus === null || accessHttpStatus < 400) observeAccessAttempt(account.config, providerId ?? DEFAULT_PROVIDER, model, originalHeaders, null, "", isFetchTransportError(err));
       const formattedError = formatError(err);
       log(
         `[${label}] Request failed: ${formattedError}`,
@@ -1912,6 +1920,7 @@ async function handleProxyRequest(
       });
     };
 
+    let accessHttpStatus: number | null = null;
     try {
       if (requestIsOff()) {
         sendModelOff();
@@ -1958,6 +1967,7 @@ async function handleProxyRequest(
         sendNoAccountsAvailable(`${providerId} turned off for ${label}`);
         return;
       }
+      if (rotator.getConfig?.().modelAccessShadow === true) logAccessPolicyShadow(account.config, provider.id, body.model, flattenHeaders(req.headers));
       rotator.recordUpstreamAttempt(account);
       const forwarded = await provider.forwardRequest(
         account,
@@ -1966,6 +1976,7 @@ async function handleProxyRequest(
         clientController.signal,
       );
       const { response, endpoint } = forwarded;
+      accessHttpStatus = response.status;
       const context: RotationAttemptContext = {
         account,
         label,
@@ -1983,6 +1994,7 @@ async function handleProxyRequest(
         selectionReason: body.selectionReason,
       };
 
+      if (!response.ok) observeAccessAttempt(account.config, provider.id, body.model, flattenHeaders(req.headers), response.status);
       const action = await classifyUpstreamResponse(
         response,
         endpoint,
@@ -1993,6 +2005,7 @@ async function handleProxyRequest(
       );
 
       if (action.kind !== "success") {
+        observeAccessAttempt(account.config, provider.id, body.model, flattenHeaders(req.headers), response.status, action.errorText);
         const decision = await handleUpstreamAccountAction({
           action,
           provider,
@@ -2055,6 +2068,7 @@ async function handleProxyRequest(
         const totalMs = Date.now() - requestStartMs;
         const ttfbMs = usage?.firstByteMs ?? totalMs;
         const outcomeStatus = usage?.streamError ? 502 : response.status;
+        observeAccessAttempt(account.config, provider.id, body.model, flattenHeaders(req.headers), response.ok ? outcomeStatus : response.status);
         rotator.recordLatency(body.displayModel || body.model, ttfbMs, totalMs);
         logRequestEnd(outcomeStatus, `ttfbMs=${ttfbMs} inTokens=${usage?.inputTokens ?? 0} outTokens=${usage?.outputTokens ?? 0} endpoint=${endpoint}`);
         rotator.recordRequestLog({
@@ -2105,6 +2119,7 @@ async function handleProxyRequest(
       return;
     } catch (err) {
       if (clientController.signal.aborted || res.destroyed) return;
+      if (accessHttpStatus === null || accessHttpStatus < 400) observeAccessAttempt(account.config, providerId, body.model, flattenHeaders(req.headers), null, "", isFetchTransportError(err));
       const formattedError = formatError(err);
       proxyLog(
         `[${label}] Request failed: ${formattedError}`,
@@ -2480,6 +2495,12 @@ export function startProxy(
         }
         res.end("<h1>Internal login error</h1>");
       });
+      return;
+    }
+
+    if (method === "PUT" && pathname === "/api/model-access/plan") {
+      if (!requireAdmin(req, res)) return;
+      void serveProviderPlanApi(req, res, rotator.getConfig());
       return;
     }
 

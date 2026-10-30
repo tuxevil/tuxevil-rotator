@@ -49,8 +49,13 @@ it("enforces virtual keys over HTTP before auto selection and excludes forbidden
     inFlightRequests: 0, inFlightByModel: {}, cooldownsByModel: {}, quota: [], healthScore: 1,
   };
   const observed: string[] = [];
+  const shadowEvents: Array<{ event?: string; provider?: string; enforced?: boolean; model?: string }> = [];
+  t.mock.method(console, "info", (...args: unknown[]) => {
+    const json = args.find(value => typeof value === "string" && value.startsWith("{"));
+    if (typeof json === "string") shadowEvents.push(JSON.parse(json));
+  });
   const rotator = {
-    getConfig: () => ({ accounts: [], typesafeRouting: { enabled: false }, protectivePauseMs: 0 }),
+    getConfig: () => ({ accounts: [], modelAccessShadow: true, typesafeRouting: { enabled: false }, protectivePauseMs: 0 }),
     getActiveAccount: async () => account,
     getRetryAfterMs: () => 0,
     getSafetyJitterMs: () => 0,
@@ -102,6 +107,14 @@ it("enforces virtual keys over HTTP before auto selection and excludes forbidden
     const payload = await success.json() as { choices: { message: { content: string } }[] };
     assert.equal(payload.choices[0].message.content, "hello back");
     assert.equal(forwardedModel, "allowed-model");
+    const comparison = shadowEvents.find(event => event.event === "model-access-policy-shadow");
+    assert.equal(comparison?.provider, "ollama");
+    assert.equal(comparison?.model, "allowed-model");
+    assert.equal(comparison?.enforced, false);
+    const { accessEvidenceStore } = await import("../src/access-evidence.js");
+    const evidence = accessEvidenceStore().forAccount(account.config);
+    assert.equal(evidence.observations.at(-1)?.kind, "success");
+    assert.equal(evidence.observations.at(-1)?.model, "allowed-model");
     providerError = true;
     const invalid = await send("rk-test");
     assert.equal(invalid.status, 502);

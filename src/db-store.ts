@@ -235,3 +235,13 @@ export async function setCachedResponsesStore(
   assertInitialized();
   await repository.set("responses_store", JSON.stringify(store));
 }
+
+/** Private informational evidence; independent of routing state and credentials. */
+export function getCachedAccessEvidence(): unknown {
+  assertInitialized();
+  try { return JSON.parse(repository.get("model_access_evidence") ?? "null"); } catch { return null; }
+}
+export async function setCachedAccessEvidence(value: unknown): Promise<void> {
+  assertInitialized();
+  await repository.set("model_access_evidence", JSON.stringify(value));
+}
