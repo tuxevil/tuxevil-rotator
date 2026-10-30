@@ -1,0 +1,106 @@
+{
+  "source": "771f00e",
+  "shadowEnabled": true,
+  "productionChanged": false,
+  "unauthorizedStatus": 401,
+  "planWasOperatorAssumption": true,
+  "responses": [
+    {
+      "status": 200,
+      "model": "beam",
+      "contentMatches": true
+    },
+    {
+      "status": 200,
+      "model": "beam",
+      "contentMatches": true
+    }
+  ],
+  "plans": [
+    {
+      "provider": "ollama",
+      "plan": "free",
+      "source": "operator",
+      "observedAt": 1793398050719,
+      "expiresAt": 1795990050719
+    }
+  ],
+  "observations": [
+    {
+      "provider": "ollama",
+      "model": "beam",
+      "client": "other",
+      "status": 200,
+      "kind": "success",
+      "observedAt": 1793398052295,
+      "expiresAt": 1793484452295
+    }
+  ],
+  "decision": {
+    "state": "unknown",
+    "reason": "Operator-reported policy pending verification; see declared states and evidence.",
+    "rules": [
+      {
+        "id": "ollama-free-beam",
+        "provider": "ollama",
+        "plans": [
+          "free"
+        ],
+        "modelPrefix": "beam",
+        "state": "allowed",
+        "evidence": "operator-pending",
+        "source": "Operator-provided Ollama free-credit list, 2026-10-30",
+        "verifiedAt": "2026-10-30",
+        "validFrom": "2026-10-30",
+        "reviewAfter": "2026-11-29",
+        "note": "Included in the supplied free-credit list; quota and live entitlement are separate."
+      }
+    ],
+    "informational": true,
+    "declaredPlan": "free",
+    "clientVerified": false
+  },
+  "shadowEvents": [
+    {
+      "event": "model-access-policy-shadow",
+      "account": "bc8f241b0b68c565b40b07f07fb230c74e21268f7a8601904e9c403efd8b81e4",
+      "provider": "ollama",
+      "model": "beam",
+      "plan": "free",
+      "planSource": "provider-declaration",
+      "clientDeclaration": "other",
+      "clientVerified": false,
+      "policyState": "unknown",
+      "wouldBlock": false,
+      "reason": "Operator-reported policy pending verification; see declared states and evidence.",
+      "ruleIds": [
+        "ollama-free-beam"
+      ],
+      "enforced": false
+    },
+    {
+      "event": "model-access-policy-shadow",
+      "account": "bc8f241b0b68c565b40b07f07fb230c74e21268f7a8601904e9c403efd8b81e4",
+      "provider": "ollama",
+      "model": "beam",
+      "plan": "free",
+      "planSource": "provider-declaration",
+      "clientDeclaration": "other",
+      "clientVerified": false,
+      "policyState": "unknown",
+      "wouldBlock": false,
+      "reason": "Operator-reported policy pending verification; see declared states and evidence.",
+      "ruleIds": [
+        "ollama-free-beam"
+      ],
+      "enforced": false
+    }
+  ],
+  "restart": {
+    "planRestored": true,
+    "observationsRestored": 1,
+    "kind": "success"
+  },
+  "temporaryInstanceStopped": true,
+  "temporaryCredentialsRemoved": true
+}
