@@ -1,3 +1,4 @@
+import { getCachedOllamaContextWindow } from "./providers/ollama/context-window.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import {
@@ -238,7 +239,7 @@ function buildAllAutoRoutingCandidates(
     catalog.push({
       providerId: "ollama",
       modelId,
-      contextWindow: 128_000,
+      contextWindow: getCachedOllamaContextWindow(modelId),
       multimodal: false,
       tools: true,
       reasoning: false,

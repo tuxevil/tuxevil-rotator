@@ -1,3 +1,4 @@
+import { primeOllamaContextWindows } from "./providers/ollama/context-window.js";
 import {
   type AccountConfig,
   type AccountRuntime,
@@ -453,7 +454,10 @@ export class AccountRotator {
       const names = (data.models ?? [])
         .map((m) => m.name ?? m.model ?? "")
         .filter(Boolean);
-      if (names.length > 0) this.setOllamaModels(names);
+      if (names.length > 0) {
+        this.setOllamaModels(names);
+        void primeOllamaContextWindows(names, ollamaAccount).catch(() => {});
+      }
     } catch {
       // Catalog refresh is non-fatal
     }

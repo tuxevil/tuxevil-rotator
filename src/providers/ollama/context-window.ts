@@ -115,3 +115,16 @@ export async function getOllamaContextWindow(
 export function clearOllamaContextCache(): void {
   cache.clear();
 }
+
+/** Read without network I/O on the routing path. Expired discoveries are not trusted. */
+export function getCachedOllamaContextWindow(model: string): number {
+  const entry = cache.get(model);
+  return entry && entry.expiresAt > Date.now() ? entry.contextWindow : defaultNumCtx();
+}
+
+/** Bounded discovery outside request selection. Failures retain the safe fallback. */
+export async function primeOllamaContextWindows(models: string[], account: AccountRuntime): Promise<void> {
+  for (let index = 0; index < models.length; index += 4) {
+    await Promise.allSettled(models.slice(index, index + 4).map(model => getOllamaContextWindow(model, account)));
+  }
+}

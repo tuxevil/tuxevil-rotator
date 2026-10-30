@@ -35,3 +35,9 @@ With both `sessionAffinity: true` and `stallEscalation: true`, a pinned task get
 The attempt selects among other reasoning-capable models using normal eligibility, permission and classifier rules. With no eligible alternative, the valid pin continues serving. An attempt is reserved before classification so concurrent requests cannot launch duplicate escalation attempts; they may continue using the existing pin while selection runs. The pin retains its original expiration. Logs identify successful selection as `session-stall-escalation`.
 
 This is a capability-based recovery attempt, not a measured quality tier upgrade. It does not detect repeated successful calls, parse unstructured error text or guarantee that the alternative solves the task. It is disabled by default and bypassed in shadow mode.
+
+## Ollama context metadata
+
+Auto routing reads Ollama context windows from the existing `/api/show` cache rather than assuming 128,000 tokens. Catalog refresh starts background discovery in batches of four; selection performs no network I/O. Missing or expired entries use `OLLAMA_NUM_CTX` / `OLLAMA_CONTEXT_LENGTH`, with the existing 8,192 default. A model may therefore be excluded from a large request until discovery completes.
+
+A discovered context length is the model's published upper bound, not a guarantee of provider runtime allocation. This change does not alter `/v1/models` advertising or infer vision/tool/reasoning capabilities from model names. Those metadata improvements remain separate.
