@@ -1,0 +1,5 @@
+[
+  { "id": "arithmetic", "prompt": "Responde únicamente con el número: ¿cuánto es 17 por 23?", "expected": "391" },
+  { "id": "json-extraction", "prompt": "De este JSON extrae únicamente el valor de active: {\"count\":7,\"active\":false}", "expected": "false" },
+  { "id": "logic", "prompt": "Todos los mip son zop. Ningún zop es lat. ¿Puede un mip ser lat? Responde únicamente sí o no, en minúsculas.", "expected": "no" }
+]
