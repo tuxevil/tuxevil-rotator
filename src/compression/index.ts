@@ -57,18 +57,18 @@ export function applyPromptCompression(
   let currentMessages = messages;
   const techniques: string[] = [];
 
-  if (mode === "lite" || mode === "rtk+lite") {
-    const liteRes = compressLite(currentMessages, options);
-    currentMessages = liteRes.messages;
-    techniques.push(...liteRes.techniques);
-  }
-
   if (mode === "rtk" || mode === "rtk+lite") {
     const rtkRes = compressRTK(currentMessages);
     currentMessages = rtkRes.messages;
     if (rtkRes.compressed) {
       techniques.push("rtk");
     }
+  }
+
+  if (mode === "lite" || mode === "rtk+lite") {
+    const liteRes = compressLite(currentMessages, options);
+    currentMessages = liteRes.messages;
+    techniques.push(...liteRes.techniques);
   }
 
   const compressedChars = countChars(currentMessages);

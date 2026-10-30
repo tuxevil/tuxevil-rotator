@@ -122,3 +122,20 @@ Time: 3.5s`,
     assert.ok(res.stats!.savedChars > 0);
   });
 });
+
+ it("preserves distinct instructions sharing a long prefix", () => {
+   const prefix = "instruction ".repeat(30);
+   const messages: ChatMessage[] = [
+     { role: "system", content: prefix + "Keep A" },
+     { role: "system", content: prefix + "Keep B" },
+     { role: "developer", content: prefix + "Keep A" },
+   ];
+   assert.equal(applyPromptCompression(messages, "lite").messages.length, 3);
+ });
+
+ it("filters noisy output before truncation so trailing errors survive", () => {
+   const messages: ChatMessage[] = [{ role: "tool", content:
+     "Error: start\n" + "ordinary log entry\n".repeat(200) + "Error: critical trailing failure" }];
+   const result = applyPromptCompression(messages, "rtk+lite");
+   assert.match(result.messages[0].content as string, /critical trailing failure/);
+ });
