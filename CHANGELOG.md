@@ -4,13 +4,17 @@
 
 ### Changed
 
-- **Dashboard Playground design alignment**: The Playground now uses the dashboard's shared components and layout patterns. ([PR #46](https://github.com/tuxevil/tuxevil-rotator/pull/46))
+- **Dashboard Playground design alignment**: The Playground now uses the dashboard's shared components and layout patterns. ([PR #46](https://github.com/tuxevil/tuxevil-rotator/pull/46) by [@CyR1en](https://github.com/CyR1en))
   - **Page header**: workspace history select, a menu with Export / Import / Delete, and a primary **New playground** button.
   - **Panels**: model select, Parameters toggle and actions sit in each panel header; non-default parameters show as tags.
   - **Turns and requests**: turns use inset wells, and request details use the Requests-style inspector (Request / Response / Routing, Copy).
-  - **Compliance**: results show as one expandable table with a pass/fail summary, and audio-only models are disabled in the picker.
+  - **Compliance**: results show as one expandable table with a pass/fail summary, and audio-only models are disabled in the picker, with selection counts and `Retry failed` scoped to runnable selected models and cases.
   - **Transcription**: a microphone Record button, a single primary action, and a transcripts list with Copy, Download and Delete.
   - **Styles**: selects and textareas use the shared styles, and the layout follows the canvas-width breakpoints in light and dark themes.
+
+### Contributors
+
+- Thanks to [@CyR1en](https://github.com/CyR1en) for aligning the Dashboard Playground (Chat, Compare, Compliance, and Transcription) with the shared design system, expandable compliance results table, request/response/routing inspector, audio-only model guards, and accessibility improvements in [PR #46](https://github.com/tuxevil/tuxevil-rotator/pull/46).
 
 ## [4.3.0] - 2026-10-29
 
