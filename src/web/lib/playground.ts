@@ -130,6 +130,14 @@ export const VERDICT_LABELS: Record<Verdict, string> = {
   error: "Error",
   cancelled: "Cancelled",
 };
+/**
+ * Transcription-only compatibility names (whisper-1). They are listed by
+ * /api/models but cannot serve Chat Completions; Gemini models, which the
+ * Transcription tab also offers, handle both.
+ */
+export function isAudioOnlyModel(id: string): boolean {
+  return /^whisper(?:-1)?$/i.test(id.trim());
+}
 // randomUUID requires a secure context; getRandomValues also works on LAN HTTP dashboards.
 export const newId = (): string =>
   typeof crypto.randomUUID === "function"

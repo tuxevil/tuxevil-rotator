@@ -215,6 +215,7 @@ export function Menu({
   trigger,
   triggerClass,
   header,
+  disabled,
 }: {
   label: string;
   icon?: IconName;
@@ -226,6 +227,8 @@ export function Menu({
   trigger?: ComponentChildren;
   triggerClass?: string;
   header?: ComponentChildren;
+  /** Disables the trigger, e.g. when none of the items can be used. */
+  disabled?: boolean;
 }): JSX.Element {
   const layer = useAnchoredLayer(placement, "button:not([disabled])");
 
@@ -248,6 +251,7 @@ export function Menu({
         aria-expanded={layer.open}
         aria-label={text ? undefined : label}
         title={trigger ? undefined : label}
+        disabled={disabled}
         onClick={layer.toggle}
       >
         {trigger ?? (

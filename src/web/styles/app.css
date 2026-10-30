@@ -1562,6 +1562,21 @@ textarea {
   color: var(--text-3);
 }
 
+/* background-color only, so the chevron gradients survive. */
+.select:disabled {
+  background-color: var(--surface-2);
+  color: var(--text-3);
+  cursor: not-allowed;
+}
+
+/* `.input` is sized for one line; multi-line fields need their own box. */
+textarea.input {
+  height: auto;
+  padding: 8px 11px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
 .input-sm {
   height: 30px;
   font-size: 13px;
@@ -4787,6 +4802,487 @@ a.hero-metric:hover {
   color: var(--text-2);
 }
 
+/* ── Playground ───────────────────────────────────────────────────────── */
+
+/* Chat, Compare, Compliance and Transcription. Everything visible is built
+ * from the shared classes (page-head, toolbar, segmented, panel, btn, select,
+ * code-input, tag-row, switch, empty, inspector, model-grid, table); these
+ * rules only add playground layout and the conversation surfaces. */
+
+/* Page top (shared by every playground tab) */
+
+.pg-history {
+  display: flex;
+  width: 300px;
+  min-width: 0;
+}
+
+.pg-history .select {
+  width: 100%;
+  text-overflow: ellipsis;
+}
+
+/* Conversation panels */
+
+.pg-panel {
+  display: flex;
+  flex-direction: column;
+  container: pg-panel / inline-size;
+}
+
+/* Narrow conversation panels (three Compare columns, phones) drop the
+ * labels of their header buttons; the label stays for screen readers. */
+@container pg-panel (max-width: 480px) {
+  .pg-collapsible.btn-sm {
+    width: 28px;
+    padding: 0;
+  }
+
+  .pg-collapsible > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
+.pg-panel > .panel-head {
+  align-items: center;
+  flex-wrap: nowrap;
+}
+
+.pg-panel > .panel-head > .panel-titles {
+  flex: none;
+}
+
+.pg-panel > .panel-head > .panel-actions {
+  flex: 1 1 auto;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+/* Compare columns have no title: the model select leads the header and the
+ * Parameters toggle and menu stay on the right. */
+.pg-panel > .panel-head > .panel-titles:empty {
+  display: none;
+}
+
+.pg-panel > .panel-head > .panel-titles:empty + .panel-actions > .pg-model {
+  flex: 0 1 260px;
+  margin-right: auto;
+}
+
+/* Compact model picker in the panel header (same size as `.new-models`). */
+.pg-model {
+  display: flex;
+  flex: 0 1 220px;
+  min-width: 120px;
+}
+
+.pg-model .select {
+  width: 100%;
+  height: 30px;
+  font-size: 13px;
+  text-overflow: ellipsis;
+}
+
+.pg-panel > .panel-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+/* Parameters: the form sits in an inset well under the header. */
+.pg-params {
+  padding: 16px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.pg-params .code-input {
+  min-height: 96px;
+  background: var(--surface);
+}
+
+.pg-params .code-input::placeholder {
+  color: var(--text-4);
+}
+
+/* Turns */
+
+.pg-turns {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Focus lands here only from code (after an inline Retry). */
+.pg-turns:focus-visible {
+  box-shadow: none;
+}
+
+.pg-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.pg-user {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+/* Images sent with the message: the composer's tiles, without remove buttons. */
+.pg-user > .pg-attachments {
+  margin-top: 4px;
+}
+
+/* Assistant text lines up with the text inside the user well. */
+.pg-assistant {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-inline: 14px;
+  min-width: 0;
+}
+
+.pg-message {
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.pg-reasoning {
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  /* Long chains of thought scroll instead of pushing the answer away. */
+  max-height: 320px;
+  overflow: auto;
+}
+
+.pg-turn-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin-top: 6px;
+}
+
+/* Metrics read as one sentence: "Total 279ms · First content 13ms · …".
+ * Every item carries a leading separator; the first one on each line falls
+ * into the clipped strip on the left, so wrapped lines never start or end
+ * with a stray dot. When the sentence doesn't fit beside the Details toggle,
+ * the toggle wraps under it (space-between keeps a lone item at the start). */
+.pg-metrics {
+  --pg-sep: 18px;
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: 2px 0;
+  margin-left: calc(var(--pg-sep) * -1);
+  clip-path: inset(0 0 0 var(--pg-sep));
+}
+
+.pg-metrics > span {
+  white-space: nowrap;
+}
+
+.pg-metrics > span::before {
+  content: "·";
+  display: inline-block;
+  width: var(--pg-sep);
+  text-align: center;
+  color: var(--text-4);
+}
+
+/* Negative inline margins line the ghost toggle's label (right) or its
+ * chevron (left, once wrapped) up with the text edge. */
+.pg-turn-foot > .btn-ghost {
+  flex: none;
+  margin-inline: -10px;
+}
+
+.pg-assistant > .inspector {
+  margin-top: 8px;
+}
+
+/* Composer */
+
+.pg-composer > .panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 20px;
+}
+
+.pg-composer textarea.input {
+  min-height: 84px;
+}
+
+.pg-composer-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pg-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pg-attachment {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface-2);
+  color: var(--text-3);
+}
+
+.pg-attachment img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Ring drawn above the image so it stays visible on light pictures. */
+.pg-attachment::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px var(--border);
+  pointer-events: none;
+}
+
+.pg-attachment > .btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 1;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-xs);
+  background: var(--raised);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Compare */
+
+.pg-compare {
+  display: grid;
+  gap: 20px;
+  align-items: stretch;
+}
+
+.pg-compare-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.pg-compare-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+/* Compliance: model and test pickers */
+
+/* Same markup as the Keys model picker. `.checkbox` has no disabled state. */
+.pg-picker .model-option:has(> input:disabled) {
+  color: var(--text-4);
+  cursor: not-allowed;
+}
+
+/* "Audio only": keep the 22px pill from making its grid row taller. */
+.pg-picker .model-option > .pill {
+  flex: none;
+  margin-block: -2px;
+}
+
+/* Compliance: results table */
+
+.pg-results .history-row > td:nth-child(-n + 2) {
+  white-space: nowrap;
+}
+
+/* Result takes the slack so Duration and the toggle hug the right edge. */
+.pg-results .history-row > td:nth-child(3) {
+  width: 100%;
+}
+
+/* Transcription: audio input */
+
+.pg-audio-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* The loaded file sits in an inset well (same recipe as the chat user turn). */
+.pg-audio-file {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.pg-audio-file-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.pg-audio-file-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.pg-audio-file-name strong {
+  font-weight: 600;
+}
+
+.pg-audio-file audio {
+  display: block;
+  width: 100%;
+  height: 40px;
+}
+
+/* Transcription: saved transcripts (attention-list row rhythm) */
+
+.pg-transcripts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.pg-transcript {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+}
+
+.pg-transcript-name {
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.pg-transcript-text {
+  margin-top: 8px;
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.pg-transcript-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+/* Playground layout follows the canvas width, like the rest of the pages. */
+
+@container canvas (max-width: 1180px) {
+  .pg-compare-3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@container canvas (max-width: 940px) {
+  .pg-compare-2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@container canvas (max-width: 700px) {
+  /* Saved-playground picker and its menu share a row; New goes below. */
+  .page-actions:has(> .pg-history) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    width: 100%;
+  }
+
+  .pg-history {
+    width: auto;
+  }
+
+  .page-actions > .pg-new {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+
+  .pg-modes {
+    display: flex;
+    width: 100%;
+  }
+
+  .pg-modes > button {
+    flex: 1 1 auto;
+    padding: 0 8px;
+  }
+
+  .pg-panel > .panel-head {
+    flex-wrap: wrap;
+  }
+
+  .pg-panel > .panel-head > .panel-actions {
+    flex-basis: 100%;
+    justify-content: flex-start;
+  }
+
+  .pg-model {
+    flex: 1 1 auto;
+  }
+
+  /* Results: let Model and Test wrap; Duration hides (.hide-sm) and stays
+   * in the inspector as "Total". */
+  .pg-results .history-row > td:nth-child(-n + 2) {
+    white-space: normal;
+  }
+
+  /* Transcript actions drop under the text; the ghost padding lines up. */
+  .pg-transcript {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .pg-transcript-actions {
+    margin-left: -10px;
+  }
+}
+
 /* ── Overlays ─────────────────────────────────────────────────────────── */
 
 dialog {
@@ -5895,48 +6391,3 @@ dialog::backdrop {
     box-shadow: none;
   }
 }
-
-/* Playground: the same controls and surfaces as the rest of the dashboard. */
-.playground { display: flex; flex-direction: column; gap: 18px; }
-.pg-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
-.pg-toolbar label { display: inline-flex; align-items: center; gap: 6px; }
-.pg-toolbar .pg-history { display: block; flex: 1; min-width: 0; max-width: 440px; }
-.pg-history select { text-overflow: ellipsis; min-width: 0; width: 100%; max-width: 100%; }
-.pg-panels { display: grid; gap: 16px; align-items: start; }
-.pg-panels-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.pg-panels-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.pg-panels > .panel { min-width: 0; }
-.pg-parameters { margin: 14px 0; padding: 12px 0; border-block: 1px solid var(--border); }
-.pg-parameters summary, .pg-inspect summary { color: var(--text-2); cursor: pointer; font-size: 12px; }
-.pg-parameters fieldset { border: 0; padding: 14px 0 0; margin: 0; min-width: 0; }
-.pg-turns { max-height: 65vh; overflow: auto; margin-block: 14px; overflow-wrap: anywhere; }
-.pg-turn { border-top: 1px solid var(--border); padding-block: 14px; }
-.pg-user { background: var(--surface-2); border-radius: 10px; padding: 12px; margin-bottom: 12px; }
-.pg-user p { white-space: pre-wrap; }
-.pg-user img, .pg-images img { display: block; max-width: 100%; max-height: 180px; object-fit: contain; border-radius: 8px; margin-block: 8px; }
-.pg-answer { white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; line-height: 1.65; font-size: 13px; margin-block: 10px; }
-.pg-code { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; }
-.pg-metrics { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--text-3); font-size: 11px; margin-block: 12px; }
-.pg-composer { background: var(--surface-2); border: 1px solid var(--border); border-radius: 14px; padding: 16px; display: grid; gap: 12px; }
-.pg-images { display: flex; flex-wrap: wrap; gap: 14px; }
-.pg-images > div { max-width: 220px; }
-.pg-check-models { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; max-height: 240px; overflow: auto; margin-bottom: 18px; }
-.pg-check-models label { display: flex; align-items: start; gap: 8px; overflow-wrap: anywhere; font-size: 12px; }
-.pg-check-models + .pg-toolbar { margin-bottom: 18px; }
-.pg-results { display: grid; gap: 16px; }
-.playground input[type="checkbox"] { accent-color: var(--accent); }
-@media (max-width: 1100px) { .pg-panels-3 { grid-template-columns: 1fr; } }
-@media (max-width: 760px) {
-  .pg-panels-2 { grid-template-columns: 1fr; }
-  .pg-toolbar .pg-history { max-width: 100%; flex: 1 0 100%; }
-  .pg-check-models { grid-template-columns: 1fr; }
-}
-.pg-composer textarea.input { min-height: 100px; height: auto; resize: vertical; }
-.pg-parameters textarea.input { min-height: 90px; height: auto; resize: vertical; }
-
-/* Audio preview and results share the existing playground surfaces. */
-.pg-transcription { display: grid; gap: 16px; }
-.pg-audio-preview { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); overflow-wrap: anywhere; }
-.pg-audio-preview audio { width: 100%; max-width: 600px; }
-.pg-audio-context.input { min-height: 72px; height: auto; resize: vertical; }
-@media (max-width: 760px) { .playground > .pg-toolbar > .segmented { flex-wrap: wrap; } }

@@ -7,6 +7,7 @@ import {
   emptyResult,
   errorVerdict,
   evaluateCompliance,
+  isAudioOnlyModel,
   newDocument,
   newPanel,
   SseDecoder,
@@ -367,5 +368,13 @@ describe("API compliance evaluators", () => {
     assert.equal(evaluateCompliance("tools", result).verdict, "failed");
     result.done = false;
     assert.equal(evaluateCompliance("stream", result).verdict, "failed");
+  });
+
+  it("treats only the transcription compatibility names as audio-only", () => {
+    for (const id of ["whisper-1", "whisper", "Whisper-1", " whisper-1 "])
+      assert.equal(isAudioOnlyModel(id), true, id);
+    // Gemini models transcribe audio and also serve Chat Completions.
+    for (const id of ["gemini-3.8-flash-low", "gpt-5.6-terra"])
+      assert.equal(isAudioOnlyModel(id), false, id);
   });
 });
