@@ -3,10 +3,13 @@ import { createServer, type Server } from "node:http";
 import { afterEach, describe, it } from "node:test";
 import {
   buildAutoRoutingCandidates,
+  estimateAutoRoutingTokens,
   selectAutoRoutingTarget,
   type AutoRoutingCatalogEntry,
   type AutoRoutingRequest,
 } from "../src/auto-routing.js";
+import { isVirtualKeyModelAllowed } from "../src/key-auth.js";
+import type { VirtualKey } from "../src/types.js";
 import type { Config } from "../src/types.js";
 
 const servers: Server[] = [];
@@ -530,4 +533,24 @@ it("logs decision metadata and exclusion counts without request content or secre
   assert.equal(event.reason, "typesafe-disabled");
   assert.equal(typeof event.routing_latency_ms, "number");
   assert.doesNotMatch(logs.join(""), /secret-prompt|private-key|private-endpoint|private-image/);
+});
+
+
+it("selects an authorized alternative and refuses an entirely forbidden catalog", async () => {
+  const rotator = fakeRotator("");
+  rotator.getConfig().typesafeRouting!.enabled = false;
+  const key: VirtualKey = { tokenHash: "hash", keyName: "restricted", keyAlias: "restricted", blocked: false, createdAt: "2026-01-01", models: ["gemini-pro"] };
+  const request: AutoRoutingRequest = { route: "openai-chat", input: { messages: [{ role: "user", content: "hello" }] }, isModelAllowed: model => isVirtualKeyModelAllowed(key, model) };
+  const result = await selectAutoRoutingTarget(rotator, catalog, request);
+  assert.equal(result?.candidate.modelId, "gemini-pro");
+  key.models = ["unavailable-model"];
+  assert.equal(await selectAutoRoutingTarget(rotator, catalog, request), null);
+});
+
+it("budgets inline images independently of encoded byte length and reserves Gemini output", () => {
+  const image = (data: string) => ({ contents: [{ role: "user", parts: [{ inlineData: { mimeType: "image/png", data } }] }], generationConfig: { maxOutputTokens: 8000 } });
+  assert.equal(estimateAutoRoutingTokens(image("x")), estimateAutoRoutingTokens(image("x".repeat(500_000))));
+  assert.ok(estimateAutoRoutingTokens(image("x")) >= 12_096);
+  const openAIImage = { messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64," + "x".repeat(500_000) } }] }] };
+  assert.ok(estimateAutoRoutingTokens(openAIImage) < 10_000);
 });

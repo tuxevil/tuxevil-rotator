@@ -275,8 +275,8 @@ async function resolveAutoModel(
 } | null> {
   const selection = await selectAutoRoutingTarget(
     rotator,
-    buildAutoRoutingCatalog(rotator, route).filter((entry) => isVirtualKeyModelAllowed(auth.key, entry.modelId)),
-    { route, input, requestedModel: "auto" },
+    buildAutoRoutingCatalog(rotator, route),
+    { route, input, requestedModel: "auto", isModelAllowed: (model) => isVirtualKeyModelAllowed(auth.key, model) },
   );
   if (!selection) return null;
   return {

@@ -55,6 +55,7 @@ export interface AutoRoutingRequest {
   input: unknown;
   requestedModel?: string;
   maxContextWindow?: number;
+  isModelAllowed?: (model: string) => boolean;
 }
 
 interface RoutingRequirements {
@@ -369,21 +370,44 @@ function diverseShortlist(
   return selected;
 }
 
+/** Approximation, not a provider tokenizer. Media bytes are not text tokens. */
+export function estimateAutoRoutingTokens(input: unknown): number {
+  const root = asRecord(input);
+  const output = Number(root?.max_tokens ?? root?.max_output_tokens ?? root?.max_completion_tokens
+    ?? asRecord(root?.generationConfig)?.maxOutputTokens ?? 4096);
+  let images = 0;
+  const visit = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(visit);
+    const record = asRecord(value);
+    if (!record) return value;
+    const type = String(record.type ?? "").toLowerCase();
+    const inline = asRecord(record.inlineData ?? record.inline_data);
+    if (["image", "image_url", "input_image"].includes(type)
+      || "image_url" in record || inline && String(inline.mimeType ?? inline.mime_type ?? "").startsWith("image/")) {
+      images += 1;
+      return "[image]";
+    }
+    return Object.fromEntries(Object.entries(record).map(([key, child]) => [key, visit(child)]));
+  };
+  const text = JSON.stringify(visit(input)) ?? "";
+  // Fixed image allowance avoids counting base64 as text. Actual image cost varies
+  // by model, resolution and detail; providers remain authoritative.
+  return Math.ceil(Buffer.byteLength(text, "utf8") / 3) + images * 4096
+    + (Number.isFinite(output) && output > 0 ? output : 4096);
+}
+
 export function buildAutoRoutingCandidates(
   rotator: AutoRoutingRotator,
   catalog: AutoRoutingCatalogEntry[],
   request: AutoRoutingRequest,
 ): { candidates: AutoRoutingCandidate[]; requirements: RoutingRequirements; excluded: Record<string, number>; eligibleCount: number } {
   const requirements = getRequirements(request.input);
-  // Conservative UTF-8 byte estimate; includes schemas and reserves output space.
-  const root = asRecord(request.input);
-  const outputTokens = Number(root?.max_tokens ?? root?.max_output_tokens ?? root?.max_completion_tokens ?? 4096);
-  const requiredTokens = Math.ceil(Buffer.byteLength(JSON.stringify(request.input) ?? "", "utf8") / 3)
-    + (Number.isFinite(outputTokens) && outputTokens > 0 ? outputTokens : 4096);
+  const requiredTokens = estimateAutoRoutingTokens(request.input);
   const candidates: AutoRoutingCandidate[] = [];
   const excluded: Record<string, number> = {};
   const reject = (reason: string): void => { excluded[reason] = (excluded[reason] ?? 0) + 1; };
   for (const entry of catalog) {
+    if (request.isModelAllowed && !request.isModelAllowed(entry.modelId)) { reject("permission"); continue; }
     if (requiredTokens > entry.contextWindow * 0.95) { reject("context"); continue; }
     if (request.route === "gemini" && entry.providerId !== "google-antigravity") { reject("wire-format"); continue; }
     if (request.route === "openai-responses" && entry.responses === false) { reject("wire-format"); continue; }
