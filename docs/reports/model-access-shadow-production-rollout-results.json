@@ -1,0 +1,57 @@
+{
+  "deployment": {
+    "source": "876b6e9",
+    "accounts": 48,
+    "shadowEnabled": true,
+    "onlyShadowFlagChanged": true,
+    "previousShadow": false,
+    "previousFlagPresent": true,
+    "routingPolicy": "tier-first",
+    "selectionPolicy": "model-choice",
+    "semanticShadow": false,
+    "affinity": false,
+    "escalation": false
+  },
+  "runtime": {
+    "accounts": 48,
+    "shadowEnabled": true,
+    "accessAccounts": 48,
+    "routingPolicy": "tier-first",
+    "selectionPolicy": "model-choice",
+    "semanticShadow": false,
+    "affinity": false,
+    "escalation": false
+  },
+  "liveValidation": {
+    "completion": {
+      "startedAt": 1793398933472,
+      "status": 200,
+      "servedModel": "beam",
+      "contentMatches": true
+    },
+    "shadowEvents": [
+      {
+        "event": "model-access-policy-shadow",
+        "account": "6682cc2f4e6acad545dc3486c243125f3614acbca79016af75294cfa3d7c3186",
+        "provider": "ollama",
+        "model": "beam",
+        "plan": "unknown",
+        "planSource": "unknown",
+        "clientDeclaration": "other",
+        "clientVerified": false,
+        "policyState": "unknown",
+        "wouldBlock": false,
+        "reason": "No verified rule for this provider, plan and model; absence is not permission.",
+        "ruleIds": [],
+        "enforced": false
+      }
+    ],
+    "apiSuccessObservations": 1,
+    "postgresSuccessObservations": 1
+  },
+  "managedBy": "pi-antigravity-rotator.service",
+  "oldWorkerPid": 3124564,
+  "newWorkerPid": 3136646,
+  "rollbackBackupStoredPrivately": true,
+  "automaticPolicyEnforcement": false
+}
