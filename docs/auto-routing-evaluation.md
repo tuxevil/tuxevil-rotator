@@ -38,3 +38,9 @@ The CLI now reserves the output file before any completion request, preventing a
 `ROTATOR_EVAL_TIMEOUT_MS` sets the per-request client deadline (default 120000, range 1000–120000). A client timeout does not prove the provider stopped computing or avoided charging. The proxy may retry upstream accounts within that deadline.
 
 Empty text responses are marked `empty-completion` and consume the operational failure budget even with HTTP 200. New rows record `answerChars` and a sanitized `finishReason` when available, allowing empty and potentially truncated output to be distinguished without storing completion text. Historical artifacts may predate these fields.
+
+## Executable coding smoke suite
+
+`scripts/evaluate-coding-pools.py` compares Gemini 3.8/Gemini 4/Sonnet medium native targets and Codex Terra on three function implementations. It requires Linux bubblewrap and Node. Run `python3 scripts/evaluate-coding-pools.py --self-test` first to verify reference solutions and broken controls without provider calls. Live execution requires `CODING_EVAL_OUTPUT` (a new JSON path), optional `ROTATOR_EVAL_BASE_URL` and `ROTATOR_EVAL_API_KEY` in the environment. It uses real completions and quota.
+
+Generated CommonJS is executed only inside a bubblewrap sandbox without network or credential/workspace access, with read-only test files and a five-second deadline. Known Markdown fences are removed; additional prose causes a code-test failure. Results distinguish HTTP errors, empty responses, output limits, runtime timeouts, assertion failures and skipped models. One operational failure suspends later requests for that model. Output is reserved before calls and updated after each row. Model code, test output and raw provider errors are omitted. This suite does not invoke real tools or execute code on the host outside the sandbox.
