@@ -1,0 +1,9 @@
+{
+  "basis": "Explicit operator confirmation",
+  "codexFree": 24,
+  "codexPlus": 1,
+  "codexUnknown": 0,
+  "verifiedInApiAndPostgres": true,
+  "routingChanged": false,
+  "automaticEnforcement": false
+}
