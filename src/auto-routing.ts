@@ -736,6 +736,12 @@ export async function selectAutoRoutingTarget(
   const started = performance.now();
   const diagnostics: Record<string, unknown> = {};
   const config = rotator.getConfig?.().typesafeRouting;
+  if (config?.selectionPolicy === "effort-pools" && config.restrictToEffortPools) {
+    const permitted = new Set(Object.values(config.effortPools ?? {}).flat());
+    const originalCount = catalog.length;
+    catalog = catalog.filter(entry => permitted.has(`${entry.providerId}/${entry.modelId}`));
+    diagnostics.pool_policy_excluded_count = originalCount - catalog.length;
+  }
   const identity = config?.sessionAffinity && !config.shadowMode ? sessionIdentity(request) : null;
   let pins = sessionPins.get(rotator);
   if (!pins) { pins = new Map(); sessionPins.set(rotator, pins); }

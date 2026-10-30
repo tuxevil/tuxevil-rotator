@@ -170,6 +170,8 @@ export interface Config {
 export interface TypeSafeRoutingConfig {
   /** Classify effort then select operationally from explicit pools; default model-choice. */
   selectionPolicy?: "model-choice" | "effort-pools";
+  /** Restrict all selections, including fallback and affinity, to the union of configured pools. */
+  restrictToEffortPools?: boolean;
   effortPools?: Partial<Record<"low" | "medium" | "high" | "max", string[]>>;
   /** Reuse a valid model for tool continuations with metadata.session_id. */
   sessionAffinity?: boolean;
@@ -1102,7 +1104,9 @@ export function getModelPricing(model: string): ModelPricing | undefined {
 // "free" = served on the free tier; "subscription" = requires a paid plan.
 export type ModelTierAccess = "free" | "subscription";
 export const MODEL_TIER_ACCESS: Record<string, ModelTierAccess> = {
+  // Free-credit list refreshed from operator-provided Ollama list, 2026-10-30.
   // ── Free tier (HTTP 200 on free accounts) ───────────────────────────────
+  "beam":                        "free",
   "gpt-oss:20b":                  "free",
   "gpt-oss:120b":                 "free",
   "gemma4:31b":                   "free",
@@ -1110,6 +1114,8 @@ export const MODEL_TIER_ACCESS: Record<string, ModelTierAccess> = {
   "nemotron-3-super":             "free",
   "nemotron-3-ultra":             "free",
   // ── Subscription tier (HTTP 402 on free accounts) ───────────────────────
+  "deepseek-v4.1-flash:1017":     "subscription",
+  "minimax-m3.1-flash":           "subscription",
   "deepseek-v4-flash:0731":       "subscription",
   "deepseek-v4-pro:0813":         "subscription",
   "glm-5.1":                      "subscription",

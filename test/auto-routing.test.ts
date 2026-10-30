@@ -703,3 +703,15 @@ it("retains deterministic fallback for uncertain effort and missing pools", asyn
   confidence = 0.9;
   assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "typesafe-effort-pool-missing");
 });
+
+it("restricts disabled-classifier fallback and old session pins to the configured pool union", async () => {
+  const rotator = fakeRotator("");
+  const config = rotator.getConfig().typesafeRouting!;
+  Object.assign(config, { enabled: false, sessionAffinity: true });
+  const request: AutoRoutingRequest = { route: "openai-chat", tenantId: "t", input: { metadata: { session_id: "policy-change" }, messages: [{ role: "user", content: "hello" }] } };
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.candidate.modelId, "local-fast");
+  Object.assign(config, { selectionPolicy: "effort-pools", restrictToEffortPools: true, effortPools: { high: ["google-antigravity/gemini-pro"] } });
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.candidate.modelId, "gemini-pro");
+  config.effortPools = { low: ["ollama/absent"] };
+  assert.equal(await selectAutoRoutingTarget(rotator, catalog, request), null);
+});

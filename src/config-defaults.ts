@@ -71,6 +71,7 @@ export function applyConfigDefaults(config: Config): Config {
 					shortlistSize: config.typesafeRouting.shortlistSize ?? 12,
 					maxExcerptChars: config.typesafeRouting.maxExcerptChars ?? 12_000,
 					selectionPolicy: config.typesafeRouting.selectionPolicy ?? "model-choice",
+					restrictToEffortPools: config.typesafeRouting.restrictToEffortPools ?? false,
 					effortPools: config.typesafeRouting.effortPools,
 					sessionAffinity: config.typesafeRouting.sessionAffinity ?? false,
 					stallEscalation: config.typesafeRouting.stallEscalation ?? false,

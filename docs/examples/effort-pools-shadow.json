@@ -3,21 +3,37 @@
     "selectionPolicy": "effort-pools",
     "effortPools": {
       "low": [
-        "ollama/beam"
+        "ollama/beam",
+        "ollama/gpt-oss:20b",
+        "ollama/nemotron-3-nano:30b",
+        "google-antigravity/gemini-3.8-flash-low",
+        "openai-codex/gpt-6-luna"
       ],
       "medium": [
         "ollama/beam",
-        "ollama/minimax-m3.1-flash"
+        "ollama/gemma4:31b",
+        "ollama/gpt-oss:120b",
+        "ollama/nemotron-3-super",
+        "google-antigravity/gemini-3.8-flash-medium",
+        "google-antigravity/gemini-4-argon-medium",
+        "google-antigravity/claude-sonnet-5-5-medium",
+        "openai-codex/gpt-6-luna"
       ],
       "high": [
-        "ollama/nemotron-3-ultra"
+        "ollama/nemotron-3-ultra",
+        "google-antigravity/gemini-3.8-flash-high",
+        "google-antigravity/gemini-4-argon-high",
+        "google-antigravity/claude-sonnet-5-5-high",
+        "openai-codex/gpt-6.1-terra"
       ],
       "max": [
-        "ollama/deepseek-v4.1-flash:1017"
+        "google-antigravity/claude-opus-5-5-high",
+        "openai-codex/gpt-6.1-terra"
       ]
     },
     "shadowMode": true,
     "sessionAffinity": false,
-    "stallEscalation": false
+    "stallEscalation": false,
+    "restrictToEffortPools": true
   }
 }

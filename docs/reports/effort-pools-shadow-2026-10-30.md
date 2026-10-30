@@ -18,3 +18,5 @@ The initial pass matched all four authored labels. Three subsequent repetitions 
 This demonstrates distinct, stable difficulty classification on this small fixture and valid mapping into eligible pools. It does not show that recommended models solve hard tasks better. Shadow mode generated no completions from high/max recommended models. Output cap was 32 tokens to bound the mechanics test, so completion quality was not evaluated. Repeated latency measurements may include caching and are not a performance benchmark.
 
 Affinity and escalation remained disabled. Temporary process and credential directory were removed after the trial. Next step: evaluate actual high/max recommendations against beam using executable or independently reviewed task outcomes before any production activation. Retain shadow by default.
+
+The example fragment was subsequently revised at the operator's request to use seven free-credit Ollama models plus Antigravity and Codex. This report describes the earlier Ollama-only trial, not the revised multi-provider configuration.

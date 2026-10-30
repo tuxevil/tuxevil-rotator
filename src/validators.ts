@@ -320,6 +320,8 @@ export function validateConfig(value: unknown): ValidationResult<Config> {
 			errors.push("config.typesafeRouting must be an object when provided");
 		} else {
 			const routing = value.typesafeRouting;
+            if (routing.restrictToEffortPools !== undefined && typeof routing.restrictToEffortPools !== "boolean") errors.push("config.typesafeRouting.restrictToEffortPools must be a boolean");
+            if (routing.restrictToEffortPools === true && routing.selectionPolicy !== "effort-pools") errors.push("restrictToEffortPools requires effort-pools selectionPolicy");
             if (routing.selectionPolicy !== undefined && !["model-choice", "effort-pools"].includes(String(routing.selectionPolicy))) {
                 errors.push("config.typesafeRouting.selectionPolicy must be model-choice or effort-pools");
             }
