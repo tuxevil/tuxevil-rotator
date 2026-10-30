@@ -265,6 +265,7 @@ async function resolveAutoModel(
   rotator: AccountRotator,
   route: AutoRoutingRoute,
   input: unknown,
+  auth: Awaited<ReturnType<typeof authenticateVirtualKey>>,
 ): Promise<{
   model: string;
   providerId: string;
@@ -274,7 +275,7 @@ async function resolveAutoModel(
 } | null> {
   const selection = await selectAutoRoutingTarget(
     rotator,
-    buildAutoRoutingCatalog(rotator, route),
+    buildAutoRoutingCatalog(rotator, route).filter((entry) => isVirtualKeyModelAllowed(auth.key, entry.modelId)),
     { route, input, requestedModel: "auto" },
   );
   if (!selection) return null;
@@ -2840,7 +2841,7 @@ export async function handleGeminiGenerateContent(
   const apiKeyHash = auth.key?.tokenHash || (auth.rawKey ? hashKey(auth.rawKey) : null);
 
   const autoSelection = autoRequested
-    ? await resolveAutoModel(rotator, "gemini", parsed)
+    ? await resolveAutoModel(rotator, "gemini", parsed, auth)
     : null;
   if (autoRequested && !autoSelection) {
     return writeJson(res, 503, {
@@ -3002,7 +3003,7 @@ async function handleChatCompletions(
   const apiKeyHash = auth.key?.tokenHash || (auth.rawKey ? hashKey(auth.rawKey) : null);
 
   const autoSelection = autoRequested
-    ? await resolveAutoModel(rotator, "openai-chat", validation.value)
+    ? await resolveAutoModel(rotator, "openai-chat", validation.value, auth)
     : null;
   if (autoRequested && !autoSelection) {
     return writeJson(res, 503, {
@@ -3198,7 +3199,7 @@ export async function handleOpenAIResponsesCreate(
   const apiKeyHash = auth.key?.tokenHash || (auth.rawKey ? hashKey(auth.rawKey) : null);
 
   const autoSelection = autoRequested
-    ? await resolveAutoModel(rotator, "openai-responses", validation.value)
+    ? await resolveAutoModel(rotator, "openai-responses", validation.value, auth)
     : null;
   if (autoRequested && !autoSelection) {
     return writeJson(res, 503, {
@@ -3511,7 +3512,7 @@ export async function handleAnthropicMessages(
   const apiKeyHash = auth.key?.tokenHash || (auth.rawKey ? hashKey(auth.rawKey) : null);
 
   const autoSelection = autoRequested
-    ? await resolveAutoModel(rotator, "anthropic", validation.value)
+    ? await resolveAutoModel(rotator, "anthropic", validation.value, auth)
     : null;
   if (autoRequested && !autoSelection) {
     return writeJson(res, 503, {

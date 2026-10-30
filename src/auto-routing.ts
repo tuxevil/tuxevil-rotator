@@ -88,6 +88,7 @@ function sanitizeDecisionText(value: string): string {
   return value
     .replace(/data:(?:image|audio|video)\/[^\s<>"')\]]+/gi, "[media omitted]")
     .replace(/https?:\/\/[^\s<>"')\]]+/gi, "[url omitted]")
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "")
     .trim();
 }
 
@@ -147,6 +148,7 @@ function collectMessageText(value: unknown, depth = 0): string {
   }
   const record = asRecord(value);
   if (!record) return "";
+  if (["tool_result", "function_call_output"].includes(String(record.type ?? ""))) return "";
   const textParts: string[] = [];
   for (const key of ["text", "input_text", "output_text", "content", "parts", "output"]) {
     if (key in record) {
@@ -373,8 +375,14 @@ export function buildAutoRoutingCandidates(
   request: AutoRoutingRequest,
 ): { candidates: AutoRoutingCandidate[]; requirements: RoutingRequirements } {
   const requirements = getRequirements(request.input);
+  // Conservative UTF-8 byte estimate; includes schemas and reserves output space.
+  const root = asRecord(request.input);
+  const outputTokens = Number(root?.max_tokens ?? root?.max_output_tokens ?? root?.max_completion_tokens ?? 4096);
+  const requiredTokens = Math.ceil(Buffer.byteLength(JSON.stringify(request.input) ?? "", "utf8") / 3)
+    + (Number.isFinite(outputTokens) && outputTokens > 0 ? outputTokens : 4096);
   const candidates: AutoRoutingCandidate[] = [];
   for (const entry of catalog) {
+    if (requiredTokens > entry.contextWindow * 0.95) continue;
     if (request.route === "gemini" && entry.providerId !== "google-antigravity") continue;
     if (request.route === "openai-responses" && entry.responses === false) continue;
     if (request.maxContextWindow !== undefined && entry.contextWindow < request.maxContextWindow) continue;
@@ -424,6 +432,9 @@ function deterministicSelection(
   return candidate ? { candidate, mode: "deterministic", reason } : null;
 }
 
+const classifierBreakers = new WeakMap<AutoRoutingRotator, { retryAt: number; probing: boolean; identity: string }>();
+const CLASSIFIER_COOLDOWN_MS = 30_000;
+
 export async function selectAutoRoutingTarget(
   rotator: AutoRoutingRotator,
   catalog: AutoRoutingCatalogEntry[],
@@ -441,6 +452,15 @@ export async function selectAutoRoutingTarget(
   if (config?.enabled === false || !apiKey || isEncryptedSecret(apiKey) || isRedactedSecret(apiKey)) {
     return deterministic("typesafe-disabled");
   }
+
+  const identity = `${config?.baseURL ?? ""}:${config?.model ?? "jev-latest"}:${apiKey}`;
+  let breaker = classifierBreakers.get(rotator);
+  if (!breaker || breaker.identity !== identity) {
+    breaker = { retryAt: 0, probing: false, identity };
+    classifierBreakers.set(rotator, breaker);
+  }
+  if (breaker.retryAt > Date.now() || breaker.probing) return deterministic("typesafe-circuit-open");
+  if (breaker.retryAt > 0) breaker.probing = true;
 
   const criteria: Record<string, string | null> = {};
   for (const candidate of candidates) {
@@ -493,6 +513,8 @@ export async function selectAutoRoutingTarget(
         ),
       },
     });
+    breaker.retryAt = 0;
+    breaker.probing = false;
     const effortAnswer = asRecord(answer.answers.task_effort);
     const taskEffort = typeof effortAnswer?.choice === "string" ? effortAnswer.choice : "";
     if (!(taskEffort in EFFORT_CRITERIA)) {
@@ -575,6 +597,8 @@ export async function selectAutoRoutingTarget(
       reason,
     };
   } catch {
+    breaker.retryAt = Date.now() + CLASSIFIER_COOLDOWN_MS;
+    breaker.probing = false;
     // Jev is an optional semantic layer. A transport, timeout, or malformed
     // answer must never make an otherwise routable request fail closed.
     return deterministic("typesafe-error");

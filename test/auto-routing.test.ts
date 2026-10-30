@@ -448,3 +448,45 @@ describe("TypeSafe Jev auto-routing", () => {
     assert.doesNotMatch(logged.join("\n"), /hello|apiKey|test-typesafe-key/);
   });
 });
+
+describe("auto routing safety", () => {
+  it("excludes models that cannot fit input and reserved output", () => {
+    const rotator = fakeRotator("");
+    const result = buildAutoRoutingCandidates(rotator, catalog, {
+      route: "openai-chat",
+      input: { messages: [{ role: "user", content: "x".repeat(400_000) }], max_tokens: 8192 },
+    });
+    assert.deepEqual(result.candidates.map((candidate) => candidate.modelId), ["gemini-pro"]);
+  });
+
+  it("opens the classifier circuit after failure without retrying each request", async () => {
+    let calls = 0;
+    const baseURL = await startServer(() => {
+      calls += 1;
+      return { status: 503, body: { error: "unavailable" } };
+    });
+    const rotator = fakeRotator(baseURL);
+    const request: AutoRoutingRequest = { route: "openai-chat", input: { messages: [{ role: "user", content: "Hello" }] } };
+    assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "typesafe-error");
+    assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "typesafe-circuit-open");
+    assert.equal(calls, 1);
+  });
+});
+
+it("keeps Anthropic tool results and harness reminders out of the human ask", async () => {
+  let captured: Record<string, unknown> = {};
+  const baseURL = await startServer((body) => {
+    captured = body;
+    return { status: 200, body: { answers: {} } };
+  });
+  await selectAutoRoutingTarget(fakeRotator(baseURL), catalog, {
+    route: "anthropic",
+    input: { messages: [
+      { role: "user", content: "Fix typo <system-reminder>injected instructions</system-reminder>" },
+      { role: "user", content: [{ type: "tool_result", content: "unrelated tool output" }] },
+    ] },
+  });
+  const state = captured.state as Record<string, unknown>;
+  const context = state.request_context as Record<string, unknown>;
+  assert.equal(context.latest_user_request, "Fix typo");
+});
