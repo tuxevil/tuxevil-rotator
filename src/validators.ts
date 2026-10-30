@@ -320,6 +320,9 @@ export function validateConfig(value: unknown): ValidationResult<Config> {
 			errors.push("config.typesafeRouting must be an object when provided");
 		} else {
 			const routing = value.typesafeRouting;
+            if (routing.stallEscalation !== undefined && typeof routing.stallEscalation !== "boolean") {
+                errors.push("config.typesafeRouting.stallEscalation must be a boolean");
+            }
             if (routing.sessionAffinity !== undefined && typeof routing.sessionAffinity !== "boolean") {
                 errors.push("config.typesafeRouting.sessionAffinity must be a boolean");
             }

@@ -640,7 +640,33 @@ async function selectAutoRoutingTargetInternal(
   }
 }
 
+/** Requires structured failure flags; words such as "error" in output do not qualify. */
+export function hasStalledToolExecution(input: unknown): boolean {
+  const root = asRecord(input);
+  const messages = root?.messages ?? root?.input ?? root?.contents;
+  if (!Array.isArray(messages)) return false;
+  let errors = 0;
+  for (const item of messages) {
+    const message = asRecord(item);
+    if (!message) continue;
+    const role = String(message.role ?? "");
+    const content = message.content;
+    if (role === "user" && collectMessageText(content)) errors = 0;
+    if (role === "tool" || message.type === "function_call_output") {
+      errors = message.is_error === true || message.status === "failed" ? errors + 1 : 0;
+    }
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        const result = asRecord(block);
+        if (result?.type === "tool_result") errors = result.is_error === true ? errors + 1 : 0;
+      }
+    }
+  }
+  return errors >= 3;
+}
+
 interface SessionPin {
+  escalated?: boolean;
   provider: string;
   model: string;
   askHash: string;
@@ -677,7 +703,19 @@ export async function selectAutoRoutingTarget(
   for (const [key, pin] of pins) if (pin.expiresAt <= Date.now()) pins.delete(key);
   const pin = identity ? pins.get(identity.key) : undefined;
   let selection: AutoRoutingSelection | null = null;
-  if (pin && identity && pin.askHash === identity.askHash) {
+  if (pin && identity && pin.askHash === identity.askHash && !pin.escalated
+    && config?.stallEscalation && hasStalledToolExecution(request.input)) {
+    pin.escalated = true; // Reserve the single attempt before awaiting concurrent requests.
+    const alternatives = catalog.filter(entry => entry.reasoning && (entry.modelId !== pin.model || entry.providerId !== pin.provider));
+    // Capability is a conservative escalation target, not a measured quality rank.
+    const escalated = await selectAutoRoutingTargetInternal(rotator, alternatives, request, diagnostics);
+    if (escalated) {
+      selection = { ...escalated, reason: "session-stall-escalation" };
+      pins.set(identity.key, { ...pin, provider: escalated.candidate.providerId, model: escalated.candidate.modelId, escalated: true });
+      diagnostics.stall_escalation = true;
+    }
+  }
+  if (!selection && pin && identity && pin.askHash === identity.askHash) {
     const eligible = buildAutoRoutingCandidates(rotator, catalog.filter(entry => entry.modelId === pin.model && entry.providerId === pin.provider), request);
     if (eligible.candidates[0]) {
       selection = { candidate: eligible.candidates[0], mode: "deterministic", reason: "session-continuation" };

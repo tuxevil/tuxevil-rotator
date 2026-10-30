@@ -27,3 +27,11 @@ Compatibility routes scope the ID by virtual-key token hash and wire route. Requ
 Every reuse rechecks permission, context, capabilities and operational availability. An ineligible pin or changed human ask triggers normal selection. A pin can survive shortlist changes because its eligibility is checked independently of shortlist trimming. `reason: session-continuation` identifies reuse; shadow mode bypasses affinity. Identical repeated human asks are indistinguishable from continuations; clients should start a new session ID for a new task with identical text.
 
 This preserves model continuity, not provider-side conversation state or guaranteed prompt-cache hits. It does not escalate stalled tasks yet.
+
+## Optional stall escalation
+
+With both `sessionAffinity: true` and `stallEscalation: true`, a pinned task gets at most one escalation attempt after three consecutive structured tool failures. Anthropic `tool_result.is_error: true` and tool/function-output messages with `is_error: true` or `status: failed` qualify. A successful tool result or new human ask resets the consecutive-error count. Plain text mentioning an error never qualifies.
+
+The attempt selects among other reasoning-capable models using normal eligibility, permission and classifier rules. With no eligible alternative, the valid pin continues serving. An attempt is reserved before classification so concurrent requests cannot launch duplicate escalation attempts; they may continue using the existing pin while selection runs. The pin retains its original expiration. Logs identify successful selection as `session-stall-escalation`.
+
+This is a capability-based recovery attempt, not a measured quality tier upgrade. It does not detect repeated successful calls, parse unstructured error text or guarantee that the alternative solves the task. It is disabled by default and bypassed in shadow mode.

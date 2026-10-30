@@ -4,6 +4,7 @@ import { afterEach, describe, it } from "node:test";
 import {
   buildAutoRoutingCandidates,
   estimateAutoRoutingTokens,
+  hasStalledToolExecution,
   selectAutoRoutingTarget,
   type AutoRoutingCatalogEntry,
   type AutoRoutingRequest,
@@ -593,4 +594,35 @@ it("drops an unavailable pin and bypasses affinity without tenant identity or in
   assert.equal((await selectAutoRoutingTarget(rotator, catalog, { ...request, tenantId: undefined }))?.reason, "typesafe-disabled");
   config.shadowMode = true;
   assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "typesafe-disabled");
+});
+
+
+it("escalates only once after three structured errors and preserves eligibility", async () => {
+  const rotator = fakeRotator("");
+  Object.assign(rotator.getConfig().typesafeRouting!, { enabled: false, sessionAffinity: true, stallEscalation: true });
+  const input = { metadata: { session_id: "stall" }, messages: [{ role: "user", content: "fix bug" }] as unknown[] };
+  const request: AutoRoutingRequest = { route: "anthropic", tenantId: "tenant", input };
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.candidate.modelId, "local-fast");
+  input.messages.push(...Array.from({ length: 3 }, () => ({ role: "user", content: [{ type: "tool_result", is_error: true, content: "failed" }] })));
+  assert.equal(hasStalledToolExecution(input), true);
+  const escalated = await selectAutoRoutingTarget(rotator, catalog, request);
+  assert.equal(escalated?.reason, "session-stall-escalation");
+  assert.equal(escalated?.candidate.modelId, "gemini-pro");
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "session-continuation");
+  input.messages.push({ role: "user", content: [{ type: "tool_result", is_error: false, content: "error mentioned in successful output" }] });
+  assert.equal(hasStalledToolExecution(input), false);
+  input.messages.push({ role: "user", content: "new task" });
+  assert.equal(hasStalledToolExecution(input), false);
+});
+
+it("keeps the existing pin when escalation alternatives are unauthorized", async () => {
+  const rotator = fakeRotator("");
+  Object.assign(rotator.getConfig().typesafeRouting!, { enabled: false, sessionAffinity: true, stallEscalation: true });
+  const input = { metadata: { session_id: "restricted-stall" }, messages: [{ role: "user", content: "fix" }] as unknown[] };
+  const request: AutoRoutingRequest = { route: "openai-chat", tenantId: "restricted", input, isModelAllowed: model => model === "local-fast" };
+  await selectAutoRoutingTarget(rotator, catalog, request);
+  input.messages.push(...Array.from({ length: 3 }, () => ({ role: "tool", is_error: true, content: "failed" })));
+  const result = await selectAutoRoutingTarget(rotator, catalog, request);
+  assert.equal(result?.reason, "session-continuation");
+  assert.equal(result?.candidate.modelId, "local-fast");
 });

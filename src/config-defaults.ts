@@ -71,6 +71,7 @@ export function applyConfigDefaults(config: Config): Config {
 					shortlistSize: config.typesafeRouting.shortlistSize ?? 12,
 					maxExcerptChars: config.typesafeRouting.maxExcerptChars ?? 12_000,
 					sessionAffinity: config.typesafeRouting.sessionAffinity ?? false,
+					stallEscalation: config.typesafeRouting.stallEscalation ?? false,
 					sessionAffinityTtlSeconds: config.typesafeRouting.sessionAffinityTtlSeconds ?? 1800,
 				}
 				: undefined,
