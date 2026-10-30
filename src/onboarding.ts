@@ -261,7 +261,7 @@ export function serveLoginLanding(res: ServerResponse): void {
 }
 
 export function startHostedLogin(
-  req: IncomingMessage,
+  _req: IncomingMessage,
   res: ServerResponse,
 ): void {
   if (!isHostedOAuthConfigured()) {

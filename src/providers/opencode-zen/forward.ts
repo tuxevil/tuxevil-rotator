@@ -235,7 +235,7 @@ function headerValue(headers: Record<string, string>, name: string): string | un
 
 function buildOpenCodeZenHeaders(
   originalHeaders: Record<string, string>,
-  body: RequestBody,
+  _body: RequestBody,
   account: AccountRuntime,
 ): Record<string, string> {
   const headers: Record<string, string> = {};
