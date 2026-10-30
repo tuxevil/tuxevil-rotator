@@ -573,6 +573,18 @@ async function selectAutoRoutingTargetInternal(
     if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
       return deterministicForEffort("typesafe-low-confidence");
     }
+    const rankedProbabilities = Object.values(asRecord(selected?.probabilities) ?? {})
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1)
+      .sort((a, b) => b - a);
+    Object.assign(diagnostics, {
+      classifier_selected_model: candidates.find(candidate => candidate.id === selectedId)?.modelId ?? null,
+      classifier_confidence: confidence,
+      classifier_min_confidence: minConfidence,
+      classifier_top_probability: rankedProbabilities[0] ?? null,
+      classifier_probability_margin: rankedProbabilities.length >= 2 ? rankedProbabilities[0] - rankedProbabilities[1] : null,
+      classifier_effort: taskEffort,
+      classifier_effort_confidence: Number.isFinite(effortConfidence) ? effortConfidence : null,
+    });
     const belowConfidenceThreshold = confidence < minConfidence;
     if (belowConfidenceThreshold && !config?.shadowMode) {
       return deterministicForEffort("typesafe-low-confidence");

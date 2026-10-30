@@ -656,3 +656,20 @@ it("does not overwrite a newer task pin when an older escalation finishes late",
   assert.equal(continuation?.reason, "session-continuation");
   assert.equal(continuation?.candidate.modelId, "local-fast");
 });
+
+it("keeps low-confidence evidence in metadata without lowering the routing threshold", async (t) => {
+  const logs: string[] = [];
+  t.mock.method(console, "info", (...values: unknown[]) => logs.push(values.join(" ")));
+  const baseURL = await startServer(() => ({ status: 200, body: { answers: {
+    task_effort: { choice: "low", confidence: 0.9 },
+    selected_model: { choice: "candidate_1", confidence: 0.2, probabilities: { candidate_0: 0.4, candidate_1: 0.6 } },
+  } } }));
+  const result = await selectAutoRoutingTarget(fakeRotator(baseURL), catalog, { route: "openai-chat", input: { messages: [{ role: "user", content: "private task" }] } });
+  assert.equal(result?.reason, "typesafe-low-confidence");
+  const event = JSON.parse(logs.at(-1)!.slice(logs.at(-1)!.indexOf("{")));
+  assert.equal(event.classifier_confidence, 0.2);
+  assert.equal(event.classifier_min_confidence, 0.45);
+  assert.equal(event.classifier_top_probability, 0.6);
+  assert.ok(Math.abs(event.classifier_probability_margin - 0.2) < 1e-10);
+  assert.doesNotMatch(logs.join(""), /private task|test-typesafe-key/);
+});

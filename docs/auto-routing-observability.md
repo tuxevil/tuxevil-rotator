@@ -45,3 +45,7 @@ A discovered context length is the model's published upper bound, not a guarante
 ## Regression coverage
 
 `test/auto-routing-http-auth.test.ts` exercises a real local HTTP server with mocked PostgreSQL queries and an isolated settings directory. It covers missing/blocked keys, permission filtering before operational checks, no permitted candidate, and successful completion through a local Ollama-compatible upstream that verifies the forwarded model. It does not certify real PostgreSQL or provider behavior. Selector tests separately cover authorized alternatives, pin revalidation and late escalation completion after a newer task has replaced the pin.
+
+## Classifier uncertainty diagnostics
+
+Valid model-choice responses also log `classifier_selected_model`, `classifier_confidence`, `classifier_min_confidence`, `classifier_top_probability`, `classifier_probability_margin`, `classifier_effort` and `classifier_effort_confidence`, including when low confidence triggers fallback. Missing probability data is null. These describe the classifier answer, not independently measured quality, and are distinct from the served model/confidence. Full distributions and request text are omitted.
