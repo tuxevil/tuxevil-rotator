@@ -44,4 +44,4 @@ A discovered context length is the model's published upper bound, not a guarante
 
 ## Regression coverage
 
-`test/auto-routing-http-auth.test.ts` exercises a real local HTTP server with mocked PostgreSQL queries and an isolated settings directory. It covers missing/blocked keys, permission filtering before operational checks, and no permitted candidate. It does not certify PostgreSQL behavior or successful upstream completion. Selector tests separately cover authorized alternatives, pin revalidation and late escalation completion after a newer task has replaced the pin.
+`test/auto-routing-http-auth.test.ts` exercises a real local HTTP server with mocked PostgreSQL queries and an isolated settings directory. It covers missing/blocked keys, permission filtering before operational checks, no permitted candidate, and successful completion through a local Ollama-compatible upstream that verifies the forwarded model. It does not certify real PostgreSQL or provider behavior. Selector tests separately cover authorized alternatives, pin revalidation and late escalation completion after a newer task has replaced the pin.

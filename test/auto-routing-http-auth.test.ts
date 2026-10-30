@@ -23,13 +23,49 @@ it("enforces virtual keys over HTTP before auto selection and excludes forbidden
   await db.initDb();
   const { clearVirtualKeyCache } = await import("../src/virtual-keys.js");
   const { handleOpenAIChatCompletions } = await import("../src/compat.js");
+  const { OLLAMA_CHAT_ENDPOINTS } = await import("../src/types.js");
+  const endpoints = OLLAMA_CHAT_ENDPOINTS as string[];
+  const originalEndpoints = [...endpoints];
+  let forwardedModel: unknown;
+  const upstream = createServer((req, res) => {
+    let body = "";
+    req.on("data", chunk => { body += String(chunk); });
+    req.on("end", () => {
+      forwardedModel = JSON.parse(body).model;
+      res.setHeader("content-type", "application/x-ndjson");
+      res.end(JSON.stringify({ model: "allowed-model", message: { role: "assistant", content: "hello back" }, done: true, prompt_eval_count: 3, eval_count: 2 }) + "\n");
+    });
+  });
+  await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+  const upstreamAddress = upstream.address();
+  assert.ok(upstreamAddress && typeof upstreamAddress === "object");
+  endpoints.splice(0, endpoints.length, `http://127.0.0.1:${upstreamAddress.port}/api/chat`);
+  let available = false;
+  const account = {
+    config: { email: "mock@test", provider: "ollama", apiKey: "mock-key" },
+    accessToken: "mock", tokenExpires: Date.now() + 60000,
+    inFlightRequests: 0, inFlightByModel: {}, cooldownsByModel: {}, quota: [], healthScore: 1,
+  };
   const observed: string[] = [];
   const rotator = {
-    getConfig: () => ({ accounts: [], typesafeRouting: { enabled: false } }),
+    getConfig: () => ({ accounts: [], typesafeRouting: { enabled: false }, protectivePauseMs: 0 }),
+    getActiveAccount: async () => account,
+    getRetryAfterMs: () => 0,
+    getSafetyJitterMs: () => 0,
+    getGlobalDelayMs: () => 0,
+    recordUpstreamAttempt: () => {},
+    recordRequest: () => false,
+    finishRequest: () => {},
+    recordLatency: () => {},
+    recordTokenUsage: () => {},
+    recordRequestLog: () => {},
+    recordProxyEvent: () => {},
+    saveState: () => {},
+    getStatus: () => ({ accounts: [] }),
     getOllamaModels: () => ["allowed-model", "forbidden-model"],
     getCodexModels: () => [],
     hasActiveProvider: (provider: string) => provider === "ollama",
-    getAutoRoutingCandidateStatus: (model: string) => { observed.push(model); return { available: false, operationalScore: 0 }; },
+    getAutoRoutingCandidateStatus: (model: string) => { observed.push(model); return { available, operationalScore: 0.9 }; },
   } as unknown as AccountRotator;
   const server = createServer((req, res) => { void handleOpenAIChatCompletions(req, res, rotator).catch(() => { res.statusCode = 500; res.end(); }); });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -55,7 +91,19 @@ it("enforces virtual keys over HTTP before auto selection and excludes forbidden
     clearVirtualKeyCache();
     assert.equal((await send("rk-test")).status, 503);
     assert.deepEqual(observed, []);
+    models = ["allowed-model"];
+    available = true;
+    clearVirtualKeyCache();
+    const success = await send("rk-test");
+    assert.equal(success.status, 200, await success.clone().text());
+    const payload = await success.json() as { choices: { message: { content: string } }[] };
+    assert.equal(payload.choices[0].message.content, "hello back");
+    assert.equal(forwardedModel, "allowed-model");
+    assert.deepEqual(observed, ["allowed-model"]);
   } finally {
+    endpoints.splice(0, endpoints.length, ...originalEndpoints);
+    upstream.closeAllConnections();
+    await new Promise<void>(resolve => upstream.close(() => resolve()));
     server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));
     await db.closeDb();
