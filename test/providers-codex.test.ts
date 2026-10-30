@@ -27,6 +27,8 @@ import {
   CODEX_QUOTA_MODEL_KEY,
   CODEX_UNSTARTED_TIMER_THRESHOLD_SECONDS,
   codexQuotaRows,
+  fetchCodexQuota,
+  clearCodexQuotaCache,
   parseCodexUsageResponse,
 } from "../src/providers/openai-codex/quota.js";
 import {
@@ -450,4 +452,45 @@ describe("openai-codex import and payload", () => {
       function: { name: "lookup", arguments: '{"q":"x"}' },
     });
   });
+});
+
+it("keeps the original observation timestamp on Codex quota cache hits", async () => {
+  clearCodexQuotaCache();
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    return Response.json({ rate_limit: { primary_window: { used_percent: 25 } } });
+  };
+  const account = {
+    config: { email: "observation-cache@test", credentials: [{ provider: "openai-codex", providerAccountId: "observation-cache" }] },
+    providerTokens: { "openai-codex": { accessToken: "test", tokenExpires: Date.now() + 60_000 } },
+    quota: [],
+  } as unknown as AccountRuntime;
+  const ctx = { log: () => {}, reportQuotaPollFlag: () => {} } as unknown as Parameters<typeof fetchCodexQuota>[1];
+  await fetchCodexQuota(account, ctx);
+  const observation = structuredClone(account.quota[0].observation);
+  assert.equal(observation?.percentageSource, "derived");
+  assert.equal(observation?.remainingPercent, 75);
+  await fetchCodexQuota(account, ctx);
+  assert.equal(calls, 1);
+  assert.deepEqual(account.quota[0].observation, observation);
+  clearCodexQuotaCache();
+});
+
+
+it("keeps defaulted Codex usage unknown without changing routing percentages", () => {
+  for (const used of [undefined, "invalid", -1, 101]) {
+    const snapshot = parseCodexUsageResponse({ rate_limit: { primary_window: {
+      used_percent: used, reset_after_seconds: 3600,
+    } }, additional_rate_limits: [{ limit_name: "spark", rate_limit: {
+      primary_window: { reset_after_seconds: 3600 },
+    } }] })!;
+    const legacy = codexQuotaRows(snapshot);
+    const observed = codexQuotaRows(snapshot, 1234);
+    assert.deepEqual(observed.map(({ observation: _observation, ...row }) => row), legacy);
+    assert.ok(observed.every(row => row.observation?.remainingPercent === null));
+    assert.ok(observed.every(row => row.observation?.percentageSource === "unknown"));
+  }
+  const snapshot = parseCodexUsageResponse({ rate_limit: { primary_window: { used_percent: 0 } } })!;
+  assert.equal(codexQuotaRows(snapshot, 1234)[0].observation?.remainingPercent, 100);
 });
