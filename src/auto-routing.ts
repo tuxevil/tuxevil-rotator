@@ -1,4 +1,5 @@
 import { isAutoOutputCooling } from "./auto-output-health.js";
+import { AA_ROUTING_SCORE_SNAPSHOT, assessAARoutingSelection } from "./auto-routing-quality.js";
 import { createHash } from "node:crypto";
 import { choice, TypeSafeClient } from "@typesafe-ai/sdk";
 import type { Config } from "./types.js";
@@ -626,6 +627,7 @@ async function selectAutoRoutingTargetInternal(
       .sort((a, b) => b - a);
     Object.assign(diagnostics, {
       classifier_selected_model: candidates.find(candidate => candidate.id === selectedId)?.modelId ?? null,
+      classifier_selected_provider: candidates.find(candidate => candidate.id === selectedId)?.providerId ?? null,
       classifier_confidence: confidence,
       classifier_min_confidence: minConfidence,
       classifier_top_probability: rankedProbabilities[0] ?? null,
@@ -813,6 +815,52 @@ export async function selectAutoRoutingTarget(
       const alternative=retained||projected.candidates[0];
       console.info("[tuxevil-rotator]",JSON.stringify({event:"auto-routing-access-shadow",enforced:false,projection:"deterministic-operational",actual_model:selection?.candidate.modelId??null,actual_provider:selection?.candidate.providerId??null,would_select_model:alternative?.modelId??null,would_select_provider:alternative?.providerId??null,excluded:evidence.filter(e=>e.status.wouldExclude).map(e=>({provider:e.entry.providerId,model:e.entry.modelId,...e.status})),rejected_account_combinations:evidence.reduce((n,e)=>n+e.status.rejectedAccounts,0)}));
     } catch { /* Shadow must never alter routing or fail a request. */ }
+  }
+  if (selection && config?.shadowMode === true) {
+    try {
+      const broadCandidates = buildAutoRoutingCandidates(rotator, catalog, request).candidates;
+      const effort = typeof diagnostics.classifier_effort === "string" ? diagnostics.classifier_effort : "";
+      const configuredEffortPool = effort && config?.selectionPolicy === "effort-pools"
+        ? config.effortPools?.[effort as keyof NonNullable<typeof config.effortPools>]
+        : undefined;
+      const effortPoolCandidates = configuredEffortPool?.length
+        ? buildAutoRoutingCandidates(
+          rotator,
+          catalog.filter(entry => configuredEffortPool.includes(`${entry.providerId}/${entry.modelId}`)),
+          request,
+        ).candidates
+        : [];
+      const servedCandidates = selection.reason === "typesafe-effort-pool-selected"
+        ? effortPoolCandidates
+        : broadCandidates;
+      const resolveLoggedCandidate = (model: unknown, provider: unknown): AutoRoutingCandidate | undefined =>
+        typeof model === "string" && typeof provider === "string"
+          ? [...broadCandidates, ...effortPoolCandidates].find(candidate => candidate.modelId === model && candidate.providerId === provider)
+          : undefined;
+      const classifierRecommendation = resolveLoggedCandidate(
+        diagnostics.classifier_selected_model,
+        diagnostics.classifier_selected_provider,
+      );
+      const effortPoolRecommendation = resolveLoggedCandidate(
+        diagnostics.effort_pool_model,
+        diagnostics.effort_pool_provider,
+      );
+      Object.assign(diagnostics, {
+        aa_quality_assessment: {
+          metric: "artificial-analysis-intelligence-index",
+          snapshot: AA_ROUTING_SCORE_SNAPSHOT,
+          served: assessAARoutingSelection(selection.candidate, servedCandidates),
+          ...(classifierRecommendation ? {
+            classifier_recommendation: assessAARoutingSelection(classifierRecommendation, broadCandidates),
+          } : {}),
+          ...(effortPoolRecommendation ? {
+            effort_pool_recommendation: assessAARoutingSelection(effortPoolRecommendation, effortPoolCandidates),
+          } : {}),
+        },
+      });
+    } catch {
+      // Quality metadata is observational only and must never change routing.
+    }
   }
   console.info("[tuxevil-rotator]", JSON.stringify({
     event: "auto-routing-decision",

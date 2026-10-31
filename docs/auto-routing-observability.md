@@ -14,6 +14,20 @@ If recovery has no remaining eligible candidate, the response preserves the last
 
 Events contain no request text, tool output, keys or classifier endpoint URLs. Shadow mode additionally emits its existing comparison event. Confidence is classifier confidence, not measured answer accuracy. Latency includes candidate preparation; classifier latency includes SDK/network work.
 
+## Artificial Analysis quality reference
+
+With `typesafeRouting.shadowMode: true`, `auto-routing-decision` also includes `aa_quality_assessment`, a dated local snapshot of Artificial Analysis Intelligence Index scores. It reports the served candidate and, when present, the classifier or effort-pool recommendation. Each is compared only with the shortlist considered for that decision, and only against candidates with scores on the same index version. V5.0 and V4.3.2 are never converted or compared numerically. The assessment records rank, score gap to the best comparable candidate, score coverage, benchmark model/effort and source page.
+
+The catalog snapshot is 2026-10-31. Exact model/effort matches are distinguished from effort or base-model proxies; the actual provider/account serving match is not verified. Dynamic model IDs without an exact catalog mapping remain unscored. Nemotron 3.5 Lightning is marked conflicted and excluded because Artificial Analysis pages disagree (13 versus 24). This cross-domain Intelligence Index is a prior, not proof of task correctness, and it never changes candidate eligibility or routing.
+
+Summarize captured service logs without making provider calls:
+
+```bash
+npm run evaluate:auto-quality -- /path/to/rotator.jsonl
+```
+
+The summary groups by served/recommended role, index version, effort, routing mode and selected model. `topRankRate` means the selection tied for the highest available AA index among same-version candidates; it does not mean the answer was correct. Evaluate actual output correctness separately with the task suites.
+
 The classifier circuit is local to a rotator instance. A transport/SDK failure opens it for 30 seconds; requests during that interval use deterministic selection. Afterward one recovery probe runs while concurrent requests continue using fallback. Successful transport closes the circuit; invalid decisions still use their own deterministic fallback. Changing classifier endpoint, model or key resets the circuit identity.
 
 Before introducing affinity or escalation, evaluate representative tasks with explicit success criteria: answer correctness, tool execution, retries, end-to-end latency and quota consumption. Log frequency alone cannot demonstrate improved model quality.
