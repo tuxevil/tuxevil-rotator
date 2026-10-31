@@ -72,6 +72,7 @@ describe("proxy admin routes", () => {
     const port = (server.address() as AddressInfo).port;
     const base = `http://127.0.0.1:${port}/api/model-access`;
     assert.equal((await fetch(base)).status, 401);
+    assert.equal((await fetch(base + "/probe", { method: "POST", body: "{}" })).status, 401);
     assert.equal((await fetch(base + "/plan", { method: "PUT", headers: { "Content-Type": "application/json" }, body: "{}" })).status, 401);
     const headers = { "x-rotator-admin-token": "secret" };
     const response = await fetch(base + "?provider=google-antigravity&model=claude-sonnet-4-6&plan=free&at=2026-11-02", { headers });

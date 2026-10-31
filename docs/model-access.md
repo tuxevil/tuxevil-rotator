@@ -42,3 +42,28 @@ The `at` query controls policy-date simulation; stored plan and observation summ
 Set top-level `modelAccessShadow: true` to emit `model-access-policy-shadow` events before each upstream rotation attempt. Default is false. Events contain a hashed account identifier, provider/model, plan and plan source, client declaration, policy state, rule IDs and `wouldBlock`. `enforced` is always false. No prompt, raw user-agent, credentials or provider error text is logged. Unknown/provisional access is not reported as would-block.
 
 The comparison uses the actual selected account and its current credential-scoped plan declaration (or a conservative single-provider tier inference). It does not alter requests, authorization, selection, retries or cooldowns. A would-block finding depends on the recorded plan, which may still be an operator declaration rather than a provider-verified subscription. Observe these findings before considering any enforcement.
+
+### Scoped live probes
+
+`POST /api/model-access/probe` requires admin authentication and accepts
+`{accountId, provider, model}`. It targets exactly one active account/provider
+and a model in that provider's live catalog; it never rotates to another account.
+Probes require an initialized evidence repository before spending provider quota.
+Disabled providers/models and busy accounts are skipped. Only one probe runs at
+a time. The provider benchmark payload requests a short reply, with a 30-second
+request deadline and a 256 KiB response limit. An HTTP 200 without a completed
+provider response is not access success. Results use the existing expiring,
+credential-scoped observation store and appear in account access diagnostics.
+No prompts, provider bodies, credentials or raw account identities are returned.
+OpenCode identity is not fabricated: Zen probes use unknown client context.
+
+`scripts/probe-model-access.mjs` builds a dry-run matrix from declared accounts
+and live catalog models. Supply `ROTATOR_ADMIN_TOKEN` or a private
+`ROTATOR_ADMIN_TOKEN_FILE`; optionally set `ROTATOR_URL` and
+`ROTATOR_PROBE_OUTPUT`. Add `--execute` to spend provider quota. The runner
+supports `--resume` to retain unexpired completed results and retry untested scopes. It
+stops remaining models for an account/provider after authentication, quota or
+transport failures, or unavailable/disabled accounts. It records missing catalog
+models separately, writes sanitized results after each attempt and never changes
+subscription declarations or enables automatic enforcement. Results demonstrate
+account-specific access at the observation time, not universal plan entitlements.

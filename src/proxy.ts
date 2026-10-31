@@ -1,3 +1,4 @@
+import { serveAccessProbe } from "./access-probe.js";
 import { observeAccessAttempt, logAccessPolicyShadow } from "./access-evidence.js";
 import { serveModelAccessApi, serveProviderPlanApi } from "./model-access-api.js";
 import { createUsageLimitsHandler, USAGE_LIMITS_PATH } from "./usage-limits.js";
@@ -2495,6 +2496,12 @@ export function startProxy(
         }
         res.end("<h1>Internal login error</h1>");
       });
+      return;
+    }
+
+    if (method === "POST" && pathname === "/api/model-access/probe") {
+      if (!requireAdmin(req, res)) return;
+      void serveAccessProbe(req, res, rotator);
       return;
     }
 
