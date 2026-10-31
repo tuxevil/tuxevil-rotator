@@ -2718,7 +2718,14 @@ export function buildOpenAIModelCatalog(
       });
     }
   }
-  return dedupeByRoute(catalog, source);
+  const discovered = dedupeByRoute(catalog, source);
+  if (rotator?.getConfig?.().typesafeRouting?.enabled && discovered.length > 0) {
+    const context = Math.min(...discovered.map(entry => entry.context_window));
+    discovered.unshift({ id: "auto", object: "model", created: 0, owned_by: "tuxevil-rotator",
+      context_window: context, max_model_len: context,
+      meta: { context_length: context, family: "automatic-routing", multimodal: discovered.some(entry => entry.meta.multimodal), tool_calling: discovered.some(entry => entry.meta.tool_calling) } });
+  }
+  return discovered;
 }
 
 /** Keep one entry per id: the one owned by the provider its requests go to. */
