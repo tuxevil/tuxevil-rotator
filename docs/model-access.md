@@ -137,3 +137,25 @@ Plus. Exact Free/Plus rules cite that source with validity/review dates; they do
 not cover future model suffixes, API-key access or inferred paid-plan mappings.
 Shadow comparisons can report `wouldBlock` for the documented Free restriction,
 while `enforced` stays false and normal routing is unchanged.
+
+### Evidence-aware auto-routing shadow
+
+With `modelAccessShadow` enabled, auto routing emits `auto-routing-access-shadow`.
+It examines currently operationally eligible accounts for each catalog candidate.
+A model would be excluded only if every such account has a current exact-model,
+credential-valid `model-unavailable` or `entitlement` observation in unknown client
+context. Missing evidence, expiry, replacement credentials and success permit
+reconsideration. Quota, authentication, transport, generic errors and client-origin
+restrictions never produce this exclusion.
+
+The event records actual and projected model/provider, excluded models and counts
+of rejected eligible account combinations. It contains no account identities,
+credentials or request text. The alternative uses the existing deterministic
+operational ranking with permission, capability, context and route checks. It is
+not another Jev call or a prediction of task quality. An eligible actual selection
+is retained. No account pin, upstream request or live selection is changed; errors
+in this optional comparison are isolated. `enforced` remains false.
+
+This phase does not actively schedule retries. Existing observation expiry and
+new successful requests restore eligibility in subsequent shadow comparisons;
+controlled administrative probes remain available for earlier verification.

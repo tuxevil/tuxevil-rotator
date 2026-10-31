@@ -1,3 +1,4 @@
+import { summarizeAutoAccess } from "./auto-access-shadow.js";
 import { primeOllamaContextWindows } from "./providers/ollama/context-window.js";
 import {
   type AccountConfig,
@@ -322,6 +323,13 @@ export class AccountRotator {
    * Exposes only aggregate routing health to the optional Jev selector.
    * Account identities and credentials stay inside the rotator.
    */
+  getAutoRoutingEvidenceStatus(model: string, providerId: string) {
+    const key=this.resolvePoolKeyForModel(model,providerId);
+    const now=Date.now(),policy=this.config.routingPolicy||"timer-first";
+    const accounts=key?this.accounts.filter(a=>!this.getRoutingRejectionForModel(a,key,now,policy)).map(a=>a.config):[];
+    return summarizeAutoAccess(accounts,providerId,model);
+  }
+
   getAutoRoutingCandidateStatus(
     model: string,
     providerId: string,

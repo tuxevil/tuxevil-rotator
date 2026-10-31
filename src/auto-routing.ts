@@ -36,6 +36,7 @@ export interface AutoRoutingCandidate extends AutoRoutingCatalogEntry {
 }
 
 export interface AutoRoutingRotator {
+  getAutoRoutingEvidenceStatus?: (model: string, provider: string) => { eligibleAccounts: number; rejectedAccounts: number; wouldExclude: boolean };
   getConfig?: () => Config;
   hasActiveProvider?: (providerId: string) => boolean;
   getAutoRoutingCandidateStatus?: (
@@ -782,6 +783,16 @@ export async function selectAutoRoutingTarget(
         pins.set(identity.key, { provider: selection.candidate.providerId, model: selection.candidate.modelId, askHash: identity.askHash, expiresAt: Date.now() + ttl * 1000 });
       } else pins.delete(identity.key);
     }
+  }
+  if (rotator.getConfig?.().modelAccessShadow === true && rotator.getAutoRoutingEvidenceStatus) {
+    try {
+      const evidence=catalog.map(entry=>({entry,status:rotator.getAutoRoutingEvidenceStatus!(entry.modelId,entry.providerId)}));
+      const projectedCatalog=evidence.filter(e=>!e.status.wouldExclude).map(e=>e.entry);
+      const projected=buildAutoRoutingCandidates(rotator,projectedCatalog,request);
+      const retained=selection&&buildAutoRoutingCandidates(rotator,projectedCatalog.filter(c=>c.providerId===selection.candidate.providerId&&c.modelId===selection.candidate.modelId),request).candidates[0];
+      const alternative=retained||projected.candidates[0];
+      console.info("[tuxevil-rotator]",JSON.stringify({event:"auto-routing-access-shadow",enforced:false,projection:"deterministic-operational",actual_model:selection?.candidate.modelId??null,actual_provider:selection?.candidate.providerId??null,would_select_model:alternative?.modelId??null,would_select_provider:alternative?.providerId??null,excluded:evidence.filter(e=>e.status.wouldExclude).map(e=>({provider:e.entry.providerId,model:e.entry.modelId,...e.status})),rejected_account_combinations:evidence.reduce((n,e)=>n+e.status.rejectedAccounts,0)}));
+    } catch { /* Shadow must never alter routing or fail a request. */ }
   }
   console.info("[tuxevil-rotator]", JSON.stringify({
     event: "auto-routing-decision",
