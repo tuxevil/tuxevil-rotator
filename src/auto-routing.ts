@@ -1,3 +1,4 @@
+import { isAutoOutputCooling } from "./auto-output-health.js";
 import { createHash } from "node:crypto";
 import { choice, TypeSafeClient } from "@typesafe-ai/sdk";
 import type { Config } from "./types.js";
@@ -423,6 +424,8 @@ export function buildAutoRoutingCandidates(
     // Auto routing has no verified OpenCode-origin context. A declared user agent
     // is insufficient; keep restricted free Zen models available only explicitly.
     if (entry.providerId === "opencode-zen" && (entry.modelId === "big-pickle" || entry.modelId.endsWith("-free"))) { reject("client-restricted"); continue; }
+
+    if (isAutoOutputCooling(entry.providerId, entry.modelId)) { reject("empty-output-cooldown"); continue; }
 
     const status = rotator.getAutoRoutingCandidateStatus?.(entry.modelId, entry.providerId) ?? {
       available: true,

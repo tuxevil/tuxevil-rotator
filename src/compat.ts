@@ -1,3 +1,4 @@
+import { markEmptyAutoOutput } from "./auto-output-health.js";
 import { getCachedOllamaContextWindow } from "./providers/ollama/context-window.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
@@ -1365,6 +1366,7 @@ export async function streamCompatSse(
 
   if (upstream === "ollama" && !reqClosed && !streamError && !text.trim() && toolCallIndex === 0 && !anthropicHasToolUse) {
     streamError = "Ollama completed without a final answer or tool call";
+    markEmptyAutoOutput("ollama", model);
     console.warn("[tuxevil-rotator]", JSON.stringify({ event: "empty-ollama-completion", model, chunks: ollamaChunks, terminalSeen: ollamaTerminal, upstreamContentChars: ollamaContentChars, upstreamThinkingChars: ollamaThinkingChars, upstreamToolCalls: ollamaRawToolCalls, convertedTextChars: text.length }));
   }
   if (!reqClosed && !res.writableEnded) {
