@@ -24,3 +24,5 @@ Known blocker: 44 additional unexpired observations were verified in PostgreSQL 
 Public results are aggregated by provider, model and declared plan. No account identities, credentials, prompts or provider response bodies appear in these artifacts. Private pre/post metadata receipts remain in the operator state directory; temporary probe authorization is removed after verification.
 
 The Codex OAuth continuity blocker was subsequently fixed and validated across 25 real rotations. See [Codex OAuth evidence continuity](codex-oauth-evidence-continuity.md) for current results; the measurements above remain the historical pre-fix batch.
+
+The Antigravity 404 follow-up found valid paid-account model IDs with account-specific advertised availability. See [Antigravity 404 catalog review](antigravity-404-catalog-review.md); no global ID removal or alias rewrite was justified.

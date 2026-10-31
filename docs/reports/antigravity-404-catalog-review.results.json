@@ -1,0 +1,285 @@
+{
+  "generatedAt": "2026-10-31T02:54:28.753Z",
+  "catalogInspection": {
+    "generatedAt": "2026-10-31T02:52:41.242Z",
+    "accounts": 48,
+    "snapshots": 48,
+    "currentCredentialSnapshots": 48,
+    "modelAccessShadow": true,
+    "models": [
+      {
+        "model": "gemini-3.8-flash-medium",
+        "alias": "gemini-3.8-flash-medium",
+        "globallyListed": true,
+        "byPlan": {
+          "free": {
+            "accounts": 46,
+            "advertised": 46,
+            "maxSnapshotAgeMs": 78611
+          },
+          "pro-paid": {
+            "accounts": 2,
+            "advertised": 2,
+            "maxSnapshotAgeMs": 76600
+          }
+        }
+      },
+      {
+        "model": "gemini-4-argon-medium",
+        "alias": "gemini-4-argon-medium",
+        "globallyListed": true,
+        "byPlan": {
+          "free": {
+            "accounts": 46,
+            "advertised": 0,
+            "maxSnapshotAgeMs": 78611
+          },
+          "pro-paid": {
+            "accounts": 2,
+            "advertised": 2,
+            "maxSnapshotAgeMs": 76600
+          }
+        }
+      },
+      {
+        "model": "claude-sonnet-4-6",
+        "alias": "claude-sonnet-4-6",
+        "globallyListed": true,
+        "byPlan": {
+          "free": {
+            "accounts": 46,
+            "advertised": 46,
+            "maxSnapshotAgeMs": 78611
+          },
+          "pro-paid": {
+            "accounts": 2,
+            "advertised": 0,
+            "maxSnapshotAgeMs": 76600
+          }
+        }
+      },
+      {
+        "model": "claude-opus-4-6-thinking",
+        "alias": "claude-opus-4-6-thinking",
+        "globallyListed": true,
+        "byPlan": {
+          "free": {
+            "accounts": 46,
+            "advertised": 46,
+            "maxSnapshotAgeMs": 78611
+          },
+          "pro-paid": {
+            "accounts": 2,
+            "advertised": 0,
+            "maxSnapshotAgeMs": 76600
+          }
+        }
+      },
+      {
+        "model": "claude-sonnet-5-5-medium",
+        "alias": "claude-sonnet-5-5-medium",
+        "globallyListed": true,
+        "byPlan": {
+          "free": {
+            "accounts": 46,
+            "advertised": 0,
+            "maxSnapshotAgeMs": 78611
+          },
+          "pro-paid": {
+            "accounts": 2,
+            "advertised": 2,
+            "maxSnapshotAgeMs": 76600
+          }
+        }
+      },
+      {
+        "model": "claude-opus-5-5-medium",
+        "alias": "claude-opus-5-5-medium",
+        "globallyListed": true,
+        "byPlan": {
+          "free": {
+            "accounts": 46,
+            "advertised": 0,
+            "maxSnapshotAgeMs": 78611
+          },
+          "pro-paid": {
+            "accounts": 2,
+            "advertised": 2,
+            "maxSnapshotAgeMs": 76600
+          }
+        }
+      }
+    ]
+  },
+  "controlProbeAccounts": 4,
+  "controlCombinations": 24,
+  "observedCombinations": 22,
+  "observations": {
+    "success": 10,
+    "unknown": 10,
+    "quota": 2
+  },
+  "skipped": {
+    "quota-or-transport": 2
+  },
+  "models": [
+    {
+      "model": "claude-opus-4-6-thinking",
+      "plan": "free",
+      "advertisedToSelectedAccounts": true,
+      "observations": {},
+      "httpStatuses": {},
+      "skipped": {
+        "quota-or-transport": 2
+      }
+    },
+    {
+      "model": "claude-opus-4-6-thinking",
+      "plan": "pro-paid",
+      "advertisedToSelectedAccounts": false,
+      "observations": {
+        "unknown": 2
+      },
+      "httpStatuses": {
+        "None": 2
+      },
+      "skipped": {}
+    },
+    {
+      "model": "claude-opus-5-5-medium",
+      "plan": "free",
+      "advertisedToSelectedAccounts": false,
+      "observations": {
+        "unknown": 2
+      },
+      "httpStatuses": {
+        "404": 2
+      },
+      "skipped": {}
+    },
+    {
+      "model": "claude-opus-5-5-medium",
+      "plan": "pro-paid",
+      "advertisedToSelectedAccounts": true,
+      "observations": {
+        "success": 2
+      },
+      "httpStatuses": {
+        "200": 2
+      },
+      "skipped": {}
+    },
+    {
+      "model": "claude-sonnet-4-6",
+      "plan": "free",
+      "advertisedToSelectedAccounts": true,
+      "observations": {
+        "quota": 2
+      },
+      "httpStatuses": {
+        "429": 2
+      },
+      "skipped": {}
+    },
+    {
+      "model": "claude-sonnet-4-6",
+      "plan": "pro-paid",
+      "advertisedToSelectedAccounts": false,
+      "observations": {
+        "unknown": 2
+      },
+      "httpStatuses": {
+        "None": 2
+      },
+      "skipped": {}
+    },
+    {
+      "model": "claude-sonnet-5-5-medium",
+      "plan": "free",
+      "advertisedToSelectedAccounts": false,
+      "observations": {
+        "unknown": 2
+      },
+      "httpStatuses": {
+        "404": 2
+      },
+      "skipped": {}
+    },
+    {
+      "model": "claude-sonnet-5-5-medium",
+      "plan": "pro-paid",
+      "advertisedToSelectedAccounts": true,
+      "observations": {
+        "success": 2
+      },
+      "httpStatuses": {
+        "200": 2
+      },
+      "skipped": {}
+    },
+    {
+      "model": "gemini-3.8-flash-medium",
+      "plan": "free",
+      "advertisedToSelectedAccounts": true,
+      "observations": {
+        "success": 2
+      },
+      "httpStatuses": {
+        "200": 2
+      },
+      "skipped": {}
+    },
+    {
+      "model": "gemini-3.8-flash-medium",
+      "plan": "pro-paid",
+      "advertisedToSelectedAccounts": true,
+      "observations": {
+        "success": 2
+      },
+      "httpStatuses": {
+        "200": 2
+      },
+      "skipped": {}
+    },
+    {
+      "model": "gemini-4-argon-medium",
+      "plan": "free",
+      "advertisedToSelectedAccounts": false,
+      "observations": {
+        "unknown": 2
+      },
+      "httpStatuses": {
+        "404": 2
+      },
+      "skipped": {}
+    },
+    {
+      "model": "gemini-4-argon-medium",
+      "plan": "pro-paid",
+      "advertisedToSelectedAccounts": true,
+      "observations": {
+        "success": 2
+      },
+      "httpStatuses": {
+        "200": 2
+      },
+      "skipped": {}
+    }
+  ],
+  "verification": {
+    "freshObservationsVerifiedInApiAndPostgres": 22,
+    "observationsExpiredNormally": 0,
+    "unchangedAccountModelMemberships": 48,
+    "operatorPlanMetadataPreserved": true,
+    "reviewedAliasesUnchanged": true,
+    "modelAccessShadow": true,
+    "automaticEnforcement": false
+  },
+  "checks": {
+    "focusedExistingTests": 45,
+    "passed": 45,
+    "failed": 0,
+    "applicationCodeChanged": false
+  },
+  "decision": "Keep valid global model IDs and aliases; distinguish per-account provider advertisement from global catalog union and plan entitlement."
+}
