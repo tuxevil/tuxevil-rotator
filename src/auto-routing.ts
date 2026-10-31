@@ -420,6 +420,10 @@ export function buildAutoRoutingCandidates(
     if (requirements.requiresReasoning && !entry.reasoning) { reject("reasoning"); continue; }
     if (rotator.hasActiveProvider && !rotator.hasActiveProvider(entry.providerId)) { reject("provider-inactive"); continue; }
 
+    // Auto routing has no verified OpenCode-origin context. A declared user agent
+    // is insufficient; keep restricted free Zen models available only explicitly.
+    if (entry.providerId === "opencode-zen" && (entry.modelId === "big-pickle" || entry.modelId.endsWith("-free"))) { reject("client-restricted"); continue; }
+
     const status = rotator.getAutoRoutingCandidateStatus?.(entry.modelId, entry.providerId) ?? {
       available: true,
       operationalScore: 0.5,

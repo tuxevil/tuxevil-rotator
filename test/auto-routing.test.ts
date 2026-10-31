@@ -737,3 +737,10 @@ it("does not overwrite a newer task pin when ordinary classification finishes la
   release(); await old;
   assert.equal((await selectAutoRoutingTarget(rotator, catalog, newer))?.reason, "session-continuation");
 });
+
+it("does not automatically select OpenCode-only free models for an unverified client",()=>{
+ const entries:AutoRoutingCatalogEntry[]=['big-pickle','ling-3.0-flash-fin-free'].map(modelId=>({providerId:'opencode-zen',modelId,contextWindow:100000,multimodal:false,tools:true,reasoning:false}));
+ entries.push({providerId:'ollama',modelId:'beam',contextWindow:100000,multimodal:false,tools:true,reasoning:false});
+ const result=buildAutoRoutingCandidates({getAutoRoutingCandidateStatus:()=>({available:true,operationalScore:1})},entries,{route:'openai-chat',input:{messages:[{role:'user',content:'test'}]}});
+ assert.deepEqual(result.candidates.map(c=>c.modelId),['beam']);assert.equal(result.excluded['client-restricted'],2);
+});
