@@ -260,7 +260,7 @@ export function parseOllamaNdjson(raw: string): CompatCompletion {
     }
   }
   if (!terminal) streamError ??= "Ollama response ended without a completion record";
-  if (!text && !thinkingText && toolCalls.length === 0) streamError ??= "Ollama returned no completion content";
+  if (!text.trim() && toolCalls.length === 0) streamError ??= "Ollama returned no completion content";
   return {
     ...(thinkingText ? { thinkingText } : {}),
     ...(streamError ? { streamError } : {}),

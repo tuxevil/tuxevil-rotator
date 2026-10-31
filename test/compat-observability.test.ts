@@ -1400,3 +1400,12 @@ describe("compat observability", () => {
     }
   });
 });
+
+ it("rejects empty or thinking-only Ollama streams instead of a successful stop",async()=>{
+  for(const message of [{role:"assistant",content:""},{role:"assistant",content:"",thinking:"private reasoning"}]){
+   const raw=JSON.stringify({message,done:true,eval_count:48})+"\n";
+   const res=responseStub();
+   const completion=await streamCompatSse(new Response(raw).body,new PassThrough() as unknown as IncomingMessage,res,"beam","openai",undefined,undefined,undefined,"ollama");
+   assert.match(completion.streamError??"",/without a final answer/);assert.match(res.body,/server_error/);assert.doesNotMatch(res.body,/"finish_reason":"stop"/);assert.doesNotMatch(res.body,/private reasoning/);
+  }
+ });

@@ -268,11 +268,11 @@ it("rejects Ollama error and malformed bodies instead of producing empty success
   assert.doesNotMatch(parseOllamaNdjson('{"error":"private upstream detail"}').streamError ?? "", /private upstream detail/);
 });
 
-it("preserves Ollama reasoning and output-limit finish reasons", () => {
+it("preserves reasoning and limit metadata but rejects a missing final answer", () => {
   const result = parseOllamaNdjson(JSON.stringify({ message: { content: "", thinking: "reasoning" }, done: true, done_reason: "length", eval_count: 32 }));
   assert.equal(result.thinkingText, "reasoning");
   assert.equal(result.finishReason, "MAX_TOKENS");
-  assert.equal(result.streamError, undefined);
+  assert.match(result.streamError ?? "", /no completion content/);
 });
 
 

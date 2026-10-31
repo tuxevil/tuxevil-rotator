@@ -879,10 +879,14 @@ export async function streamCompatSse(
     openaiToolCallIndex: number;
   }
   const openAiStreamingTools = new Map<number, OpenAiStreamingToolState>();
+  let ollamaChunks = 0, ollamaThinkingChars = 0, ollamaContentChars = 0, ollamaRawToolCalls = 0;
+  let ollamaTerminal = false;
   const emitOllamaLine = (line: string): void => {
     try {
       const parsed = JSON.parse(line) as Record<string, unknown>;
+      ollamaChunks++;
       if (parsed.done === true) {
+        ollamaTerminal = true;
         if (typeof parsed.prompt_eval_count === "number")
           inputTokens = parsed.prompt_eval_count;
         if (typeof parsed.eval_count === "number")
@@ -890,6 +894,9 @@ export async function streamCompatSse(
       }
       const message = isRecord(parsed.message) ? parsed.message : null;
       if (!message) return;
+      ollamaThinkingChars += typeof message.thinking === "string" ? message.thinking.length : 0;
+      ollamaContentChars += typeof message.content === "string" ? message.content.length : 0;
+      ollamaRawToolCalls += Array.isArray(message.tool_calls) ? message.tool_calls.length : 0;
       const deltaText =
         typeof message.content === "string" ? message.content : "";
       if (deltaText) {
@@ -1356,6 +1363,10 @@ export async function streamCompatSse(
     responseEvents.off?.("close", closeUpstreamForClient);
   }
 
+  if (upstream === "ollama" && !reqClosed && !streamError && !text.trim() && toolCallIndex === 0 && !anthropicHasToolUse) {
+    streamError = "Ollama completed without a final answer or tool call";
+    console.warn("[tuxevil-rotator]", JSON.stringify({ event: "empty-ollama-completion", model, chunks: ollamaChunks, terminalSeen: ollamaTerminal, upstreamContentChars: ollamaContentChars, upstreamThinkingChars: ollamaThinkingChars, upstreamToolCalls: ollamaRawToolCalls, convertedTextChars: text.length }));
+  }
   if (!reqClosed && !res.writableEnded) {
     if (streamError) {
       writeCompatStreamError(res, format, streamError);
