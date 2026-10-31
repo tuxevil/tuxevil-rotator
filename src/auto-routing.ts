@@ -605,10 +605,9 @@ async function selectAutoRoutingTargetInternal(
       if (config.shadowMode) return { candidate: candidates[0], mode: "shadow", reason: "typesafe-effort-pool-shadow" };
       return { candidate: recommended, mode: "typesafe", confidence: effortConfidence, reason: "typesafe-effort-pool-selected" };
     }
-    const effortRequiresReasoning =
-      ["high", "max"].includes(taskEffort) &&
-      Number.isFinite(effortConfidence) && effortConfidence >= 0 && effortConfidence <= 1 &&
-      effortConfidence >= minConfidence;
+    // Effort confidence is diagnostic evidence; it must not disable the
+    // conservative capability guard for a high/max classification.
+    const effortRequiresReasoning = ["high", "max"].includes(taskEffort);
     const deterministicForEffort = (reason: string): AutoRoutingSelection | null => {
       if (effortRequiresReasoning) {
         const reasoningCandidates = candidates.filter((candidate) => candidate.reasoning);

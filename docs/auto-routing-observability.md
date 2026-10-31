@@ -56,6 +56,8 @@ A discovered context length is the model's published upper bound, not a guarante
 
 Valid model-choice responses also log `classifier_selected_model`, `classifier_confidence`, `classifier_min_confidence`, `classifier_top_probability`, `classifier_probability_margin`, `classifier_effort` and `classifier_effort_confidence`, including when low confidence triggers fallback. Missing probability data is null. These describe the classifier answer, not independently measured quality, and are distinct from the served model/confidence. Full distributions and request text are omitted.
 
+In `model-choice` mode, a `high` or `max` effort classification constrains selection to reasoning-capable candidates when one is present in the eligible shortlist. This guard stays active even when effort confidence is below `minConfidence`; that threshold still governs confidence in the selected model and its fallback behavior.
+
 ## Optional effort-first pools
 
 `typesafeRouting.selectionPolicy` defaults to `model-choice`. Set it to `effort-pools` to ask Jev only for `task_effort` (low, medium, high or max), then select the best operational candidate inside an explicit pool. Model names/operational scores are excluded from classifier state in this mode. Example configuration fragment:
