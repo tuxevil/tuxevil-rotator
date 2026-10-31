@@ -93,3 +93,17 @@ it("continues only an attested Codex generation, preserves expiry and newer dest
   expired.continueCodexRefresh(old,next,'p1',400000);
   assert.equal(expired.forAccount(next,400000).observations.length,0);
 });
+
+it("recognizes a Codex rejection for the exact account/model without interpreting generic400 as entitlement",()=>{
+ const detail=JSON.stringify({detail:"The 'gpt-6.1-terra' model is not supported when using Codex with a ChatGPT account."});
+ assert.equal(classifyAccessObservation(400,detail,false,'openai-codex','gpt-6.1-terra'),'model-unavailable');
+ assert.equal(classifyAccessObservation(400,detail,false,'ollama','gpt-6.1-terra'),'unknown');
+ assert.equal(classifyAccessObservation(400,detail,false,'openai-codex','gpt-6-luna'),'unknown');
+ assert.equal(classifyAccessObservation(400,JSON.stringify({detail:'Unsupported parameter: temperature'}),false,'openai-codex','gpt-6.1-terra'),'unknown');
+ assert.equal(classifyAccessObservation(400,JSON.stringify({detail:"The 'gpt-6.1-terra' model is not supported when using Codex with a ChatGPT account. private-extra"}),false,'openai-codex','gpt-6.1-terra'),'unknown');
+ assert.equal(classifyAccessObservation(403,detail,false,'openai-codex','gpt-6.1-terra'),'unknown');
+ const store=new AccessEvidenceStore();store.observe(account,'openai-codex','gpt-6.1-terra','unknown',400,detail,false,1000);
+ const snapshot=store.snapshot(2000);assert.equal(snapshot.observations[0].kind,'model-unavailable');
+ assert.doesNotMatch(JSON.stringify(snapshot),/ChatGPT account|not supported|private-refresh/);
+ assert.equal(new AccessEvidenceStore(snapshot).forAccount(account,2000).observations[0].kind,'model-unavailable');
+});

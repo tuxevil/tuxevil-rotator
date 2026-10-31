@@ -15,9 +15,9 @@ States: allowed means documented plan access, blocked means a documented restric
 
 Rules live in `src/model-access.ts`. Entries identify provider, model family/pattern, plan IDs, declared state, source, evidence status, verification date, valid-from date, review date and optional end-of-availability/client condition. Family matching requires an exact ID or a hyphen suffix; the OpenCode free-model pattern matches the `-free` suffix. This does not enumerate every possible model.
 
-Antigravity Free/Plus restrictions and paid/trial distinctions are documented from the official model matrix. The Claude 4.6 removal uses a November 2 UTC diagnostic cutoff; upstream's exact rollout time is not asserted. Rules have no historical evidence before October 30, and need review after November 29. These dates are diagnostic defaults, not scheduled production changes.
+Antigravity Free/Plus restrictions and paid/trial distinctions are documented from the official model matrix. The Claude 4.6 removal uses a November 2 UTC diagnostic cutoff; upstream's exact rollout time is not asserted. These Antigravity rules have no historical evidence before October 30, and need review after November 29. These dates are diagnostic defaults, not scheduled production changes.
 
-Codex and Ollama seed lists are operator-reported and deliberately pending independent verification. Their declared states are shown but decisions remain unknown. Codex Luna 5.6 membership is specifically unresolved because the supplied lists differed. A generic 400 is not recorded as a plan restriction. No automatic learning or account/model block is created from this endpoint.
+The remaining Codex free-model and Ollama seed lists are operator-reported and deliberately pending independent verification. Their declared states are shown but decisions remain unknown. Exact Terra 6.1 Free/Plus rules are independently documented from official OpenAI availability and remain informational. Codex Luna 5.6 membership is specifically unresolved because the supplied lists differed. A generic 400 is not recorded as a plan restriction. No automatic learning or account/model block is created from this endpoint.
 
 Account plans are inferred only for single-provider accounts with an unambiguous stored free/plus/ultra tier. Generic Pro is unknown because paid versus trial is unresolved. Linked-provider accounts have no inferred provider plan. A plan query parameter is an explicit simulation assumption; it does not persist or change an account. An OpenCode client declaration always remains conditional, never proof of genuine origin or guaranteed provider acceptance.
 
@@ -119,3 +119,21 @@ active-account, global-catalog, provider/model switches, concurrency and respons
 limits still apply. The response exposes `diagnosticOverride` and the runner saves
 it in results. Routine matrix execution records catalog skips per model and keeps
 testing other eligible models rather than stopping the entire provider.
+
+### Explicit Codex account/model rejection
+
+A narrowly matched Codex HTTP 400 response stating that the exact requested model
+is not supported for a ChatGPT account is recorded as `model-unavailable`. The
+matcher accepts only the known complete message in `detail` or `error.message`,
+requires the Codex provider and the same model ID, and stores only the category.
+The probe returns the safe constant `provider-model-not-supported-for-account`
+as `failureReason`; the runner retains that constant. Raw provider text is never
+returned or retained. Generic 400s, unsupported-parameter errors, another model’s
+message and other providers remain unknown. This category expires after one hour
+and identifies an account-scoped rejection, not its universal subscription cause.
+
+Official OpenAI availability lists Terra 6.1 in Work/Codex for paid plans, including
+Plus. Exact Free/Plus rules cite that source with validity/review dates; they do
+not cover future model suffixes, API-key access or inferred paid-plan mappings.
+Shadow comparisons can report `wouldBlock` for the documented Free restriction,
+while `enforced` stays false and normal routing is unchanged.

@@ -3,12 +3,12 @@ import { evaluateModelAccess } from "./model-access.js";
 import type { AccountConfig } from "./types.js";
 import { getAccountIdentity, getCredentialGenerationFingerprint } from "./account-identity.js";
 import { getCachedAccessEvidence, isSettingsRepositoryInitialized, setCachedAccessEvidence } from "./db-store.js";
-export type ObservationKind = "success" | "authentication" | "quota" | "payment-or-plan" | "client-restriction" | "entitlement" | "transport" | "unknown";
+export type ObservationKind = "success" | "authentication" | "quota" | "payment-or-plan" | "client-restriction" | "entitlement" | "model-unavailable" | "transport" | "unknown";
 export interface ProviderPlanEvidence { accountId: string; provider: string; credential: string; plan: string; source: "operator"; observedAt: number; expiresAt: number }
 export interface AccessObservation { accountId: string; provider: string; credential: string; model: string; client: string; kind: ObservationKind; status: number | null; observedAt: number; expiresAt: number }
 export interface AccessEvidenceSnapshot { version: 1; plans: ProviderPlanEvidence[]; observations: AccessObservation[] }
 export const ACCESS_PLANS = ["unknown", "free", "plus", "pro-trial", "pro-paid", "ultra", "enterprise", "team"];
-export function classifyAccessObservation(status: number | null, detail = "", transport = false): ObservationKind {
+export function classifyAccessObservation(status: number | null, detail = "", transport = false, provider?: string, model?: string): ObservationKind {
   if (transport) return "transport";
   if (status !== null && status >= 200 && status < 300) return "success";
   if (status === 401) return "authentication";
@@ -16,9 +16,14 @@ export function classifyAccessObservation(status: number | null, detail = "", tr
   if (status === 402) return "payment-or-plan";
   // Require an explicit structured code; never infer plan access from generic prose/400.
   let code: unknown;
-  try { const body = JSON.parse(detail); code = body?.error?.code ?? body?.error?.type ?? body?.type; } catch { /* unknown */ }
+  let message: unknown;
+  try { const body = JSON.parse(detail); code = body?.error?.code ?? body?.error?.type ?? body?.type; message = body?.detail ?? body?.error?.message; } catch { /* unknown */ }
   if (status === 403 && code === "FreeTierError") return "client-restriction";
   if ([400, 403].includes(status ?? 0) && ["MODEL_NOT_SUPPORTED_FOR_PLAN", "model_not_available_for_plan", "insufficient_entitlement"].includes(String(code))) return "entitlement";
+  if (status === 400 && provider === "openai-codex" && typeof message === "string") {
+    const rejected = /^The ['"]([a-z0-9][a-z0-9._-]{0,255})['"] model is not supported when using Codex with a ChatGPT account\.$/.exec(message);
+    if (rejected && rejected[1] === model) return "model-unavailable";
+  }
   return "unknown";
 }
 const scope = (a: { accountId: string; provider: string; credential: string }) => JSON.stringify([a.accountId, a.provider, a.credential]);
@@ -33,7 +38,7 @@ export class AccessEvidenceStore {
       if (p && [p.accountId, p.provider, p.credential, p.plan].every(x => typeof x === "string") && ACCESS_PLANS.includes(p.plan) && Number.isFinite(p.observedAt) && Number.isFinite(p.expiresAt)) this.plans.push({ accountId: p.accountId, provider: p.provider, credential: p.credential, plan: p.plan, source: "operator", observedAt: p.observedAt, expiresAt: p.expiresAt });
     }
     if (Array.isArray(value.observations)) for (const o of value.observations.slice(-2000)) {
-      if (o && [o.accountId, o.provider, o.credential, o.model, o.client].every(x => typeof x === "string") && ["success", "authentication", "quota", "payment-or-plan", "client-restriction", "entitlement", "transport", "unknown"].includes(o.kind) && (o.status === null || Number.isInteger(o.status)) && Number.isFinite(o.observedAt) && Number.isFinite(o.expiresAt)) this.observations.push({ accountId: o.accountId, provider: o.provider, credential: o.credential, model: o.model, client: o.client, kind: o.kind, status: o.status, observedAt: o.observedAt, expiresAt: o.expiresAt });
+      if (o && [o.accountId, o.provider, o.credential, o.model, o.client].every(x => typeof x === "string") && ["success", "authentication", "quota", "payment-or-plan", "client-restriction", "entitlement", "model-unavailable", "transport", "unknown"].includes(o.kind) && (o.status === null || Number.isInteger(o.status)) && Number.isFinite(o.observedAt) && Number.isFinite(o.expiresAt)) this.observations.push({ accountId: o.accountId, provider: o.provider, credential: o.credential, model: o.model, client: o.client, kind: o.kind, status: o.status, observedAt: o.observedAt, expiresAt: o.expiresAt });
     }
   }
   snapshot(now = Date.now()): AccessEvidenceSnapshot {
@@ -50,7 +55,7 @@ export class AccessEvidenceStore {
   }
   observe(account: AccountConfig, provider: string, model: string, client: string, status: number | null, detail = "", transport = false, now = Date.now()): void {
     if (model.length > 256) return;
-    const kind = classifyAccessObservation(status, detail, transport);
+    const kind = classifyAccessObservation(status, detail, transport, provider, model);
     const ttl = kind === "success" ? 86400000 : ["authentication", "quota", "transport"].includes(kind) ? 300000 : 3600000;
     const entry: AccessObservation = { accountId: getAccountIdentity(account), provider, credential: getCredentialGenerationFingerprint(account, provider), model: model.slice(0, 256), client, status, kind, observedAt: now, expiresAt: now + ttl };
     this.snapshot(now);

@@ -75,11 +75,11 @@ export async function serveAccessProbe(req: IncomingMessage, res: ServerResponse
       if (forwarded.response.ok && !completedAccessProbe(provider, detail)) status = null;
     } catch { status = null; transport = true; }
     finally { clearTimeout(timer); res.off("close", disconnect); rotator.finishRequest(account, model, provider); }
-    const kind = classifyAccessObservation(status, detail, transport);
+    const kind = classifyAccessObservation(status, detail, transport, provider, model);
     accessEvidenceStore().observe(account.config, provider, model, "unknown", status, detail, transport);
     await persistAccessEvidence();
     const observation = accessEvidenceStore().forAccount(account.config).observations.find(o => o.provider === provider && o.model === model && o.client === "unknown");
-    send(200, { provider, model, diagnosticOverride, catalogAvailability: catalogState, kind, status, observedAt: observation?.observedAt, expiresAt: observation?.expiresAt, durationMs: Date.now() - started, clientVerified: false, enforced: false });
+    send(200, { provider, model, failureReason: kind === "model-unavailable" ? "provider-model-not-supported-for-account" : undefined, diagnosticOverride, catalogAvailability: catalogState, kind, status, observedAt: observation?.observedAt, expiresAt: observation?.expiresAt, durationMs: Date.now() - started, clientVerified: false, enforced: false });
   } catch { send(400, { error: "Probe input or persistence unavailable" }); }
   finally { running = false; }
 }

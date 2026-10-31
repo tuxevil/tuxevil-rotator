@@ -41,7 +41,7 @@ if(execute){
   const value=await response.json();
   if(value.reason==='probe-busy') throw Error('Another access probe is running; resume later');
   // Never persist upstream bodies or arbitrary endpoint errors.
-  const result={...safe,account,apiStatus:response.status,...(response.ok?Object.fromEntries(['kind','status','observedAt','expiresAt','durationMs','enforced','clientVerified','diagnosticOverride','catalogAvailability'].map(k=>[k,value[k]])):{skipped:['account-unavailable','provider-disabled','model-disabled','account-busy','model-not-advertised','catalog-unknown','catalog-stale'].includes(value.reason)?value.reason:'account-busy-disabled-or-unavailable'})};
+  const result={...safe,account,apiStatus:response.status,...(response.ok?Object.fromEntries(['kind','status','observedAt','expiresAt','durationMs','enforced','clientVerified','diagnosticOverride','catalogAvailability','failureReason'].map(k=>[k,value[k]])):{skipped:['account-unavailable','provider-disabled','model-disabled','account-busy','model-not-advertised','catalog-unknown','catalog-stale'].includes(value.reason)?value.reason:'account-busy-disabled-or-unavailable'})};
   results.push(result);
   if(['authentication','quota','transport'].includes(result.kind)||['account-unavailable','provider-disabled','account-busy'].includes(result.skipped))stopped.set(key,result.kind??result.skipped);
   await save();

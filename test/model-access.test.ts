@@ -41,3 +41,13 @@ it("does not expose credentials or infer linked provider plans", () => {
   params.set("provider", "ollama"); assert.throws(() => buildModelAccessReport(config, params));
   params.set("accountId", "absent"); assert.throws(() => buildModelAccessReport(config, params));
 });
+
+it("documents exact Terra6.1 Free/Plus policy without extending it to future variants or older dates",()=>{
+ const query={provider:'openai-codex',model:'gpt-6.1-terra',at:'2026-10-31'};
+ assert.equal(evaluateModelAccess({...query,plan:'free'}).state,'blocked');
+ assert.equal(evaluateModelAccess({...query,plan:'plus'}).state,'allowed');
+ assert.equal(evaluateModelAccess({...query,plan:'free',model:'gpt-6.1-terra-future'}).state,'unknown');
+ assert.equal(evaluateModelAccess({...query,plan:'free',at:'2026-10-25'}).state,'unknown');
+ assert.equal(evaluateModelAccess({...query,plan:'free',at:'2026-12-01'}).state,'unknown');
+ assert.equal(evaluateModelAccess({...query,plan:'free'}).informational,true);
+});
