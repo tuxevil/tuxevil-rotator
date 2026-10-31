@@ -479,6 +479,14 @@ export class DynamicModelRegistry {
     return match;
   }
 
+  getAccountSnapshot(accountId: string, credentialGeneration: string): { observedAt: number; models: string[] } | undefined {
+    if (!this.isAccountGenerationActive(accountId, credentialGeneration)) return undefined;
+    const key = accountKey(accountId);
+    const models = this.accountModels.get(key), observedAt = this.snapshotTimes.get(key);
+    if (!models || observedAt === undefined) return undefined;
+    return { observedAt, models: Array.from(models.values(), model => model.id).sort() };
+  }
+
   hasModelForAccount(accountId: string, id: string): boolean {
     return this.accountModelOwnership
       .get(accountKey(accountId))

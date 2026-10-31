@@ -1,3 +1,4 @@
+import { antigravityCatalogEvidence, advertisedModelState, type ProviderCatalogEvidence } from "./provider-catalog-evidence.js";
 import { readLimitedBody } from "./body-limit.js";
 import { isSettingsRepositoryInitialized } from "./db-store.js";
 import { accessEvidenceStore, persistAccessEvidence, ACCESS_PLANS, type ProviderPlanEvidence, type AccessObservation } from "./access-evidence.js";
@@ -6,8 +7,8 @@ import type { Config } from "./types.js";
 import { getAccountIdentity } from "./account-identity.js";
 import { MODEL_ACCESS_RULES, evaluateModelAccess, type AccessDecision } from "./model-access.js";
 
-export interface AccessAccount { id: string; label: string; providers: string[]; inferredPlan: string; providerPlans: Omit<ProviderPlanEvidence, "credential">[]; observations: Omit<AccessObservation, "credential">[] }
-export interface AccessReport { informational: true; rules: typeof MODEL_ACCESS_RULES; accounts: AccessAccount[]; decision?: AccessDecision; accountId?: string; planSource?: "query-assumption" | "single-provider-account" | "provider-declaration" | "unknown" }
+export interface AccessAccount { id: string; label: string; providers: string[]; inferredPlan: string; providerPlans: Omit<ProviderPlanEvidence, "credential">[]; observations: Omit<AccessObservation, "credential">[]; providerCatalogs: ProviderCatalogEvidence[] }
+export interface AccessReport { informational: true; rules: typeof MODEL_ACCESS_RULES; accounts: AccessAccount[]; decision?: AccessDecision; accountId?: string; catalogAvailability?: { state: "advertised" | "not-advertised" | "unknown"; source: string | null; observedAt: number | null; expiresAt: number | null }; planSource?: "query-assumption" | "single-provider-account" | "provider-declaration" | "unknown" }
 export function buildModelAccessReport(config: Config, params: URLSearchParams): AccessReport {
   const accounts = config.accounts.map(account => {
     const providers = [...new Set(account.credentials?.map(c => c.provider) ?? [account.provider ?? "google-antigravity"])];
@@ -17,6 +18,7 @@ export function buildModelAccessReport(config: Config, params: URLSearchParams):
     const evidence = accessEvidenceStore().forAccount(account);
     return { id: getAccountIdentity(account), label: account.label ?? account.email, providers, inferredPlan,
       providerPlans: evidence.plans.map(({ credential: _credential, ...plan }) => plan),
+      providerCatalogs: providers.includes("google-antigravity") ? [antigravityCatalogEvidence(account, config.quotaPollIntervalMs)] : [],
       observations: evidence.observations.map(({ credential: _credential, ...observation }) => observation) };
   });
   const report: AccessReport = { informational: true, rules: MODEL_ACCESS_RULES, accounts };
@@ -31,6 +33,8 @@ export function buildModelAccessReport(config: Config, params: URLSearchParams):
   const plan = params.get("plan") || declared?.plan || account?.inferredPlan || "unknown";
   report.planSource = params.get("plan") ? "query-assumption" : declared ? "provider-declaration" : account?.inferredPlan !== "unknown" && account ? "single-provider-account" : "unknown";
   report.accountId = accountId ?? undefined;
+  const catalog = account?.providerCatalogs.find(c => c.provider === provider);
+  report.catalogAvailability = { state: catalog ? advertisedModelState(catalog, model) : "unknown", source: catalog?.source ?? null, observedAt: catalog?.observedAt ?? null, expiresAt: catalog?.expiresAt ?? null };
   report.decision = evaluateModelAccess({ provider, model, plan, client: params.get("client") ?? undefined, at: params.get("at") ?? undefined });
   return report;
 }

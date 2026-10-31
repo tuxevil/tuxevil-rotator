@@ -38,3 +38,22 @@ it("matrix dry run is read-only; disabled models do not stop others; resume avoi
     assert.equal(result.results.every((r: {provider:string})=>r.provider==="ollama"),true);
   } finally { server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));await rm(directory,{recursive:true,force:true}); }
 });
+
+it("matrix records catalog skips per model and forwards only an explicit diagnostic override",async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'catalog-runner-'));const output=join(directory,'results.json');let calls=0;
+ const server=createServer(async(req,res)=>{
+  res.setHeader('Content-Type','application/json');
+  if(req.url==='/api/model-access'){res.end(JSON.stringify({accounts:[{id:'private-id',providers:['google-antigravity'],providerPlans:[]}]}));return;}
+  if(req.url==='/api/catalog'){res.end(JSON.stringify({models:['gemini-3.8-flash-medium','gemini-4-argon-medium','claude-sonnet-4-6'].map(id=>({id,providerId:'google-antigravity',offReason:null}))}));return;}
+  const chunks:Buffer[]=[];for await(const chunk of req)chunks.push(chunk);const body=JSON.parse(Buffer.concat(chunks).toString());calls++;
+  if(body.allowUnadvertised!==true&&body.model!=='gemini-4-argon-medium'){res.statusCode=409;res.end(JSON.stringify({reason:body.model.startsWith('claude')?'catalog-stale':'model-not-advertised'}));return;}
+  res.end(JSON.stringify({kind:'success',status:200,observedAt:Date.now(),expiresAt:Date.now()+60000,diagnosticOverride:body.allowUnadvertised===true,enforced:false}));
+ });
+ server.listen(0,'127.0.0.1');await once(server,'listening');const address=server.address();assert.ok(address&&typeof address!=='string');
+ const run=(args:string[])=>promisify(execFile)(process.execPath,['scripts/probe-model-access.mjs',...args],{env:{...process.env,ROTATOR_URL:`http://127.0.0.1:${address.port}`,ROTATOR_ADMIN_TOKEN:'test',ROTATOR_PROBE_OUTPUT:output}});
+ try{
+  await run(['--execute']);let result=JSON.parse(await readFile(output,'utf8'));assert.equal(calls,3);
+  assert.equal(result.results[0].skipped,'model-not-advertised');assert.equal(result.results[1].kind,'success');assert.equal(result.results[2].skipped,'catalog-stale');assert.equal(result.allowUnadvertised,false);
+  await run(['--execute','--allow-unadvertised']);result=JSON.parse(await readFile(output,'utf8'));assert.equal(calls,6);assert.equal(result.allowUnadvertised,true);assert.equal(result.results.every((r:{diagnosticOverride:boolean})=>r.diagnosticOverride),true);
+ }finally{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));await rm(directory,{recursive:true,force:true});}
+});

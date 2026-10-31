@@ -1,3 +1,4 @@
+import { antigravityCatalogEvidence, advertisedModelState } from "./provider-catalog-evidence.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isSettingsRepositoryInitialized } from "./db-store.js";
 import { isRecord } from "./compat/schema-sanitizer.js";
@@ -32,6 +33,8 @@ export async function serveAccessProbe(req: IncomingMessage, res: ServerResponse
   try {
     const input = JSON.parse((await readLimitedBody(req, 4096)).toString("utf8"));
     const { accountId, provider, model } = input;
+    if (input.allowUnadvertised !== undefined && typeof input.allowUnadvertised !== "boolean") { send(400, { error: "allowUnadvertised must be boolean" }); return; }
+    const diagnosticOverride = input.allowUnadvertised === true;
     if (typeof accountId !== "string" || typeof provider !== "string" || !isKnownProvider(provider) || typeof model !== "string" || model.length > 256) { send(400, { error: "Invalid account, provider or model" }); return; }
     const account = rotator.getBenchmarkAccounts().find(a => getAccountIdentity(a.config) === accountId);
     const providers = account?.config.credentials?.map(c => c.provider) ?? [account?.config.provider ?? "google-antigravity"];
@@ -39,6 +42,11 @@ export async function serveAccessProbe(req: IncomingMessage, res: ServerResponse
     if (!listCatalogModels(rotator).some(m => m.providerId === provider && m.id === model)) { send(400, { error: "Model is not in the provider catalog" }); return; }
     const unavailable = rotator.isProviderOffForAccount(account, provider) ? "provider-disabled" : isProviderModelOff(rotator, provider, model) ? "model-disabled" : account.inFlightRequests >= (rotator.getConfig().maxConcurrentRequestsPerAccount ?? 5) ? "account-busy" : null;
     if (unavailable) { send(409, { error: "Probe unavailable", reason: unavailable }); return; }
+    const catalog = provider === "google-antigravity" ? antigravityCatalogEvidence(account.config, rotator.getConfig().quotaPollIntervalMs) : undefined;
+    const catalogState = catalog ? advertisedModelState(catalog, model) : "unknown";
+    if (catalog && catalogState !== "advertised" && !diagnosticOverride) {
+      send(409, { error: "Account catalog does not currently advertise this model", reason: catalog.freshness === "fresh" ? "model-not-advertised" : `catalog-${catalog.freshness}`, catalogAvailability: { state: catalogState, source: catalog.source, observedAt: catalog.observedAt, expiresAt: catalog.expiresAt } }); return;
+    }
     const adapter = getProviderAdapter(provider);
     const body = structuredClone(adapter.getBenchmark(account).body);
     body.model = model;
@@ -71,7 +79,7 @@ export async function serveAccessProbe(req: IncomingMessage, res: ServerResponse
     accessEvidenceStore().observe(account.config, provider, model, "unknown", status, detail, transport);
     await persistAccessEvidence();
     const observation = accessEvidenceStore().forAccount(account.config).observations.find(o => o.provider === provider && o.model === model && o.client === "unknown");
-    send(200, { provider, model, kind, status, observedAt: observation?.observedAt, expiresAt: observation?.expiresAt, durationMs: Date.now() - started, clientVerified: false, enforced: false });
+    send(200, { provider, model, diagnosticOverride, catalogAvailability: catalogState, kind, status, observedAt: observation?.observedAt, expiresAt: observation?.expiresAt, durationMs: Date.now() - started, clientVerified: false, enforced: false });
   } catch { send(400, { error: "Probe input or persistence unavailable" }); }
   finally { running = false; }
 }

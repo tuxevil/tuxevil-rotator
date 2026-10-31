@@ -7,6 +7,8 @@ import { masker } from "../state/store.js";
 import { Panel, Button } from "../components/ui.js";
 
 export function ModelAccessPanel(): JSX.Element {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(timer); }, []);
   const [report, setReport] = useState<AccessReport | null>(null);
   const [accountId, setAccount] = useState(query.value.get("accessAccount") ?? "");
   const [provider, setProvider] = useState("google-antigravity");
@@ -31,6 +33,8 @@ export function ModelAccessPanel(): JSX.Element {
   useEffect(() => {
     if (selected && !selected.providers.includes(provider)) setProvider(selected.providers[0] ?? "google-antigravity");
   }, [selected, provider]);
+  const catalog = selected?.providerCatalogs?.find(c => c.provider === provider);
+  const catalogFreshness = catalog?.freshness === "fresh" && catalog.expiresAt !== null && catalog.expiresAt <= now ? "stale" : catalog?.freshness;
   const declaredPlan = selected?.providerPlans.find(p => p.provider === provider);
   const effectivePlan = plan || declaredPlan?.plan || selected?.inferredPlan || "unknown";
   const rules = report?.rules.filter(r => r.modelPrefix.toLowerCase().includes(ruleFilter.toLowerCase()) && r.provider === provider && ((effectivePlan === "unknown" || !accountId && !plan) || r.plans.includes(effectivePlan) || r.plans.includes("*"))) ?? [];
@@ -67,10 +71,15 @@ export function ModelAccessPanel(): JSX.Element {
     <Button onClick={() => { void savePlan(); }} disabled={busy || !accountId || !plan}>Save provider plan declaration</Button>
     <Button onClick={() => { void inspect(); }} disabled={busy || !report || !model}>{busy ? "Checking…" : "Explain access"}</Button>
     {error && <p role="alert">{error}</p>}
-    {decisionKey === formKey && decision?.decision && <div role="status"><strong>{decision.decision.state}</strong><p>{decision.decision.reason}</p><p>Plan source: {decision.planSource}. This result does not grant access.</p></div>}
+    {decisionKey === formKey && decision?.decision && <div role="status"><strong>{decision.decision.state}</strong><p>{decision.decision.reason}</p><p>Plan source: {decision.planSource}. This result does not grant access.</p><p>Account catalog: {decision.catalogAvailability?.expiresAt != null && decision.catalogAvailability.expiresAt <= now ? "unknown (expired snapshot)" : decision.catalogAvailability?.state ?? "unknown"}.</p></div>}
     {selected && <details><summary>Recent account observations ({selected.observations.filter(o => o.provider === provider).length})</summary>
       <p>Latest result per model and declared client. No plan inference or routing blocks are created.</p>
       <div class="table-wrap"><table><thead><tr><th>Model</th><th>Client</th><th>Result</th><th>HTTP</th><th>Observed</th><th>Expires</th></tr></thead><tbody>{selected.observations.filter(o => o.provider === provider).map(o => <tr key={`${o.provider}/${o.model}/${o.client}`}><td>{o.model}</td><td>{o.client}</td><td>{o.kind}</td><td>{o.status ?? "—"}</td><td>{new Date(o.observedAt).toISOString()}</td><td>{new Date(o.expiresAt).toISOString()}</td></tr>)}</tbody></table></div>
+    </details>}
+    {selected && <details><summary>Provider-advertised models ({catalog?.observedAt == null ? "unknown" : catalog.models.length})</summary>
+      <p>{catalog ? `Source: ${catalog.source}. Snapshot: ${catalogFreshness}. Observed: ${catalog.observedAt === null ? "unknown" : new Date(catalog.observedAt).toISOString()}. Valid until: ${catalog.expiresAt === null ? "unknown" : new Date(catalog.expiresAt).toISOString()}.` : "No account-level provider catalog is available for this provider."}</p>
+      <p>Advertisement is separate from subscription rules and observed access. Missing or stale data means unknown.</p>
+      {catalog && <ul>{catalog.models.map(id => <li key={id}>{id}</li>)}</ul>}
     </details>}
     <label>Filter rule models<input value={ruleFilter} onInput={e => setRuleFilter(e.currentTarget.value)} /></label>
     <div class="table-wrap"><table><thead><tr><th>Model / family</th><th>Plans</th><th>Declared access</th><th>Evidence</th><th>Availability ends</th><th>Notes / source</th></tr></thead><tbody>{rules.map(r => <tr key={r.id}><td>{r.modelPrefix}</td><td>{r.plans.join(", ")}</td><td>{r.state}</td><td>{r.evidence}<br />{r.verifiedAt}<br />Review: {r.reviewAfter}</td><td>{r.validUntil ?? "Not specified"}</td><td>{r.note}<br />{r.source.startsWith("https://") ? <a href={r.source} target="_blank" rel="noreferrer">Source</a> : r.source}</td></tr>)}</tbody></table></div>

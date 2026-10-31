@@ -89,3 +89,33 @@ fails closed rather than authorizing stale evidence.
 
 The batch runner accepts `ROTATOR_PROBE_PROVIDERS=openai-codex` to restrict a
 validation run to Codex without changing model switches or other providers.
+
+### Account-advertised catalogs
+
+Admin access reports include `accounts[].providerCatalogs` for Antigravity, with
+`source: "fetchAvailableModels"`, `observedAt`, `expiresAt`, `freshness` and exact
+`models`. The registry returns a copy scoped to the active credential generation.
+An empty fresh list means no models were advertised; an absent, future-dated or
+expired snapshot means unknown availability. Freshness lasts two configured quota
+poll intervals, with a one-minute minimum and a 30-minute maximum. Other providers
+currently return no account-level catalogs; their availability remains unknown.
+
+Account/model queries include `catalogAvailability`, separately from the existing
+subscription-rule decision. The Model Access panel lists the selected account's
+last advertised IDs, source and dates; it marks expired snapshots stale even while
+the page remains open. This information does not grant access or create universal
+plan entitlement rules.
+
+Routine Antigravity probes require a fresh account catalog advertising the resolved
+upstream model (including configured aliases). Otherwise the admin API returns
+HTTP 409 with `model-not-advertised`, `catalog-stale` or `catalog-unknown` before
+refreshing authentication or contacting the model endpoint. These skips do not
+create provider-failure observations. Other providers retain their existing probe
+behavior until account-specific catalog sources are available.
+
+An explicit admin request with `allowUnadvertised: true`, or the runner flag
+`--allow-unadvertised`, bypasses only this account-catalog check. The existing
+active-account, global-catalog, provider/model switches, concurrency and response
+limits still apply. The response exposes `diagnosticOverride` and the runner saves
+it in results. Routine matrix execution records catalog skips per model and keeps
+testing other eligible models rather than stopping the entire provider.

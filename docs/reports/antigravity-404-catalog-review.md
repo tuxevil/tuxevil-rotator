@@ -33,3 +33,5 @@ The recheck recorded 22 observations: 10 success, 10 unknown and two quota resul
 No application code or model switches changed. Forty-five existing dynamic-catalog and model-routing/snapshot tests passed; whitespace validation passed. Valid IDs and aliases are retained. Follow-up `pi-antigravity-rotator-np6t` will expose account-level advertised availability and freshness in access diagnostics, and use it to scope routine probes while preserving a deliberate diagnostic override.
 
 Public results contain aggregate metadata only. Private catalog receipts and pre/post access metadata are kept in the operator state directory. Temporary administrative authorization is removed after verification.
+
+Follow-up `np6t` is implemented. See [Account-advertised catalogs and scoped probes](account-advertised-catalogs.md) for the API, panel, probe guard and live verification.
