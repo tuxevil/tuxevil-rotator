@@ -69,6 +69,11 @@ export interface AutoRoutingRequest {
   isModelAllowed?: (model: string) => boolean;
 }
 
+const aaCandidatesByDecision = new WeakMap<object, {
+  shortlist: AutoRoutingCandidate[];
+  effortPool?: AutoRoutingCandidate[];
+}>();
+
 interface RoutingRequirements {
   hasImages: boolean;
   hasTools: boolean;
@@ -497,6 +502,7 @@ async function selectAutoRoutingTargetInternal(
   const config = rotator.getConfig?.().typesafeRouting;
   const excerptLimit = Math.max(256, Math.min(50_000, config?.maxExcerptChars ?? DEFAULT_MAX_EXCERPT_CHARS));
   const { candidates, requirements, excluded, eligibleCount } = buildAutoRoutingCandidates(rotator, catalog, request);
+  aaCandidatesByDecision.set(diagnostics, { shortlist: candidates });
   Object.assign(diagnostics, { excluded, eligible_count: eligibleCount, shortlist_count: candidates.length });
   if (candidates.length === 0) return null;
 
@@ -596,6 +602,9 @@ async function selectAutoRoutingTargetInternal(
       const members = new Set(pool);
       const eligible = buildAutoRoutingCandidates(rotator,
         catalog.filter(entry => members.has(`${entry.providerId}/${entry.modelId}`)), request);
+      const candidateSets = aaCandidatesByDecision.get(diagnostics) ?? { shortlist: candidates };
+      candidateSets.effortPool = eligible.candidates;
+      aaCandidatesByDecision.set(diagnostics, candidateSets);
       const recommended = eligible.candidates[0];
       Object.assign(diagnostics, {
         effort_pool_eligible_count: eligible.eligibleCount,
@@ -816,20 +825,11 @@ export async function selectAutoRoutingTarget(
       console.info("[tuxevil-rotator]",JSON.stringify({event:"auto-routing-access-shadow",enforced:false,projection:"deterministic-operational",actual_model:selection?.candidate.modelId??null,actual_provider:selection?.candidate.providerId??null,would_select_model:alternative?.modelId??null,would_select_provider:alternative?.providerId??null,excluded:evidence.filter(e=>e.status.wouldExclude).map(e=>({provider:e.entry.providerId,model:e.entry.modelId,...e.status})),rejected_account_combinations:evidence.reduce((n,e)=>n+e.status.rejectedAccounts,0)}));
     } catch { /* Shadow must never alter routing or fail a request. */ }
   }
-  if (selection && config?.shadowMode === true) {
+  if (selection) {
     try {
-      const broadCandidates = buildAutoRoutingCandidates(rotator, catalog, request).candidates;
-      const effort = typeof diagnostics.classifier_effort === "string" ? diagnostics.classifier_effort : "";
-      const configuredEffortPool = effort && config?.selectionPolicy === "effort-pools"
-        ? config.effortPools?.[effort as keyof NonNullable<typeof config.effortPools>]
-        : undefined;
-      const effortPoolCandidates = configuredEffortPool?.length
-        ? buildAutoRoutingCandidates(
-          rotator,
-          catalog.filter(entry => configuredEffortPool.includes(`${entry.providerId}/${entry.modelId}`)),
-          request,
-        ).candidates
-        : [];
+      const candidateSets = aaCandidatesByDecision.get(diagnostics);
+      const broadCandidates = candidateSets?.shortlist ?? [selection.candidate];
+      const effortPoolCandidates = candidateSets?.effortPool ?? [];
       const servedCandidates = selection.reason === "typesafe-effort-pool-selected"
         ? effortPoolCandidates
         : broadCandidates;
