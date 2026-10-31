@@ -63,3 +63,33 @@ it("preserves the explicit opt-in shadow flag through configuration defaults", a
   assert.equal(applyConfigDefaults({ ...base, modelAccessShadow: true }).modelAccessShadow, true);
   assert.equal(validateConfig({ ...base, modelAccessShadow: "yes" }).ok, false);
 });
+
+it("continues only an attested Codex generation, preserves expiry and newer destination evidence", () => {
+  const old: AccountConfig={email:"principal@example.test",credentials:[{provider:"openai-codex",providerAccountId:"p1",refreshToken:"old"},{provider:"ollama",apiKey:"key"}]};
+  const next=structuredClone(old);next.credentials![0].refreshToken="new";
+  const store=new AccessEvidenceStore();store.declarePlan(old,"openai-codex","free",1000);store.observe(old,"openai-codex","gpt-6-luna","unknown",200,"",false,1000);
+  store.declarePlan(old,"ollama","free",1000);
+  assert.equal(store.continueCodexRefresh(old,next,"different",2000),false);
+  assert.equal(store.forAccount(next,2000).observations.length,0);
+  const original=store.forAccount(old,2000);
+  store.declarePlan(next,"openai-codex","plus",2000);
+  store.observe(next,"openai-codex","gpt-6-luna","unknown",429,"",false,2000);
+  assert.equal(store.continueCodexRefresh(old,next,"p1",3000),true);
+  const visible=store.forAccount(next,3000);
+  assert.equal(visible.plans.find(p=>p.provider==='openai-codex')?.plan,'plus');
+  assert.equal(visible.observations[0].kind,'quota');
+  assert.equal(visible.observations[0].observedAt,2000);
+  assert.deepEqual(visible.plans.find(p=>p.provider==='ollama'),original.plans.find(p=>p.provider==='ollama'));
+  const replaced=structuredClone(next);replaced.credentials![0].refreshToken='manual';
+  assert.equal(store.forAccount(replaced,3000).observations.length,0);
+  const refreshedManual=structuredClone(replaced);refreshedManual.credentials![0].refreshToken='manual-refreshed';
+  assert.equal(store.continueCodexRefresh(replaced,refreshedManual,'p1',3000),false);
+  assert.equal(store.forAccount(refreshedManual,3000).observations.length,0);
+  const otherPrincipal=structuredClone(next);otherPrincipal.credentials![0].providerAccountId='p2';
+  assert.equal(store.continueCodexRefresh(next,otherPrincipal,'p1',3000),false);
+  const renamed=structuredClone(next);renamed.email='another@example.test';
+  assert.equal(store.continueCodexRefresh(next,renamed,'p1',3000),false);
+  const expired=new AccessEvidenceStore();expired.observe(old,'openai-codex','gpt-6-luna','unknown',429,'',false,1000);
+  expired.continueCodexRefresh(old,next,'p1',400000);
+  assert.equal(expired.forAccount(next,400000).observations.length,0);
+});

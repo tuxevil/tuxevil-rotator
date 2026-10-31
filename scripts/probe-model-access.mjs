@@ -15,7 +15,9 @@ const wanted = {
  'opencode-zen':catalog.models.filter(m=>m.providerId==='opencode-zen'&&(m.id.endsWith('-free')||m.id==='big-pickle')).map(m=>m.id),
 };
 const missing = Object.entries(wanted).flatMap(([provider,models])=>models.filter(model=>!catalog.models.some(m=>m.providerId===provider&&m.id===model)).map(model=>({provider,model})));
-const scopes = report.accounts.flatMap(a=>a.providers.flatMap(provider=>(wanted[provider]??[]).filter(model=>catalog.models.some(m=>m.providerId===provider&&m.id===model)).map(model=>({accountId:a.id,provider,model,plan:a.providerPlans.find(p=>p.provider===provider)?.plan??'unknown'}))));
+const selectedProviders = process.env.ROTATOR_PROBE_PROVIDERS?.split(',').map(p=>p.trim()).filter(Boolean);
+if(selectedProviders?.some(p=>!Object.hasOwn(wanted,p)))throw Error('Unknown ROTATOR_PROBE_PROVIDERS');
+const scopes = report.accounts.flatMap(a=>a.providers.filter(p=>!selectedProviders||selectedProviders.includes(p)).flatMap(provider=>(wanted[provider]??[]).filter(model=>catalog.models.some(m=>m.providerId===provider&&m.id===model)).map(model=>({accountId:a.id,provider,model,plan:a.providerPlans.find(p=>p.provider===provider)?.plan??'unknown'}))));
 const execute = process.argv.includes('--execute');
 const output = process.env.ROTATOR_PROBE_OUTPUT ?? '/tmp/model-access-probe-results.json';
 const previous = process.argv.includes('--resume') ? JSON.parse(await readFile(output, 'utf8')) : null;

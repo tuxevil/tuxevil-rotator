@@ -1,7 +1,11 @@
 import type { AccountConfig, AccountRuntime, ProviderCredential } from "../../types.js";
 import { loadConfig, saveAccountsConfig } from "../../config-storage.js";
 import { getCredential } from "../credential-helpers.js";
-import { CODEX_PROVIDER_ID } from "./oauth.js";
+import { CODEX_PROVIDER_ID, type CodexIdentity } from "./oauth.js";
+import { getAccountIdentity, getCredentialGenerationFingerprint } from "../../account-identity.js";
+import { accessEvidenceStore, persistAccessEvidence } from "../../access-evidence.js";
+import { isSettingsRepositoryInitialized } from "../../db-store.js";
+import { logger } from "../../logger.js";
 
 export interface ProviderTokenState {
   accessToken: string | null;
@@ -44,23 +48,26 @@ const persistenceLocks = new Map<string, Promise<void>>();
 export async function persistCodexRefreshToken(
   account: AccountRuntime,
   refreshToken: string,
+  verifiedIdentity?: CodexIdentity,
 ): Promise<void> {
-  await persistCodexCredentialRefresh(loadConfig(), account, refreshToken);
+  await persistCodexCredentialRefresh(loadConfig, account, refreshToken, verifiedIdentity);
 }
 
 /** Persist one credential while preserving every sibling account/provider. */
 export async function persistCodexCredentialRefresh(
-  config: Parameters<typeof saveAccountsConfig>[0],
+  configOrLoad: Parameters<typeof saveAccountsConfig>[0] | (() => Parameters<typeof saveAccountsConfig>[0]),
   account: AccountRuntime,
   refreshToken: string,
+  verifiedIdentity?: CodexIdentity,
 ): Promise<void> {
   const email = account.config.email.toLowerCase();
   const previous = persistenceLocks.get(email) ?? Promise.resolve();
   const next = previous.catch(() => undefined).then(async () => {
-    const accountConfig = config.accounts.find(
-      (entry) => entry.email.toLowerCase() === email,
-    );
+    const config = typeof configOrLoad === "function" ? configOrLoad() : configOrLoad;
+    const before = structuredClone(account.config);
+    const accountConfig = config.accounts.find(entry => getAccountIdentity(entry) === getAccountIdentity(before));
     if (!accountConfig) throw new Error("Codex account disappeared while refreshing");
+    if (getCredentialGenerationFingerprint(accountConfig, CODEX_PROVIDER_ID) !== getCredentialGenerationFingerprint(before, CODEX_PROVIDER_ID)) throw new Error("Codex credential changed during refresh; retry with current credentials");
     const credentials = [...(accountConfig.credentials ?? account.config.credentials ?? [])];
     const index = credentials.findIndex((entry) => entry.provider === CODEX_PROVIDER_ID);
     if (index < 0) throw new Error("Codex credential is no longer present; re-authenticate");
@@ -68,6 +75,15 @@ export async function persistCodexCredentialRefresh(
     accountConfig.credentials = credentials;
     account.config.credentials = credentials;
     await saveAccountsConfig(config);
+    // No historical rebinding: transfer only the exact generation used by this
+    // successful provider exchange, after the replacement credential is durable.
+    if (verifiedIdentity?.providerAccountId && isSettingsRepositoryInitialized()) {
+      const changed = accessEvidenceStore().continueCodexRefresh(before, account.config, verifiedIdentity.providerAccountId);
+      if (changed) {
+        try { await persistAccessEvidence(); }
+        catch { logger.child("provider/openai-codex").warn("Codex credential saved; access evidence persistence needs retry"); }
+      }
+    }
   });
   persistenceLocks.set(email, next);
   try {

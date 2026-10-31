@@ -1,0 +1,135 @@
+{
+  "generatedAt": "2026-10-31T02:31:46.950Z",
+  "scope": "Codex only; selected catalog models",
+  "combinations": 100,
+  "observedCombinations": 48,
+  "skippedCombinations": 52,
+  "observations": {
+    "success": 24,
+    "unknown": 22,
+    "quota": 2
+  },
+  "skipped": {
+    "model-disabled": 50,
+    "quota": 2
+  },
+  "modelPlans": [
+    {
+      "model": "gpt-5.6-luna",
+      "plan": "free",
+      "observations": {},
+      "httpStatuses": {},
+      "skipped": {
+        "model-disabled": 24
+      }
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "plan": "plus",
+      "observations": {},
+      "httpStatuses": {},
+      "skipped": {
+        "model-disabled": 1
+      }
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "plan": "free",
+      "observations": {},
+      "httpStatuses": {},
+      "skipped": {
+        "model-disabled": 24
+      }
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "plan": "plus",
+      "observations": {},
+      "httpStatuses": {},
+      "skipped": {
+        "model-disabled": 1
+      }
+    },
+    {
+      "model": "gpt-6-luna",
+      "plan": "free",
+      "observations": {
+        "success": 22,
+        "quota": 2
+      },
+      "httpStatuses": {
+        "200": 22,
+        "429": 2
+      },
+      "skipped": {}
+    },
+    {
+      "model": "gpt-6-luna",
+      "plan": "plus",
+      "observations": {
+        "success": 1
+      },
+      "httpStatuses": {
+        "200": 1
+      },
+      "skipped": {}
+    },
+    {
+      "model": "gpt-6.1-terra",
+      "plan": "free",
+      "observations": {
+        "unknown": 22
+      },
+      "httpStatuses": {
+        "400": 22
+      },
+      "skipped": {
+        "quota": 2
+      }
+    },
+    {
+      "model": "gpt-6.1-terra",
+      "plan": "plus",
+      "observations": {
+        "success": 1
+      },
+      "httpStatuses": {
+        "200": 1
+      },
+      "skipped": {}
+    }
+  ],
+  "verification": {
+    "codexPlansVisible": 25,
+    "free": 24,
+    "plus": 1,
+    "planTimestampsPreserved": true,
+    "oauthRotationsObserved": 25,
+    "freshObservationsPreserved": 53,
+    "apiAndPostgresVerified": true,
+    "otherProviderPlansUnchanged": true,
+    "modelAccessShadow": true,
+    "automaticEnforcement": false
+  },
+  "checks": {
+    "tests": 1368,
+    "passed": 1366,
+    "skipped": 2,
+    "failed": 0,
+    "lintErrors": 0,
+    "existingLintWarnings": 17
+  },
+  "finalSourceVerification": {
+    "codexPlansVisible": 25,
+    "free": 24,
+    "plus": 1,
+    "planTimestampsPreserved": true,
+    "oauthRotationsObserved": 25,
+    "freshObservationsPreserved": 47,
+    "supersededByNewRequests": 4,
+    "apiAndPostgresVerified": true,
+    "otherProviderPlansUnchanged": true,
+    "modelAccessShadow": true,
+    "automaticEnforcement": false
+  }
+}

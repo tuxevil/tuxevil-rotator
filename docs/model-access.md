@@ -67,3 +67,25 @@ transport failures, or unavailable/disabled accounts. It records missing catalog
 models separately, writes sanitized results after each attempt and never changes
 subscription declarations or enables automatic enforcement. Results demonstrate
 account-specific access at the observation time, not universal plan entitlements.
+
+### Verified Codex OAuth continuity
+
+A successful refresh exchange may move current Codex evidence to the replacement
+credential only when the provider-returned account ID matches the configured
+Codex account ID. Returned email claims must also match when present; conflicting
+access-token and ID-token identities are rejected before publishing credentials.
+Opaque or missing identity claims do not attest continuity.
+
+The persisted credential must still match the exact generation that initiated
+the exchange. After saving the replacement credential, the refresh path transfers
+only that generation's unexpired provider plan and observations. Original
+observation and expiry timestamps remain unchanged, and newer destination
+records take precedence. Manual credential replacement, account/principal
+changes and unverified refreshes continue to invalidate earlier evidence.
+Historical records are not automatically rebound. If evidence persistence fails
+after the credential was saved, the valid credential remains usable and a warning
+is logged; a later evidence write can retry persistence. A crash in that interval
+fails closed rather than authorizing stale evidence.
+
+The batch runner accepts `ROTATOR_PROBE_PROVIDERS=openai-codex` to restrict a
+validation run to Codex without changing model switches or other providers.

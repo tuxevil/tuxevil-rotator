@@ -11,6 +11,7 @@ import {
 import {
   CodexOAuthError,
   refreshCodexToken,
+  parseCodexIdentity,
 } from "./oauth.js";
 import { runCodexLogin } from "./login.js";
 import {
@@ -53,6 +54,13 @@ async function ensureCodexToken(account: AccountRuntime): Promise<void> {
       );
     }
     const refreshed = await refreshCodexToken(refreshToken);
+    const identity = parseCodexIdentity(refreshed.accessToken, refreshed.idToken);
+    const expectedId = getCodexAccountId(account.config);
+    const returnedIdentities = [parseCodexIdentity(refreshed.accessToken), parseCodexIdentity(refreshed.idToken)];
+    if (returnedIdentities.some(candidate => (expectedId && candidate.providerAccountId && candidate.providerAccountId !== expectedId) || (candidate.email && candidate.email.trim().toLowerCase() !== account.config.email.trim().toLowerCase()))) {
+      throw new CodexOAuthError("Codex OAuth refresh returned a different account identity", { code: "refresh_identity_mismatch", reloginRequired: true });
+    }
+    const verifiedIdentity = expectedId && identity.providerAccountId === expectedId ? identity : undefined;
     setCodexTokenState(account, {
       accessToken: refreshed.accessToken,
       tokenExpires: refreshed.expiresAt,
@@ -60,7 +68,7 @@ async function ensureCodexToken(account: AccountRuntime): Promise<void> {
     // Rotating refresh tokens are one-time credentials. Persist the returned
     // generation before allowing another request to use this account.
     try {
-      await persistCodexRefreshToken(account, refreshed.refreshToken);
+      await persistCodexRefreshToken(account, refreshed.refreshToken, verifiedIdentity);
     } catch (error) {
       setCodexTokenState(account, { accessToken: null, tokenExpires: 0 });
       throw new Error("Could not persist the rotated Codex refresh token", { cause: error });

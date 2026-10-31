@@ -57,6 +57,32 @@ export class AccessEvidenceStore {
     this.observations = this.observations.filter(o => !(scope(o) === scope(entry) && o.model === entry.model && o.client === client));
     this.observations.push(entry); this.observations = this.observations.slice(-2000);
   }
+  /** Only the OAuth refresh path may attest this same-principal transition. */
+  continueCodexRefresh(before: AccountConfig, after: AccountConfig, verifiedAccountId: string, now = Date.now()): boolean {
+    const provider = "openai-codex";
+    const oldId = before.credentials?.find(c => c.provider === provider)?.providerAccountId;
+    const newId = after.credentials?.find(c => c.provider === provider)?.providerAccountId;
+    if (!verifiedAccountId || oldId !== verifiedAccountId || newId !== verifiedAccountId || getAccountIdentity(before) !== getAccountIdentity(after)) return false;
+    const oldScope = scope({ accountId: getAccountIdentity(before), provider, credential: getCredentialGenerationFingerprint(before, provider) });
+    const credential = getCredentialGenerationFingerprint(after, provider);
+    const newScope = scope({ accountId: getAccountIdentity(after), provider, credential });
+    if (oldScope === newScope) return false;
+    this.snapshot(now);
+    let changed = false;
+    for (const entry of this.plans.filter(p => scope(p) === oldScope)) {
+      const existing = this.plans.find(p => scope(p) === newScope);
+      this.plans = this.plans.filter(p => p !== entry && p !== existing);
+      this.plans.push(existing && existing.observedAt >= entry.observedAt ? existing : { ...entry, credential });
+      changed = true;
+    }
+    for (const entry of this.observations.filter(o => scope(o) === oldScope)) {
+      const existing = this.observations.find(o => scope(o) === newScope && o.model === entry.model && o.client === entry.client);
+      this.observations = this.observations.filter(o => o !== entry && o !== existing);
+      this.observations.push(existing && existing.observedAt >= entry.observedAt ? existing : { ...entry, credential });
+      changed = true;
+    }
+    return changed;
+  }
   forAccount(account: AccountConfig, now = Date.now()) {
     const snapshot = this.snapshot(now);
     const valid = (entry: { accountId: string; provider: string; credential: string }) => entry.accountId === getAccountIdentity(account) && entry.credential === getCredentialGenerationFingerprint(account, entry.provider);

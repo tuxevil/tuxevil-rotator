@@ -24,7 +24,7 @@ it("matrix dry run is read-only; disabled models do not stop others; resume avoi
   });
   server.listen(0,"127.0.0.1"); await once(server,"listening");
   const address=server.address();assert.ok(address && typeof address!=="string");
-  const run=(args: string[])=>promisify(execFile)(process.execPath,["scripts/probe-model-access.mjs",...args],{env:{...process.env,ROTATOR_URL:`http://127.0.0.1:${address.port}`,ROTATOR_ADMIN_TOKEN:"test-secret",ROTATOR_PROBE_OUTPUT:output}});
+  const run=(args: string[], extra: Record<string,string> = {})=>promisify(execFile)(process.execPath,["scripts/probe-model-access.mjs",...args],{env:{...process.env,ROTATOR_URL:`http://127.0.0.1:${address.port}`,ROTATOR_ADMIN_TOKEN:"test-secret",ROTATOR_PROBE_OUTPUT:output,...extra}});
   try {
     await run([]); assert.equal(attempts,0);
     await run(["--execute"]); assert.equal(attempts,3);
@@ -33,5 +33,8 @@ it("matrix dry run is read-only; disabled models do not stop others; resume avoi
     assert.equal(JSON.stringify(result).includes("private@example"),false);assert.equal(JSON.stringify(result).includes("test-secret"),false);
     await run(["--execute","--resume"]);assert.equal(attempts,3);
     result=JSON.parse(await readFile(output,"utf8"));assert.equal(result.results.length,4);
+    await run(["--execute"],{ROTATOR_PROBE_PROVIDERS:"ollama"});assert.equal(attempts,4);
+    result=JSON.parse(await readFile(output,"utf8"));assert.equal(result.planned,2);
+    assert.equal(result.results.every((r: {provider:string})=>r.provider==="ollama"),true);
   } finally { server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));await rm(directory,{recursive:true,force:true}); }
 });
