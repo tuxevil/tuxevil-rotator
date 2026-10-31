@@ -1,3 +1,4 @@
+import { gateOllamaOutput } from "./ollama-output-gate.js";
 import { markEmptyAutoOutput } from "./auto-output-health.js";
 import { getCachedOllamaContextWindow } from "./providers/ollama/context-window.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -2430,8 +2431,22 @@ async function completeViaRotator(
           );
           return completion;
         } else {
+          let upstreamBody: ReadableStream<Uint8Array> | null = response.body;
+          if (body.displayModel?.toLowerCase() === "auto" && upstreamFormat(context) === "ollama" && upstreamBody) {
+            let gated;
+            try { gated = await gateOllamaOutput(upstreamBody); }
+            catch { if (controller.signal.aborted) throw controller.signal.reason; gated = { useful: false, body: new Response("").body! }; }
+            upstreamBody = gated.body;
+            if (!gated.useful) {
+              markEmptyAutoOutput("ollama", body.model);
+              const completion = { ...parseOllamaNdjson(await new Response(upstreamBody).text()), streamError: "Auto Ollama produced no useful output before commitment" };
+              if (completion.inputTokens > 0 || completion.outputTokens > 0) rotator.recordTokenUsage(context.displayModelKey, completion.inputTokens, completion.outputTokens);
+              recordCompatOutcome(rotator, body, context, 502, completion, undefined, options);
+              return completion;
+            }
+          }
           const completion = await streamCompatSse(
-            response.body,
+            upstreamBody,
             req,
             res,
             body.displayModel?.toLowerCase() === "auto"
@@ -2514,6 +2529,7 @@ async function completeViaRotator(
       compressionStats: options?.compressionStats,
     };
   }
+  if (outcome.result.streamError && !res.headersSent) return { completion: outcome.result, status: 502, errorText: outcome.result.streamError, streamed: false, context: outcome.context };
   return {
     completion: outcome.result,
     status: 200,
@@ -2989,10 +3005,12 @@ async function handleChatCompletions(
   res: ServerResponse,
   rotator: AccountRotator,
   dashboardAdmin: boolean,
+  retryInput?: unknown,
+  recoveryAttempt = false,
 ): Promise<void> {
   let parsed: unknown;
   try {
-    parsed = await readJsonBody(req);
+    parsed = retryInput ?? await readJsonBody(req);
   } catch (err) {
     if (err instanceof PayloadTooLargeError)
       return writeJson(res, 413, {
@@ -3099,6 +3117,10 @@ async function handleChatCompletions(
       compressionStats: compRes.stats,
     },
   );
+  if (autoRequested && !recoveryAttempt && !res.headersSent && result.completion.streamError === "Auto Ollama produced no useful output before commitment" && !req.aborted && !res.destroyed) {
+    console.info("[tuxevil-rotator]", JSON.stringify({event:"auto-empty-output-recovery",failedModel:bodyToForward.model,attempt:1,enforcedAccessPolicy:false}));
+    return handleChatCompletions(req,res,rotator,dashboardAdmin,validation.value,true);
+  }
   if (result.status !== 200) {
     compatLogger.warn(
       `OpenAI compat upstream failed status=${result.status} model=${validation.value.model}`,

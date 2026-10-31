@@ -1409,3 +1409,18 @@ describe("compat observability", () => {
    assert.match(completion.streamError??"",/without a final answer/);assert.match(res.body,/server_error/);assert.doesNotMatch(res.body,/"finish_reason":"stop"/);assert.doesNotMatch(res.body,/private reasoning/);
   }
  });
+
+it("recovers an empty auto Ollama prefix on one alternative before emitting client output",async()=>{
+ const attempts:string[]=[];
+ const upstream=await listenServer((req,res)=>{let raw='';req.on('data',x=>{raw+=x});req.on('end',()=>{const model=JSON.parse(raw).model;attempts.push(model);res.writeHead(200,{'Content-Type':'application/x-ndjson'});res.end(JSON.stringify({message:{role:'assistant',content:model==='gate-first-fixture'?'':'recovered-answer'},done:true,prompt_eval_count:2,eval_count:1})+'\n');});});
+ ollamaEndpointOverrides.splice(0,ollamaEndpointOverrides.length,upstream.url);ollamaCatalog=['gate-first-fixture','gate-second-fixture'];
+ const tracking=createTracking();const proxy=await startTestProxy(createRotatorStub(tracking,true));const port=(proxy.address() as AddressInfo).port;
+ try{const r=await fetch(`http://127.0.0.1:${port}/v1/chat/completions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'auto',messages:[{role:'user',content:'test'}],stream:true})});const body=await r.text();assert.equal(r.status,200);assert.match(body,/recovered-answer/);assert.doesNotMatch(body,/server_error/);assert.deepEqual(attempts,['gate-first-fixture','gate-second-fixture']);assert.equal(tracking.requestLogs[0].statusCode,502);assert.equal(tracking.requestLogs[1].statusCode,200);
+ }finally{await closeServer(proxy);await closeServer(upstream.server);}
+});
+
+it("stops auto empty-output recovery after one alternative",async()=>{
+ const attempts:string[]=[];const upstream=await listenServer((req,res)=>{let raw='';req.on('data',x=>raw+=x);req.on('end',()=>{attempts.push(JSON.parse(raw).model);res.writeHead(200,{'Content-Type':'application/x-ndjson'});res.end(JSON.stringify({message:{content:''},done:true})+'\n');});});
+ ollamaEndpointOverrides.splice(0,ollamaEndpointOverrides.length,upstream.url);ollamaCatalog=['bounded-first-fixture','bounded-second-fixture','bounded-third-fixture'];const proxy=await startTestProxy(createRotatorStub(createTracking(),true));const port=(proxy.address() as AddressInfo).port;
+ try{const r=await fetch(`http://127.0.0.1:${port}/v1/chat/completions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'auto',messages:[{role:'user',content:'test'}],stream:true})});assert.equal(r.status,502);assert.equal(attempts.length,2);assert.match(await r.text(),/no useful output/);}finally{await closeServer(proxy);await closeServer(upstream.server);}
+});
