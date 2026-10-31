@@ -1410,7 +1410,7 @@ describe("compat observability", () => {
   }
  });
 
-it("recovers an empty auto Ollama prefix on one alternative before emitting client output",async()=>{
+it("recovers an empty auto Ollama prefix on an alternative before emitting client output",async()=>{
  const attempts:string[]=[];
  const upstream=await listenServer((req,res)=>{let raw='';req.on('data',x=>{raw+=x});req.on('end',()=>{const model=JSON.parse(raw).model;attempts.push(model);res.writeHead(200,{'Content-Type':'application/x-ndjson'});res.end(JSON.stringify({message:{role:'assistant',content:model==='gate-first-fixture'?'':'recovered-answer'},done:true,prompt_eval_count:2,eval_count:1})+'\n');});});
  ollamaEndpointOverrides.splice(0,ollamaEndpointOverrides.length,upstream.url);ollamaCatalog=['gate-first-fixture','gate-second-fixture'];
@@ -1419,8 +1419,32 @@ it("recovers an empty auto Ollama prefix on one alternative before emitting clie
  }finally{await closeServer(proxy);await closeServer(upstream.server);}
 });
 
-it("stops auto empty-output recovery after one alternative",async()=>{
+it("does not try another auto model after streaming output is committed",async()=>{
+ const attempts:string[]=[];const upstream=await listenServer((req,res)=>{let raw='';req.on('data',x=>raw+=x);req.on('end',()=>{attempts.push(JSON.parse(raw).model);res.writeHead(200,{'Content-Type':'application/x-ndjson'});res.write(JSON.stringify({message:{role:'assistant',content:'committed-prefix'},done:false})+'\n');setTimeout(()=>res.destroy(),30);});});
+ ollamaEndpointOverrides.splice(0,ollamaEndpointOverrides.length,upstream.url);ollamaCatalog=['committed-first-fixture','committed-second-fixture'];const proxy=await startTestProxy(createRotatorStub(createTracking(),true));const port=(proxy.address() as AddressInfo).port;
+ try{const r=await fetch(`http://127.0.0.1:${port}/v1/chat/completions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'auto',stream:true,messages:[{role:'user',content:'test'}]})});assert.equal(r.status,200);let body='';try{body=await r.text();}catch{/* The upstream reset can terminate the downstream fetch. */}assert.match(body,/committed-prefix/);assert.equal(attempts.length,1);}finally{await closeServer(proxy);await closeServer(upstream.server);}
+});
+
+it("does not use auto fallback for an explicit model after an upstream payment failure",async()=>{
+ const attempts:string[]=[];const upstream=await listenServer((req,res)=>{let raw='';req.on('data',x=>raw+=x);req.on('end',()=>{attempts.push(JSON.parse(raw).model);res.writeHead(402,{'Content-Type':'application/json'});res.end(JSON.stringify({error:'payment required'}));});});
+ ollamaEndpointOverrides.splice(0,ollamaEndpointOverrides.length,upstream.url);ollamaCatalog=['explicit-payment-fixture','unused-fallback-fixture'];const proxy=await startTestProxy(createRotatorStub(createTracking(),true));const port=(proxy.address() as AddressInfo).port;
+ try{const r=await fetch(`http://127.0.0.1:${port}/v1/chat/completions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'explicit-payment-fixture',messages:[{role:'user',content:'test'}]})});assert.notEqual(r.status,200);assert.deepEqual(attempts,['explicit-payment-fixture']);}finally{await closeServer(proxy);await closeServer(upstream.server);}
+});
+
+it("recovers auto to another provider/model after an Ollama payment failure",async()=>{
+ const attempts:string[]=[];const upstream=await listenServer((req,res)=>{let raw='';req.on('data',x=>raw+=x);req.on('end',()=>{const model=JSON.parse(raw).model;attempts.push(model);if(model==='payment-first-fixture'){res.writeHead(402,{'Content-Type':'application/json'});res.end(JSON.stringify({error:'payment required'}));return;}res.writeHead(200,{'Content-Type':'application/x-ndjson'});res.end(JSON.stringify({message:{role:'assistant',content:'payment-recovered'},done:true})+'\n');});});
+ ollamaEndpointOverrides.splice(0,ollamaEndpointOverrides.length,upstream.url);ollamaCatalog=['payment-first-fixture','payment-second-fixture'];const proxy=await startTestProxy(createRotatorStub(createTracking(),true));const port=(proxy.address() as AddressInfo).port;
+ try{const r=await fetch(`http://127.0.0.1:${port}/v1/chat/completions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'auto',messages:[{role:'user',content:'test'}],stream:true})});const body=await r.text();assert.equal(r.status,200);assert.match(body,/payment-recovered/);assert.deepEqual(attempts,['payment-first-fixture','payment-second-fixture']);}finally{await closeServer(proxy);await closeServer(upstream.server);}
+});
+
+it("recovers auto when the selected candidate loses all accounts before admission",async()=>{
+ const attempts:string[]=[];const upstream=await listenServer((req,res)=>{let raw='';req.on('data',x=>raw+=x);req.on('end',()=>{attempts.push(JSON.parse(raw).model);res.writeHead(200,{'Content-Type':'application/x-ndjson'});res.end(JSON.stringify({message:{role:'assistant',content:'admission-recovered'},done:true})+'\n');});});
+ ollamaEndpointOverrides.splice(0,ollamaEndpointOverrides.length,upstream.url);ollamaCatalog=['busy-first-fixture','busy-second-fixture'];const rotator=createRotatorStub(createTracking(),true);const getActive=rotator.getActiveAccount.bind(rotator);rotator.getActiveAccount=async(...args)=>args[0]==='busy-first-fixture'?null:getActive(...args);const proxy=await startTestProxy(rotator);const port=(proxy.address() as AddressInfo).port;
+ try{const r=await fetch(`http://127.0.0.1:${port}/v1/chat/completions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'auto',messages:[{role:'user',content:'test'}],stream:true})});const body=await r.text();assert.equal(r.status,200);assert.match(body,/admission-recovered/);assert.deepEqual(attempts,['busy-second-fixture']);}finally{await closeServer(proxy);await closeServer(upstream.server);}
+});
+
+it("stops auto empty-output recovery after two alternatives",async()=>{
  const attempts:string[]=[];const upstream=await listenServer((req,res)=>{let raw='';req.on('data',x=>raw+=x);req.on('end',()=>{attempts.push(JSON.parse(raw).model);res.writeHead(200,{'Content-Type':'application/x-ndjson'});res.end(JSON.stringify({message:{content:''},done:true})+'\n');});});
- ollamaEndpointOverrides.splice(0,ollamaEndpointOverrides.length,upstream.url);ollamaCatalog=['bounded-first-fixture','bounded-second-fixture','bounded-third-fixture'];const proxy=await startTestProxy(createRotatorStub(createTracking(),true));const port=(proxy.address() as AddressInfo).port;
- try{const r=await fetch(`http://127.0.0.1:${port}/v1/chat/completions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'auto',messages:[{role:'user',content:'test'}],stream:true})});assert.equal(r.status,502);assert.equal(attempts.length,2);assert.match(await r.text(),/no useful output/);}finally{await closeServer(proxy);await closeServer(upstream.server);}
+ ollamaEndpointOverrides.splice(0,ollamaEndpointOverrides.length,upstream.url);ollamaCatalog=['bounded-first-fixture','bounded-second-fixture','bounded-third-fixture','bounded-fourth-fixture'];const proxy=await startTestProxy(createRotatorStub(createTracking(),true));const port=(proxy.address() as AddressInfo).port;
+ try{const r=await fetch(`http://127.0.0.1:${port}/v1/chat/completions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'auto',messages:[{role:'user',content:'test'}],stream:true})});assert.equal(r.status,502);assert.equal(attempts.length,3);assert.equal(new Set(attempts).size,3);assert.match(await r.text(),/no useful output/);}finally{await closeServer(proxy);await closeServer(upstream.server);}
 });

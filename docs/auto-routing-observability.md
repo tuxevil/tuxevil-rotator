@@ -4,7 +4,13 @@ Every completed `model: auto` selection emits an `auto-routing-decision` JSON ev
 
 Fields include route, selected model/provider, mode, reason, confidence, total routing latency in milliseconds, catalog count, eligible count, shortlist count and aggregate exclusion counts. `classifier_latency_ms` appears only when a classifier call was attempted. A null model with `no-eligible-candidates` means selection found no usable candidate.
 
-Exclusions report the first failed check per candidate: context, wire format, vision, tools, reasoning, inactive provider or unavailable account pool. Virtual-key permission exclusions are counted as `permission`. The catalog has already been filtered by served-model policy; those earlier exclusions are not counted. Shortlist trimming is visible as the difference between eligible and shortlist counts.
+Exclusions report the first failed check per candidate: context, wire format, vision, tools, reasoning, inactive provider, unavailable account pool or `access-policy`. Access-policy exclusions apply provider-specific plan declarations, the confirmed Ollama/Codex Free lists, the confirmed Antigravity Free/Plus model list, and recent model/account entitlement or payment evidence. Virtual-key permission exclusions are counted as `permission`. The catalog has already been filtered by served-model policy; those earlier exclusions are not counted. Shortlist trimming is visible as the difference between eligible and shortlist counts.
+
+`getAutoRoutingCandidateStatus` and dashboard provider-health summaries describe operational availability only. `auto` separately checks whether at least one operational account is eligible for that exact provider/model pair. A plan restriction therefore excludes an `auto` candidate without making an otherwise healthy provider appear down. At account admission, `auto` rechecks the same provider/model eligibility before reserving an account.
+
+For OpenAI Chat Completions only, an auto request may try up to two other provider/model pairs before output reaches the client. Empty Ollama output and explicitly recoverable upstream availability/payment failures trigger this recovery. The failed pair is excluded for the rest of that request. Explicit model requests never use this recovery, and a stream is never replayed after response headers or content have been sent.
+
+If recovery has no remaining eligible candidate, the response preserves the last recoverable failure status with a sanitized summary instead of replacing it with a generic 503. A request that has no eligible candidate before any upstream attempt still returns 503.
 
 Events contain no request text, tool output, keys or classifier endpoint URLs. Shadow mode additionally emits its existing comparison event. Confidence is classifier confidence, not measured answer accuracy. Latency includes candidate preparation; classifier latency includes SDK/network work.
 

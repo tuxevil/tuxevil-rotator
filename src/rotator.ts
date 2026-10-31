@@ -1,4 +1,5 @@
 import { summarizeAutoAccess } from "./auto-access-shadow.js";
+import { evaluateAutoModelAccess, type AutoAccountScope } from "./auto-model-access.js";
 import { primeOllamaContextWindows } from "./providers/ollama/context-window.js";
 import {
   type AccountConfig,
@@ -209,6 +210,7 @@ interface AccountRequestWaiter {
   queueKey: string;
   model?: string;
   providerId?: string;
+  autoScope?: AutoAccountScope;
   signal?: AbortSignal;
   timer: ReturnType<typeof setTimeout>;
   onAbort?: () => void;
@@ -330,6 +332,34 @@ export class AccountRotator {
     return summarizeAutoAccess(accounts,providerId,model);
   }
 
+  /**
+   * Applies account/model access policy only to operationally routable accounts.
+   * Keep this separate from candidate health so dashboards continue to report
+   * provider availability independently of plan eligibility.
+   */
+  getAutoRoutingAccessStatus(model: string, providerId: string): {
+    eligible: boolean;
+    reason?: string;
+  } {
+    const poolKey = this.resolvePoolKeyForModel(model, providerId);
+    if (!poolKey) return { eligible: true };
+    const now = Date.now();
+    const policy = this.config.routingPolicy || "timer-first";
+    let operationalAccounts = 0;
+    let firstReason: string | undefined;
+    for (const account of this.accounts) {
+      if (this.getRoutingRejectionForModel(account, poolKey, now, policy)) continue;
+      operationalAccounts++;
+      const access = evaluateAutoModelAccess(account.config, providerId, model);
+      if (access.eligible) return { eligible: true };
+      firstReason ??= access.reason;
+    }
+    // Availability is reported by getAutoRoutingCandidateStatus. If no
+    // account is operational, this method has no access denial to add.
+    if (operationalAccounts === 0) return { eligible: true };
+    return { eligible: false, ...(firstReason ? { reason: firstReason } : {}) };
+  }
+
   getAutoRoutingCandidateStatus(
     model: string,
     providerId: string,
@@ -349,7 +379,12 @@ export class AccountRotator {
     let available = false;
     let firstReason: string | undefined;
     for (const account of this.accounts) {
-      const rejection = this.getRoutingRejectionForModel(account, poolKey, now, policy);
+      const rejection = this.getRoutingRejectionForModel(
+        account,
+        poolKey,
+        now,
+        policy,
+      );
       if (rejection) {
         firstReason ??= rejection.detail;
         continue;
@@ -1360,6 +1395,7 @@ export class AccountRotator {
     modelKey: string,
     now: number,
     excludeIdx: number = -1,
+    autoScope?: AutoAccountScope,
   ): AccountRuntime | null {
     let best: AccountRuntime | null = null;
     let bestMetrics: {
@@ -1386,7 +1422,7 @@ export class AccountRotator {
       if (i === excludeIdx) continue;
       const account = this.accounts[i];
       if (!this.isProviderEligibleForKey(account, modelKey)) continue;
-      if (!this.isAvailableForModel(account, modelKey, now)) continue;
+      if (!this.isAvailableForModel(account, modelKey, now, autoScope)) continue;
 
       const quota = this.getModelQuota(account, modelKey);
       if (quota === 0) continue;
@@ -1442,6 +1478,7 @@ export class AccountRotator {
   private pickLeastLoadedModelAccount(
     modelKey: string,
     now: number,
+    autoScope?: AutoAccountScope,
   ): AccountRuntime | null {
     let best: AccountRuntime | null = null;
     let bestLoad = Infinity;
@@ -1451,7 +1488,7 @@ export class AccountRotator {
 
     for (let i = 0; i < this.accounts.length; i++) {
       const account = this.accounts[i];
-      if (!this.isRoutableForModel(account, modelKey, now)) continue;
+      if (!this.isRoutableForModel(account, modelKey, now, autoScope)) continue;
       const load = account.inFlightRequests;
       const tier = this.getTierRank(account);
       const distance = this.requestCursorIndex < 0
@@ -1501,8 +1538,9 @@ export class AccountRotator {
     modelKey: string,
     now: number = Date.now(),
     excludeIdx?: number,
+    autoScope?: AutoAccountScope,
   ): Promise<AccountRuntime | null> {
-    return this.rotateModel(modelKey, now, excludeIdx, true);
+    return this.rotateModel(modelKey, now, excludeIdx, true, autoScope);
   }
 
   private rollDailySafetyIfNeeded(now: number): void {
@@ -1687,11 +1725,25 @@ export class AccountRotator {
     now: number,
     policy: Config["routingPolicy"],
     ignoreConcurrency = false,
+    autoScope?: AutoAccountScope,
   ): { reason: RoutingRejectionReason; detail: string } | null {
     if (account.disabled)
       return { reason: "disabled", detail: "account disabled" };
     if (account.flagged)
       return { reason: "flagged", detail: "account quarantined or flagged" };
+    if (autoScope) {
+      const access = evaluateAutoModelAccess(
+        account.config,
+        autoScope.providerId,
+        autoScope.modelId,
+      );
+      if (!access.eligible) {
+        return {
+          reason: "provider-ineligible",
+          detail: `auto access policy: ${access.reason}`,
+        };
+      }
+    }
     const providerRejection = this.getProviderEligibilityRejection(
       account,
       modelKey,
@@ -2062,19 +2114,20 @@ export class AccountRotator {
     model?: string,
     signal?: AbortSignal,
     providerId?: string,
+    autoScope?: AutoAccountScope,
   ): Promise<AccountRuntime | null> {
     if (signal?.aborted) return null;
     const queueKey = this.getRequestQueueKey(model, providerId);
     if (
       this.hasQueuedRequest(queueKey) ||
-      this.isConcurrencySaturated(model, providerId)
+      this.isConcurrencySaturated(model, providerId, autoScope)
     ) {
-      return this.enqueueAccountRequest(model, signal, queueKey, providerId);
+      return this.enqueueAccountRequest(model, signal, queueKey, providerId, autoScope);
     }
 
-    const account = await this.tryGetActiveAccount(model, providerId);
-    if (account || !this.isConcurrencySaturated(model, providerId)) return account;
-    return this.enqueueAccountRequest(model, signal, queueKey, providerId);
+    const account = await this.tryGetActiveAccount(model, providerId, autoScope);
+    if (account || !this.isConcurrencySaturated(model, providerId, autoScope)) return account;
+    return this.enqueueAccountRequest(model, signal, queueKey, providerId, autoScope);
   }
 
   /** Keep fairness within a provider pool without making unrelated providers wait. */
@@ -2092,6 +2145,7 @@ export class AccountRotator {
     signal?: AbortSignal,
     queueKey = this.getRequestQueueKey(model),
     providerId?: string,
+    autoScope?: AutoAccountScope,
   ): Promise<AccountRuntime | null> {
     if (signal?.aborted) return Promise.resolve(null);
 
@@ -2100,6 +2154,7 @@ export class AccountRotator {
       waiter.queueKey = queueKey;
       waiter.model = model;
       waiter.providerId = providerId;
+      waiter.autoScope = autoScope;
       waiter.signal = signal;
       waiter.resolve = resolve;
       waiter.reject = reject;
@@ -2213,7 +2268,7 @@ export class AccountRotator {
 
           let account: AccountRuntime | null;
           try {
-            account = await this.tryGetActiveAccount(waiter.model, waiter.providerId);
+            account = await this.tryGetActiveAccount(waiter.model, waiter.providerId, waiter.autoScope);
           } catch (error) {
             this.rejectAccountRequestWaiter(waiter, error);
             progressed = true;
@@ -2242,9 +2297,9 @@ export class AccountRotator {
             progressed = true;
             continue;
           }
-          const wakeAt = this.getNextRequestAvailabilityAt(waiter.model, waiter.providerId);
+          const wakeAt = this.getNextRequestAvailabilityAt(waiter.model, waiter.providerId, waiter.autoScope);
           if (wakeAt !== null) this.scheduleRequestWaiterWake(wakeAt);
-          if (!this.isConcurrencySaturated(waiter.model, waiter.providerId) && wakeAt === null) {
+          if (!this.isConcurrencySaturated(waiter.model, waiter.providerId, waiter.autoScope) && wakeAt === null) {
             this.settleAccountRequestWaiter(waiter, null);
             progressed = true;
           }
@@ -2256,7 +2311,11 @@ export class AccountRotator {
     }
   }
 
-  private isConcurrencySaturated(model?: string, providerId?: string): boolean {
+  private isConcurrencySaturated(
+    model?: string,
+    providerId?: string,
+    autoScope?: AutoAccountScope,
+  ): boolean {
     const now = Date.now();
     if (this.isProtectivePauseActive(now)) return false;
     const modelKey = model ? this.resolveRequestPoolKey(model, providerId) : null;
@@ -2272,6 +2331,7 @@ export class AccountRotator {
           now,
           policy,
           true,
+          autoScope,
         )
       ) {
         continue;
@@ -2281,6 +2341,8 @@ export class AccountRotator {
         modelKey,
         now,
         policy,
+        false,
+        autoScope,
       );
       if (!rejection) return false;
       if (
@@ -2295,7 +2357,11 @@ export class AccountRotator {
 
   // Try to reserve an account immediately. The public method queues only
   // when every otherwise-eligible account is blocked by concurrency.
-  private async tryGetActiveAccount(model?: string, providerId?: string): Promise<AccountRuntime | null> {
+  private async tryGetActiveAccount(
+    model?: string,
+    providerId?: string,
+    autoScope?: AutoAccountScope,
+  ): Promise<AccountRuntime | null> {
     const now = Date.now();
     if (this.accounts.length === 0) return null;
     if (this.isProtectivePauseActive(now)) return null;
@@ -2310,7 +2376,7 @@ export class AccountRotator {
       !state &&
       current &&
       this.isQuotaAwarePolicy() &&
-      this.isRoutableForModel(current, modelKey, now)
+      this.isRoutableForModel(current, modelKey, now, autoScope)
     ) {
       // Seed the preference on the first request as well. Without this, a
       // default account that later enters cooldown would be indistinguishable
@@ -2329,18 +2395,18 @@ export class AccountRotator {
     );
     const policy = this.config.routingPolicy || "timer-first";
     if (modelKey && policy === "tier-first" && !hasActiveRequests) {
-      const preferred = this.pickBestModelAccount(modelKey, now);
+      const preferred = this.pickBestModelAccount(modelKey, now, -1, autoScope);
       if (preferred && preferred !== current) {
         // A persisted assignment may have been selected under a previous
         // policy or before account tiers were corrected. Re-evaluate it while
         // idle so tier-first does not keep serving a lower-tier account.
-        return this.rotateModelForRequest(modelKey, now, idx);
+        return this.rotateModelForRequest(modelKey, now, idx, autoScope);
       }
     }
     if (modelKey && hasActiveRequests) {
-      const leastLoaded = this.pickLeastLoadedModelAccount(modelKey, now);
+      const leastLoaded = this.pickLeastLoadedModelAccount(modelKey, now, autoScope);
       if (leastLoaded && leastLoaded !== current) {
-        return this.rotateModelForRequest(modelKey, now, idx);
+        return this.rotateModelForRequest(modelKey, now, idx, autoScope);
       }
     }
 
@@ -2351,19 +2417,23 @@ export class AccountRotator {
           now,
           state,
           idx,
+          autoScope,
         );
         if (restored) return restored;
       } catch (error) {
         if (!this.isCodexPoolKey(modelKey)) throw error;
-        return this.rotateModelForRequest(modelKey, now, idx);
+        return this.rotateModelForRequest(modelKey, now, idx, autoScope);
       }
     }
 
     if (current && modelKey) {
-      const providerRejection = this.getProviderEligibilityRejection(
+      const providerRejection = this.getRoutingRejectionForModel(
         current,
         modelKey,
         now,
+        this.config.routingPolicy || "timer-first",
+        false,
+        autoScope,
       );
       if (providerRejection) {
         // A cooldown is expected after a provider 429 and can be hit by many
@@ -2383,14 +2453,14 @@ export class AccountRotator {
             );
           }
         }
-        return this.rotateModelForRequest(modelKey, now, idx);
+        return this.rotateModelForRequest(modelKey, now, idx, autoScope);
       }
     }
     if (
       current &&
       (!modelKey
         ? this.isAvailable(current, now)
-        : this.isAvailableForModel(current, modelKey, now))
+        : this.isAvailableForModel(current, modelKey, now, autoScope))
     ) {
       // Check if this account has quota for the requested model
       if (modelKey) {
@@ -2398,7 +2468,7 @@ export class AccountRotator {
           this.log(
             `${current.config.label || current.config.email} [${modelKey}]: hit rotation threshold (${this.config.requestsPerRotation})`,
           );
-          const rotated = await this.rotateModelForRequest(modelKey, now, idx);
+          const rotated = await this.rotateModelForRequest(modelKey, now, idx, autoScope);
           if (rotated) {
             current.requestsSinceRotation = 0;
             return rotated;
@@ -2413,7 +2483,7 @@ export class AccountRotator {
           this.log(
             `${current.config.label || current.config.email} [${modelKey}]: 0% quota, skipping`,
           );
-          return this.rotateModelForRequest(modelKey);
+          return this.rotateModelForRequest(modelKey, now, undefined, autoScope);
         }
         if (!this.isFreshWindowAllowed(current, modelKey)) {
           const label = current.config.label || current.config.email;
@@ -2423,7 +2493,7 @@ export class AccountRotator {
               : `${label} [${modelKey}]: fresh window blocked by operator toggle`,
             "warn",
           );
-          return this.rotateModelForRequest(modelKey);
+          return this.rotateModelForRequest(modelKey, now, undefined, autoScope);
         }
         if ((this.config.routingPolicy || "timer-first") === "hybrid") {
           const tokenSnapshot = this.getTokenBucketSnapshot(current, now);
@@ -2432,7 +2502,7 @@ export class AccountRotator {
               `${current.config.label || current.config.email} [${modelKey}]: local token bucket is empty, rotating to another candidate`,
               "warn",
             );
-            return this.rotateModelForRequest(modelKey, now, idx);
+            return this.rotateModelForRequest(modelKey, now, idx, autoScope);
           }
         }
       }
@@ -2452,7 +2522,7 @@ export class AccountRotator {
         this.refundTokenBucket(current, Date.now());
         this.finishRequest(current, modelKey ?? undefined, providerId);
         if (modelKey && this.isCodexPoolKey(modelKey)) {
-          return this.rotateModelForRequest(modelKey, now, idx);
+          return this.rotateModelForRequest(modelKey, now, idx, autoScope);
         }
         throw err;
       }
@@ -2460,7 +2530,7 @@ export class AccountRotator {
 
     // Current unavailable, or no per-model assignment yet
     if (modelKey) {
-      return this.rotateModelForRequest(modelKey, now, state ? idx : -1);
+      return this.rotateModelForRequest(modelKey, now, state ? idx : -1, autoScope);
     }
     const defaultAcc = await this.rotateDefault(now, true);
     return defaultAcc;
@@ -2471,6 +2541,7 @@ export class AccountRotator {
     now: number,
     state: ModelRotationState,
     activeIndex: number,
+    autoScope?: AutoAccountScope,
   ): Promise<AccountRuntime | null> {
     if (!this.isQuotaAwarePolicy()) return null;
     const preferredIndex = state.stickyAccountIndex;
@@ -2491,7 +2562,7 @@ export class AccountRotator {
       this.scheduleStateSave();
       return null;
     }
-    if (!this.isRoutableForModel(preferred, modelKey, now)) return null;
+    if (!this.isRoutableForModel(preferred, modelKey, now, autoScope)) return null;
 
     this.log(
       `[${modelKey}] Restoring preferred account ${preferred.config.label || preferred.config.email} after temporary fallback`,
@@ -2512,10 +2583,11 @@ export class AccountRotator {
     excludeIdx: number = this.modelState.get(modelKey)?.activeAccountIndex ??
       -1,
     forRequest = false,
+    autoScope?: AutoAccountScope,
   ): Promise<AccountRuntime | null> {
     const best = forRequest
-      ? this.pickLeastLoadedModelAccount(modelKey, now)
-      : this.pickBestModelAccount(modelKey, now, excludeIdx);
+      ? this.pickLeastLoadedModelAccount(modelKey, now, autoScope)
+      : this.pickBestModelAccount(modelKey, now, excludeIdx, autoScope);
 
     if (best) {
       const previous = this.modelState.get(modelKey);
@@ -2531,7 +2603,7 @@ export class AccountRotator {
           preferred &&
           this.getModelQuota(preferred, modelKey) !== 0 &&
           (preferredIndex !== previous.activeAccountIndex ||
-            !this.isAvailableForModel(preferred, modelKey, now))
+            !this.isAvailableForModel(preferred, modelKey, now, autoScope))
         ) {
           // Keep the original account as the preference while a cooldown,
           // breaker, or concurrency limit forces a temporary fallback.
@@ -2560,6 +2632,7 @@ export class AccountRotator {
           now,
           this.accounts.indexOf(best),
           forRequest,
+          autoScope,
         );
       }
     }
@@ -3915,9 +3988,20 @@ export class AccountRotator {
     account: AccountRuntime,
     modelKey: string,
     now: number,
+    autoScope?: AutoAccountScope,
   ): boolean {
     if (!this.isAvailable(account, now)) return false;
     const providerId = getProviderIdForPoolKey(modelKey);
+    if (
+      autoScope &&
+      !evaluateAutoModelAccess(
+        account.config,
+        autoScope.providerId,
+        autoScope.modelId,
+      ).eligible
+    ) {
+      return false;
+    }
     if (account.invalidProviders?.[providerId]) return false;
     if (this.isProviderOffForAccount(account, providerId)) return false;
     if ((account.providerCooldowns?.[providerId] ?? 0) > now) return false;
@@ -4159,10 +4243,11 @@ export class AccountRotator {
     account: AccountRuntime,
     modelKey: string,
     now: number,
+    autoScope?: AutoAccountScope,
   ): boolean {
     modelKey = this.resolvePoolKey(account, modelKey);
     if (!this.isProviderEligibleForKey(account, modelKey)) return false;
-    if (!this.isAvailableForModel(account, modelKey, now)) return false;
+    if (!this.isAvailableForModel(account, modelKey, now, autoScope)) return false;
     if (this.getModelQuota(account, modelKey) === 0) return false;
     if (!this.isFreshWindowAllowed(account, modelKey)) return false;
     if ((this.config.routingPolicy || "timer-first") === "hybrid") {
@@ -4176,6 +4261,7 @@ export class AccountRotator {
     model: string | undefined,
     now: number,
     providerId?: string,
+    autoScope?: AutoAccountScope,
   ): number[] {
     const retryTimes: number[] = [];
     if (this.protectivePauseUntil > now)
@@ -4190,6 +4276,16 @@ export class AccountRotator {
     for (const account of this.accounts) {
       if (account.disabled || account.flagged) continue;
       const candidateProviderId = providerId ?? getProviderIdForPoolKey(modelKey);
+      if (
+        autoScope &&
+        !evaluateAutoModelAccess(
+          account.config,
+          autoScope.providerId,
+          autoScope.modelId,
+        ).eligible
+      ) {
+        continue;
+      }
       if (
         !hasCredential(account.config, candidateProviderId) ||
         account.invalidProviders?.[candidateProviderId] ||
@@ -4226,9 +4322,13 @@ export class AccountRotator {
     return retryTimes;
   }
 
-  private getNextRequestAvailabilityAt(model?: string, providerId?: string): number | null {
+  private getNextRequestAvailabilityAt(
+    model?: string,
+    providerId?: string,
+    autoScope?: AutoAccountScope,
+  ): number | null {
     const now = Date.now();
-    const retryTimes = this.getRequestAvailabilityTimes(model, now, providerId);
+    const retryTimes = this.getRequestAvailabilityTimes(model, now, providerId, autoScope);
     return retryTimes.length > 0 ? Math.min(...retryTimes) : null;
   }
 

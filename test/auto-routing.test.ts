@@ -744,3 +744,16 @@ it("does not automatically select OpenCode-only free models for an unverified cl
  const result=buildAutoRoutingCandidates({getAutoRoutingCandidateStatus:()=>({available:true,operationalScore:1})},entries,{route:'openai-chat',input:{messages:[{role:'user',content:'test'}]}});
  assert.deepEqual(result.candidates.map(c=>c.modelId),['beam']);assert.equal(result.excluded['client-restricted'],2);
 });
+
+it("keeps operational health visible while excluding account-ineligible models from auto", () => {
+  const entry: AutoRoutingCatalogEntry = {
+    providerId: "ollama", modelId: "deepseek-v4.1-flash:1017", contextWindow: 100_000,
+    multimodal: false, tools: true, reasoning: false,
+  };
+  const result = buildAutoRoutingCandidates({
+    getAutoRoutingCandidateStatus: () => ({ available: true, operationalScore: 1 }),
+    getAutoRoutingAccessStatus: () => ({ eligible: false, reason: "outside confirmed Free-plan list" }),
+  }, [entry], { route: "openai-chat", input: { messages: [{ role: "user", content: "test" }] } });
+  assert.equal(result.candidates.length, 0);
+  assert.equal(result.excluded["access-policy"], 1);
+});

@@ -21,8 +21,8 @@ it("handles the announced removal and does not invent historical evidence", () =
   assert.throws(() => evaluateModelAccess({ ...query, at: "invalid" }));
   assert.equal(evaluateModelAccess({ provider: "google-antigravity", model: "gemini-3.8-flash", plan: "free", at: "2026-12-01" }).state, "unknown");
 });
-it("keeps pending operator claims unknown and client declarations conditional", () => {
-  assert.equal(evaluateModelAccess({ provider: "openai-codex", model: "gpt-6-luna", plan: "free", at }).state, "unknown");
+it("uses confirmed operator claims informationally and keeps client declarations conditional", () => {
+  assert.equal(evaluateModelAccess({ provider: "openai-codex", model: "gpt-6-luna", plan: "free", at }).state, "allowed");
   for (const client of ["unknown", "other", "opencode"]) {
     const result = evaluateModelAccess({ provider: "opencode-zen", model: "mimo-v2.5-free", client, at });
     assert.equal(result.state, "conditional"); assert.equal(result.clientVerified, false);

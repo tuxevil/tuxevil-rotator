@@ -43,7 +43,7 @@ it("persists scoped evidence through the file repository without secrets", async
       const body = await query.json() as { planSource: string; decision: { state: string; declaredPlan: string } };
       assert.equal(body.planSource, "provider-declaration");
       assert.equal(body.decision.declaredPlan, "free");
-      assert.equal(body.decision.state, "unknown");
+      assert.equal(body.decision.state, "allowed");
       assert.equal((await fetch(url + "/plan", { method: "PUT", headers, body: JSON.stringify({ accountId: getAccountIdentity(account), provider: "unconnected", plan: "free" }) })).status, 400);
     } finally {
       server.closeAllConnections();

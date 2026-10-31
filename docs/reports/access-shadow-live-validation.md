@@ -19,3 +19,7 @@ The sanitized artifact is access-shadow-live-validation-results.json. It contain
 Limits: only beam/Ollama success was exercised with a real provider. This did not verify a plan-restricted provider rejection, all model families, real OpenCode client origin, or production database persistence. File reload and the actual branch pipeline were exercised; PostgreSQL uses the same settings interface but was only read for preparation. Existing isolated tests cover typed error categories, expiry, credential invalidation, authentication and non-enforcing would-block comparisons.
 
 Seventeen focused tests passed after the live trial. No application code changed in this validation. The experiment supports a later controlled rollout of informational capture/shadow, not entitlement enforcement or a model-quality claim.
+
+## Later auto-routing change
+
+This report records the pre-enforcement state. On 2026-10-31, the router began enforcing confirmed provider-plan eligibility for `auto`, including the seven Ollama Free-credit models and the operator-confirmed Codex Free list. The informational access API remains non-authorizing; this report's shadow events are historical evidence only.

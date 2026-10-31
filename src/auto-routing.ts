@@ -30,6 +30,11 @@ export interface AutoRoutingCandidateStatus {
   reason?: string;
 }
 
+export interface AutoRoutingAccessStatus {
+  eligible: boolean;
+  reason?: string;
+}
+
 export interface AutoRoutingCandidate extends AutoRoutingCatalogEntry {
   id: string;
   operationalScore: number;
@@ -38,6 +43,7 @@ export interface AutoRoutingCandidate extends AutoRoutingCatalogEntry {
 
 export interface AutoRoutingRotator {
   getAutoRoutingEvidenceStatus?: (model: string, provider: string) => { eligibleAccounts: number; rejectedAccounts: number; wouldExclude: boolean };
+  getAutoRoutingAccessStatus?: (model: string, provider: string) => AutoRoutingAccessStatus;
   getConfig?: () => Config;
   hasActiveProvider?: (providerId: string) => boolean;
   getAutoRoutingCandidateStatus?: (
@@ -431,7 +437,15 @@ export function buildAutoRoutingCandidates(
       available: true,
       operationalScore: 0.5,
     };
-    if (!status.available) { reject("unavailable"); continue; }
+    if (!status.available) {
+      reject("unavailable");
+      continue;
+    }
+    const accessStatus = rotator.getAutoRoutingAccessStatus?.(entry.modelId, entry.providerId);
+    if (accessStatus && !accessStatus.eligible) {
+      reject("access-policy");
+      continue;
+    }
     candidates.push({
       ...entry,
       id: `candidate_${candidates.length}`,

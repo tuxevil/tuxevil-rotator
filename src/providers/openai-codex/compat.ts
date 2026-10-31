@@ -42,6 +42,8 @@ export interface CodexCompatOptions {
   selectionMode?: "typesafe" | "deterministic" | "shadow" | "disabled";
   selectionConfidence?: number;
   selectionReason?: string;
+  autoRouting?: boolean;
+  autoRecovery?: (status: number, context: RotationAttemptContext | undefined, errorText: string) => Promise<boolean>;
 }
 
 function recordCodexTokenUsage(
@@ -629,8 +631,11 @@ export async function serveCodexChat(
       recordCodexTokenUsage(rotator, request.model, completion);
       recordCodexOutcome(rotator, body, context, response.status, completion, options);
       return completion;
-    }, controller.signal);
+    }, controller.signal, { autoRouting: options?.autoRouting === true });
     recordCodexFailure(rotator, body, outcome, options);
+    if (!outcome.ok && !res.headersSent && options?.autoRecovery) {
+      if (await options.autoRecovery(outcome.status, outcome.context, outcome.errorText)) return;
+    }
     if (!outcome.ok && !res.headersSent) writeJson(res, outcome.status, { error: { message: outcome.errorText, type: "upstream_error" } });
   } finally {
     req.off("aborted", abort);

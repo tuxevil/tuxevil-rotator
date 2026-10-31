@@ -118,6 +118,7 @@ function successResponse(providerId = GOOGLE) {
 function makeRotator(overrides: Partial<Config> = {}, count = 1) {
   const configs = Array.from({ length: count }, (): AccountConfig => ({
     email: `switch-${++accountSequence}@example.com`,
+    tier: "free",
     credentials: [
       { provider: GOOGLE, refreshToken: "test-refresh", projectId: `project-${accountSequence}` },
       { provider: "ollama", apiKey: "test-ollama-key" },

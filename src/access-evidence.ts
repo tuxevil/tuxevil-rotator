@@ -30,6 +30,7 @@ const scope = (a: { accountId: string; provider: string; credential: string }) =
 export class AccessEvidenceStore {
   private plans: ProviderPlanEvidence[] = [];
   private observations: AccessObservation[] = [];
+  private lastPrunedAt = 0;
   constructor(input?: unknown) {
     const value = input as Partial<AccessEvidenceSnapshot> | null;
     if (value?.version !== 1) return;
@@ -41,9 +42,14 @@ export class AccessEvidenceStore {
       if (o && [o.accountId, o.provider, o.credential, o.model, o.client].every(x => typeof x === "string") && ["success", "authentication", "quota", "payment-or-plan", "client-restriction", "entitlement", "model-unavailable", "transport", "unknown"].includes(o.kind) && (o.status === null || Number.isInteger(o.status)) && Number.isFinite(o.observedAt) && Number.isFinite(o.expiresAt)) this.observations.push({ accountId: o.accountId, provider: o.provider, credential: o.credential, model: o.model, client: o.client, kind: o.kind, status: o.status, observedAt: o.observedAt, expiresAt: o.expiresAt });
     }
   }
-  snapshot(now = Date.now()): AccessEvidenceSnapshot {
+  private pruneExpired(now: number): void {
+    if (now >= this.lastPrunedAt && now - this.lastPrunedAt < 1000) return;
     this.plans = this.plans.filter(p => p.expiresAt > now);
     this.observations = this.observations.filter(o => o.expiresAt > now);
+    this.lastPrunedAt = now;
+  }
+  snapshot(now = Date.now()): AccessEvidenceSnapshot {
+    this.pruneExpired(now);
     return { version: 1, plans: this.plans.map(p => ({ ...p })), observations: this.observations.map(o => ({ ...o })) };
   }
   declarePlan(account: AccountConfig, provider: string, plan: string, now = Date.now()): void {
@@ -89,9 +95,9 @@ export class AccessEvidenceStore {
     return changed;
   }
   forAccount(account: AccountConfig, now = Date.now()) {
-    const snapshot = this.snapshot(now);
-    const valid = (entry: { accountId: string; provider: string; credential: string }) => entry.accountId === getAccountIdentity(account) && entry.credential === getCredentialGenerationFingerprint(account, entry.provider);
-    return { plans: snapshot.plans.filter(valid), observations: snapshot.observations.filter(valid) };
+    this.pruneExpired(now);
+    const valid = (entry: { accountId: string; provider: string; credential: string; expiresAt: number }) => entry.expiresAt > now && entry.accountId === getAccountIdentity(account) && entry.credential === getCredentialGenerationFingerprint(account, entry.provider);
+    return { plans: this.plans.filter(valid), observations: this.observations.filter(valid) };
   }
 }
 let singleton: AccessEvidenceStore | undefined;

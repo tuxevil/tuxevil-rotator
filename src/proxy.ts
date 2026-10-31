@@ -1270,6 +1270,7 @@ export async function withRotation<T>(
     context: RotationAttemptContext,
   ) => Promise<T>,
   signal?: AbortSignal,
+  options?: { autoRouting?: boolean },
 ): Promise<RotationOutcome<T>> {
   // Keep the admission pool and wire protocol stable across async waits and
   // retries, even if provider order or switches change while the request waits.
@@ -1277,6 +1278,9 @@ export async function withRotation<T>(
     ollamaModels: new Set(rotator.getOllamaModels?.() ?? []),
     codexModels: new Set(rotator.getCodexModels?.() ?? []),
   })?.id;
+  const autoScope = options?.autoRouting && providerId
+    ? { providerId, modelId: model }
+    : undefined;
   const modelQuotaFamily = resolveQuotaModelKey(model) ??
     resolveQuotaModelKey(applyModelAlias(model));
   if (
@@ -1334,7 +1338,7 @@ export async function withRotation<T>(
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (requestIsOff()) return modelOffOutcome();
     const admissionStartedMs = Date.now();
-    const account = await rotator.getActiveAccount(model, signal, providerId);
+    const account = await rotator.getActiveAccount(model, signal, providerId, autoScope);
     if (!account) {
       if (signal?.aborted) {
         return { ok: false, status: 499, errorText: "Client closed request" };
@@ -1446,6 +1450,25 @@ export async function withRotation<T>(
         selectionConfidence: body.selectionConfidence,
         selectionReason: body.selectionReason,
       };
+
+      // Preserve explicit-model behavior. Auto uses payment/plan and timeout
+      // responses as request-local exclusions before any client bytes are sent.
+      if (options?.autoRouting && [402, 408].includes(response.status)) {
+        const errorText = response.status === 402
+          ? "Upstream payment or plan restriction"
+          : "Upstream request timed out";
+        await response.body?.cancel().catch(() => {});
+        observeAccessAttempt(account.config, provider.id, model, originalHeaders, response.status, errorText);
+        logRequestEnd(response.status);
+        return {
+          ok: false,
+          status: response.status,
+          errorText,
+          endpoint,
+          context,
+          totalMs: Date.now() - requestStartMs,
+        };
+      }
 
       if (!response.ok) observeAccessAttempt(account.config, provider.id, model, originalHeaders, response.status);
       const action = await classifyUpstreamResponse(

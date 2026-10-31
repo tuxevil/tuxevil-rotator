@@ -1,5 +1,6 @@
 import { gateOllamaOutput } from "./ollama-output-gate.js";
 import { markEmptyAutoOutput } from "./auto-output-health.js";
+import { classifyAccessObservation } from "./access-evidence.js";
 import { getCachedOllamaContextWindow } from "./providers/ollama/context-window.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
@@ -201,10 +202,16 @@ function authorizeResolvedAutoModel(
 function buildAutoRoutingCatalog(
   rotator: AccountRotator,
   route: AutoRoutingRoute,
+  excludedCandidates: ReadonlySet<string> = new Set(),
 ): AutoRoutingCatalogEntry[] {
   return buildAllAutoRoutingCandidates(rotator, route).filter((entry) =>
-    isModelServed(rotator, entry.providerId, entry.modelId),
+    isModelServed(rotator, entry.providerId, entry.modelId) &&
+    !excludedCandidates.has(autoCandidateKey(entry.providerId, entry.modelId)),
   );
+}
+
+function autoCandidateKey(providerId: string, modelId: string): string {
+  return JSON.stringify([providerId, modelId]);
 }
 
 function buildAllAutoRoutingCandidates(
@@ -269,6 +276,7 @@ async function resolveAutoModel(
   route: AutoRoutingRoute,
   input: unknown,
   auth: Awaited<ReturnType<typeof authenticateVirtualKey>>,
+  excludedCandidates: ReadonlySet<string> = new Set(),
 ): Promise<{
   model: string;
   providerId: string;
@@ -278,7 +286,7 @@ async function resolveAutoModel(
 } | null> {
   const selection = await selectAutoRoutingTarget(
     rotator,
-    buildAutoRoutingCatalog(rotator, route),
+    buildAutoRoutingCatalog(rotator, route, excludedCandidates),
     { route, input, requestedModel: "auto", tenantId: auth.key?.tokenHash ?? "anonymous", isModelAllowed: (model) => isVirtualKeyModelAllowed(auth.key, model) },
   );
   if (!selection) return null;
@@ -2377,6 +2385,7 @@ async function completeViaRotator(
     rawRequest?: unknown;
     rawResponse?: unknown;
     compressionStats?: CompressionStats | null;
+    autoRecoveryEnabled?: boolean;
   },
 ): Promise<{
   completion: CompatCompletion;
@@ -2412,7 +2421,12 @@ async function completeViaRotator(
             : format === "ollama"
               ? parseOllamaNdjson(raw)
               : parseAntigravitySse(raw);
-          if (format === "ollama" && completion.streamError) throw new Error(completion.streamError);
+          if (format === "ollama" && completion.streamError) {
+            if (body.displayModel?.toLowerCase() !== "auto") throw new Error(completion.streamError);
+            markEmptyAutoOutput("ollama", body.model);
+            recordCompatOutcome(rotator, body, context, 502, completion, undefined, options);
+            return completion;
+          }
           if (completion.inputTokens > 0 || completion.outputTokens > 0) {
             rotator.recordTokenUsage(
               context.displayModelKey,
@@ -2478,36 +2492,42 @@ async function completeViaRotator(
         }
       },
       controller.signal,
+      { autoRouting: options?.autoRecoveryEnabled === true && body.displayModel?.toLowerCase() === "auto" },
     );
 
   let outcome: RotationOutcome<CompatCompletion>;
   let isDeduplicated = false;
 
-  if (shouldDedup) {
-    const clientKey = idempotencyManager.extractClientKey(req);
-    const key = idempotencyManager.computeKey(
-      body.model,
-      options?.rawRequest || body,
-      clientKey,
-    );
-    const dedupRes = await idempotencyManager
-      .execute(key, windowMs, async () => {
-        const res = await runWithRotation();
-        if (!res.ok) {
-          throw new NonOkOutcomeError(res);
-        }
-        return res;
-      })
-      .catch((err) => {
-        if (err instanceof NonOkOutcomeError) {
-          return { result: err.outcome, isDeduplicated: false };
-        }
-        throw err;
-      });
-    outcome = dedupRes.result;
-    isDeduplicated = dedupRes.isDeduplicated;
-  } else {
-    outcome = await runWithRotation();
+  try {
+    if (shouldDedup) {
+      const clientKey = idempotencyManager.extractClientKey(req);
+      const key = idempotencyManager.computeKey(
+        body.model,
+        options?.rawRequest || body,
+        clientKey,
+      );
+      const dedupRes = await idempotencyManager
+        .execute(key, windowMs, async () => {
+          const res = await runWithRotation();
+          if (!res.ok) {
+            throw new NonOkOutcomeError(res);
+          }
+          return res;
+        })
+        .catch((err) => {
+          if (err instanceof NonOkOutcomeError) {
+            return { result: err.outcome, isDeduplicated: false };
+          }
+          throw err;
+        });
+      outcome = dedupRes.result;
+      isDeduplicated = dedupRes.isDeduplicated;
+    } else {
+      outcome = await runWithRotation();
+    }
+  } finally {
+    req.off("aborted", abort);
+    if (typeof res.off === "function") res.off("close", abort);
   }
 
   if (!outcome.ok) {
@@ -3000,13 +3020,99 @@ export async function handleOpenAIChatCompletions(
   await handleChatCompletions(req, res, rotator, false);
 }
 
+interface AutoChatRecoveryState {
+  failedCandidates: string[];
+  lastFailure?: { status: number; message: string };
+}
+
+const MAX_AUTO_CHAT_ATTEMPTS = 3;
+
+function isRecoverableAutoChatFailure(
+  status: number,
+  errorText: string | undefined,
+  model: string,
+  provider: string,
+): boolean {
+  if (errorText === "Auto Ollama produced no useful output before commitment") return true;
+  if ([402, 404, 408, 429, 503].includes(status)) return true;
+  if (
+    status === 400 &&
+    provider === "openai-codex" &&
+    classifyAccessObservation(status, errorText ?? "", false, provider, model) ===
+      "model-unavailable"
+  ) return true;
+  return status >= 500 && status <= 599 && errorText !== "Upstream request failed";
+}
+
+function describeAutoRecoveryFailure(
+  status: number,
+  errorText: string | undefined,
+  provider: string,
+): string {
+  if (
+    errorText === "Auto Ollama produced no useful output before commitment" ||
+    errorText === "Ollama completed without a final answer or tool call"
+  ) return "Ollama completed without a final answer or tool call";
+  if (status === 402) return "Selected provider rejected the model for payment or plan reasons";
+  if (status === 408) return "Selected provider timed out";
+  if (status === 429) return "Selected provider is rate limited";
+  if (status === 404) return "Selected model is unavailable";
+  if (status === 400 && provider === "openai-codex") return "Selected Codex model is unavailable to this account";
+  if (status === 503) return "Selected provider is temporarily unavailable";
+  return "Selected model failed before the response began";
+}
+
+async function recoverAutoChatCandidate(
+  req: IncomingMessage,
+  res: ServerResponse,
+  rotator: AccountRotator,
+  dashboardAdmin: boolean,
+  input: unknown,
+  state: AutoChatRecoveryState | undefined,
+  failedModel: string | undefined,
+  failedProvider: string | undefined,
+  status: number,
+  errorText: string | undefined,
+): Promise<boolean> {
+  if (
+    !failedModel || !failedProvider ||
+    !isRecoverableAutoChatFailure(status, errorText, failedModel, failedProvider) ||
+    res.headersSent || req.aborted || res.destroyed
+  ) return false;
+
+  const failedCandidates = new Set(state?.failedCandidates ?? []);
+  const failedKey = autoCandidateKey(failedProvider, failedModel);
+  if (failedCandidates.has(failedKey)) return false;
+  failedCandidates.add(failedKey);
+  if (failedCandidates.size >= MAX_AUTO_CHAT_ATTEMPTS) return false;
+
+  console.info("[tuxevil-rotator]", JSON.stringify({
+    event: "auto-candidate-recovery",
+    failed_provider: failedProvider,
+    failed_model: failedModel,
+    failed_status: status,
+    failed_candidates: failedCandidates.size,
+    max_attempts: MAX_AUTO_CHAT_ATTEMPTS,
+    recovery_reason: errorText === "Auto Ollama produced no useful output before commitment"
+      ? "empty-output"
+      : status === 402
+        ? "payment-or-plan"
+        : "upstream-availability",
+  }));
+  await handleChatCompletions(req, res, rotator, dashboardAdmin, input, {
+    failedCandidates: [...failedCandidates],
+    lastFailure: { status, message: describeAutoRecoveryFailure(status, errorText, failedProvider) },
+  });
+  return true;
+}
+
 async function handleChatCompletions(
   req: IncomingMessage,
   res: ServerResponse,
   rotator: AccountRotator,
   dashboardAdmin: boolean,
   retryInput?: unknown,
-  recoveryAttempt = false,
+  recoveryState?: AutoChatRecoveryState,
 ): Promise<void> {
   let parsed: unknown;
   try {
@@ -3043,9 +3149,20 @@ async function handleChatCompletions(
   const apiKeyHash = auth.key?.tokenHash || (auth.rawKey ? hashKey(auth.rawKey) : null);
 
   const autoSelection = autoRequested
-    ? await resolveAutoModel(rotator, "openai-chat", validation.value, auth)
+    ? await resolveAutoModel(
+      rotator,
+      "openai-chat",
+      validation.value,
+      auth,
+      new Set(recoveryState?.failedCandidates ?? []),
+    )
     : null;
   if (autoRequested && !autoSelection) {
+    if (recoveryState?.lastFailure) {
+      return writeJson(res, recoveryState.lastFailure.status, {
+        error: { message: recoveryState.lastFailure.message, type: "upstream_error" },
+      });
+    }
     return writeJson(res, 503, {
       error: { message: "No compatible model is currently available", type: "upstream_error" },
     });
@@ -3070,6 +3187,21 @@ async function handleChatCompletions(
       selectionMode: autoSelection?.mode,
       selectionConfidence: autoSelection?.confidence,
       selectionReason: autoSelection?.reason,
+      autoRouting: autoRequested,
+      autoRecovery: autoRequested
+        ? (status, context, errorText) => recoverAutoChatCandidate(
+          req,
+          res,
+          rotator,
+          dashboardAdmin,
+          validation.value,
+          recoveryState,
+          context?.selectedModel ?? autoSelection?.model,
+          context?.providerId ?? autoSelection?.providerId,
+          status,
+          errorText,
+        )
+        : undefined,
     });
     return;
   }
@@ -3115,11 +3247,22 @@ async function handleChatCompletions(
       requesterIp: req.socket?.remoteAddress || null,
       rawRequest: validation.value,
       compressionStats: compRes.stats,
+      autoRecoveryEnabled: autoRequested,
     },
   );
-  if (autoRequested && !recoveryAttempt && !res.headersSent && result.completion.streamError === "Auto Ollama produced no useful output before commitment" && !req.aborted && !res.destroyed) {
-    console.info("[tuxevil-rotator]", JSON.stringify({event:"auto-empty-output-recovery",failedModel:bodyToForward.model,attempt:1,enforcedAccessPolicy:false}));
-    return handleChatCompletions(req,res,rotator,dashboardAdmin,validation.value,true);
+  if (autoRequested && await recoverAutoChatCandidate(
+    req,
+    res,
+    rotator,
+    dashboardAdmin,
+    validation.value,
+    recoveryState,
+    result.context?.selectedModel ?? autoSelection?.model ?? bodyToForward.model,
+    result.context?.providerId ?? autoSelection?.providerId,
+    result.status,
+    result.errorText,
+  )) {
+    return;
   }
   if (result.status !== 200) {
     compatLogger.warn(

@@ -1,4 +1,4 @@
-/** Informational access policy. Never grants authorization or changes routing. */
+/** Policy data for access explanations and auto eligibility; it never authorizes explicit requests. */
 export type AccessState = "allowed" | "blocked" | "conditional" | "unknown";
 export interface AccessRule {
   id: string;
@@ -7,7 +7,7 @@ export interface AccessRule {
   modelPrefix: string;
   exact?: boolean;
   state: AccessState;
-  evidence: "documented" | "operator-pending";
+  evidence: "documented" | "operator-confirmed" | "operator-pending";
   source: string;
   verifiedAt: string;
   validFrom: string;
@@ -25,10 +25,10 @@ export const MODEL_ACCESS_RULES: readonly AccessRule[] = [
   ...["claude-sonnet-5-5", "claude-opus-5-5"].map(model => rule(`ag-trial-${model}`, "google-antigravity", ["pro-trial"], model, "blocked", "documented", google, "Claude 5.5 requires a non-trial Pro subscription or higher eligible plan.")),
   ...["gemini-4-argon", "claude-sonnet-5-5", "claude-opus-5-5"].map(model => rule(`ag-entitled-${model}`, "google-antigravity", ["pro-paid", "ultra", "enterprise"], model, "allowed", "documented", google, "Listed for paid Pro/Ultra; account entitlement and quota still apply.")),
   rule("ag-argon-trial", "google-antigravity", ["pro-trial"], "gemini-4-argon", "conditional", "documented", google, "Only eligible premium-device trials; generic trial status is insufficient."),
-  ...["gpt-6-luna", "gpt-5.6-terra", "gpt-5.6-luna"].map(model => rule(`codex-free-${model}`, "openai-codex", ["free"], model, "allowed", "operator-pending", "Operator account-access report, 2026-10-30", "Provisional free-plan list; Luna 5.6 inclusion needs confirmation. Not independently verified.")),
+  ...["gpt-6-luna", "gpt-5.6-terra", "gpt-5.6-luna"].map(model => rule(`codex-free-${model}`, "openai-codex", ["free"], model, "allowed", "operator-confirmed", "Operator account-access report, 2026-10-30", "Confirmed as available on Codex Free accounts; live quota and account entitlement still apply.")),
   rule("codex-terra61-free", "openai-codex", ["free"], "gpt-6.1-terra", "blocked", "documented", "https://learn.chatgpt.com/docs/pricing", "Official ChatGPT Work/Codex availability lists paid plans for Terra 6.1. Free is not included; account-specific provider rejections are separate evidence.", { exact: true, verifiedAt: "2026-10-31", validFrom: "2026-10-26", reviewAfter: "2026-11-30" }),
   rule("codex-terra61-plus", "openai-codex", ["plus"], "gpt-6.1-terra", "allowed", "documented", "https://learn.chatgpt.com/docs/pricing", "Terra 6.1 is listed for Plus in Work/Codex; rollout, surface access, quota and account restrictions still apply.", { exact: true, verifiedAt: "2026-10-31", validFrom: "2026-10-26", reviewAfter: "2026-11-30" }),
-  ...["beam", "gemma4:31b", "gpt-oss:120b", "gpt-oss:20b", "nemotron-3-nano:30b", "nemotron-3-super", "nemotron-3-ultra"].map(model => rule(`ollama-free-${model}`, "ollama", ["free"], model, "allowed", "operator-pending", "Operator-provided Ollama free-credit list, 2026-10-30", "Included in the supplied free-credit list; quota and live entitlement are separate.")),
+  ...["beam", "gemma4:31b", "gpt-oss:120b", "gpt-oss:20b", "nemotron-3-nano:30b", "nemotron-3-super", "nemotron-3-ultra"].map(model => rule(`ollama-free-${model}`, "ollama", ["free"], model, "allowed", "operator-confirmed", "Operator-provided Ollama free-credit list, 2026-10-30", "Included in the supplied free-credit list; quota and live entitlement are separate.")),
   rule("zen-big-pickle-client", "opencode-zen", ["*"], "big-pickle", "conditional", "documented", "https://github.com/anomalyco/opencode/issues/56702", "Free model without a -free suffix; genuine OpenCode context is required.", { client: "opencode" }),
   rule("zen-free-client", "opencode-zen", ["*"], "*-free", "conditional", "documented", "https://github.com/anomalyco/opencode/issues/56702", "Free tier requires a genuine OpenCode client context. Client declaration is not authentication or proof of acceptance.", { client: "opencode" }),
 ];
