@@ -6,9 +6,25 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { buildUsageLimitsSnapshot, createUsageLimitsHandler, loadUsageInstanceId } from "../src/usage-limits.js";
+import { isUsageReadToken } from "../src/usage-limits-auth.js";
 import { buildPools } from "../src/quota-pools.js";
 import { setPersistedAdminToken, isAdminTokenValid, isAdminAuthorized, createDashboardSession } from "../src/admin-auth.js";
 import { fixtureOverview, NOW, INSTANCE } from "./fixtures/usage-limits/v1/input.js";
+
+it("compares usage read tokens without hashing and rejects different byte lengths", (t) => {
+  const previous = process.env.TUXEVIL_ROTATOR_USAGE_READ_TOKEN;
+  process.env.TUXEVIL_ROTATOR_USAGE_READ_TOKEN = "reader-🔐";
+  t.after(() => {
+    if (previous === undefined) delete process.env.TUXEVIL_ROTATOR_USAGE_READ_TOKEN;
+    else process.env.TUXEVIL_ROTATOR_USAGE_READ_TOKEN = previous;
+  });
+  assert.equal(isUsageReadToken("reader-🔐"), true);
+  assert.equal(isUsageReadToken("reader-🔑"), false);
+  assert.equal(isUsageReadToken("short"), false);
+  assert.equal(isUsageReadToken(undefined), false);
+  delete process.env.TUXEVIL_ROTATOR_USAGE_READ_TOKEN;
+  assert.equal(isUsageReadToken("reader-🔐"), false);
+});
 
 it("matches shared dashboard observations exactly and excludes individual/compatibility data", async () => {
   const overview = fixtureOverview();

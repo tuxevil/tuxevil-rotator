@@ -2790,6 +2790,7 @@ export class AccountRotator {
     model?: string,
     failedAccount?: AccountRuntime | number | string,
     providerId?: string,
+    autoScope?: AutoAccountScope,
   ): Promise<AccountRuntime | null> {
     if (this.isProtectivePauseActive(Date.now())) return null;
     const modelKey = model ? this.resolveRequestPoolKey(model, providerId) : null;
@@ -2810,7 +2811,7 @@ export class AccountRotator {
         : this.defaultIndex;
     }
     return modelKey
-      ? this.rotateModel(modelKey, Date.now(), excludeIdx)
+      ? this.rotateModel(modelKey, Date.now(), excludeIdx, false, autoScope)
       : this.rotateDefault(Date.now(), false, excludeIdx);
   }
 

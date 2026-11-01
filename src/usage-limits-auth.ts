@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 
 export function usageReadToken(): string | null {
@@ -6,9 +6,10 @@ export function usageReadToken(): string | null {
 }
 export function isUsageReadToken(value: unknown): boolean {
   const token = usageReadToken();
-  return !!token && typeof value === "string" && timingSafeEqual(
-    createHash("sha256").update(token).digest(), createHash("sha256").update(value).digest(),
-  );
+  if (!token || typeof value !== "string") return false;
+  const expected = Buffer.from(token, "utf8");
+  const candidate = Buffer.from(value, "utf8");
+  return expected.length === candidate.length && timingSafeEqual(expected, candidate);
 }
 /** Reserve the read credential across conventional HTTP credential carriers. */
 export function carriesUsageReadToken(req: Pick<IncomingMessage, "url" | "headers">): boolean {

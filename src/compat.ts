@@ -2492,7 +2492,7 @@ async function completeViaRotator(
         }
       },
       controller.signal,
-      { autoRouting: options?.autoRecoveryEnabled === true && body.displayModel?.toLowerCase() === "auto" },
+      { autoRecovery: options?.autoRecoveryEnabled === true && body.displayModel?.toLowerCase() === "auto" },
     );
 
   let outcome: RotationOutcome<CompatCompletion>;
@@ -3187,7 +3187,6 @@ async function handleChatCompletions(
       selectionMode: autoSelection?.mode,
       selectionConfidence: autoSelection?.confidence,
       selectionReason: autoSelection?.reason,
-      autoRouting: autoRequested,
       autoRecovery: autoRequested
         ? (status, context, errorText) => recoverAutoChatCandidate(
           req,

@@ -1270,7 +1270,7 @@ export async function withRotation<T>(
     context: RotationAttemptContext,
   ) => Promise<T>,
   signal?: AbortSignal,
-  options?: { autoRouting?: boolean },
+  options?: { autoRecovery?: boolean },
 ): Promise<RotationOutcome<T>> {
   // Keep the admission pool and wire protocol stable across async waits and
   // retries, even if provider order or switches change while the request waits.
@@ -1278,7 +1278,7 @@ export async function withRotation<T>(
     ollamaModels: new Set(rotator.getOllamaModels?.() ?? []),
     codexModels: new Set(rotator.getCodexModels?.() ?? []),
   })?.id;
-  const autoScope = options?.autoRouting && providerId
+  const autoScope = body.displayModel?.toLowerCase() === "auto" && providerId
     ? { providerId, modelId: model }
     : undefined;
   const modelQuotaFamily = resolveQuotaModelKey(model) ??
@@ -1367,7 +1367,7 @@ export async function withRotation<T>(
     };
     const rotateAndRelease = async (): Promise<AccountRuntime | null> => {
       releaseCurrentAccount();
-      const nextAccount = await rotator.rotateToNext(model, account, providerId);
+      const nextAccount = await rotator.rotateToNext(model, account, providerId, autoScope);
       return nextAccount;
     };
     const logRequestEnd = (status: string | number, extra = ""): void => {
@@ -1453,7 +1453,7 @@ export async function withRotation<T>(
 
       // Preserve explicit-model behavior. Auto uses payment/plan and timeout
       // responses as request-local exclusions before any client bytes are sent.
-      if (options?.autoRouting && [402, 408].includes(response.status)) {
+      if (options?.autoRecovery && [402, 408].includes(response.status)) {
         const errorText = response.status === 402
           ? "Upstream payment or plan restriction"
           : "Upstream request timed out";
@@ -1521,7 +1521,7 @@ export async function withRotation<T>(
         inTokens || outTokens ? ` inTokens=${inTokens} outTokens=${outTokens}` : "";
       logRequestEnd(response.status, `endpoint=${endpoint}${ttfbInfo}${tokensInfo}`);
       if (shouldRotate) {
-        await rotator.rotateToNext(model, account, providerId);
+        await rotator.rotateToNext(model, account, providerId, autoScope);
       }
       return { ok: true, result, endpoint, context };
     } catch (err) {

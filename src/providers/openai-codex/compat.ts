@@ -42,7 +42,6 @@ export interface CodexCompatOptions {
   selectionMode?: "typesafe" | "deterministic" | "shadow" | "disabled";
   selectionConfidence?: number;
   selectionReason?: string;
-  autoRouting?: boolean;
   autoRecovery?: (status: number, context: RotationAttemptContext | undefined, errorText: string) => Promise<boolean>;
 }
 
@@ -631,7 +630,7 @@ export async function serveCodexChat(
       recordCodexTokenUsage(rotator, request.model, completion);
       recordCodexOutcome(rotator, body, context, response.status, completion, options);
       return completion;
-    }, controller.signal, { autoRouting: options?.autoRouting === true });
+    }, controller.signal, { autoRecovery: options?.autoRecovery !== undefined });
     recordCodexFailure(rotator, body, outcome, options);
     if (!outcome.ok && !res.headersSent && options?.autoRecovery) {
       if (await options.autoRecovery(outcome.status, outcome.context, outcome.errorText)) return;

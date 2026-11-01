@@ -378,6 +378,26 @@ describe("Models switch enforcement at request admission and dispatch", () => {
     assertReleased(accounts);
   });
 
+  it("enforces account entitlements for auto requests on non-chat compatibility routes", async () => {
+    const { rotator, accounts } = makeRotator({ typesafeRouting: { enabled: false } }, 2);
+    accounts[1].config.tier = "pro";
+    setAntigravityModelsForTest(["gemini-4-argon-high"], accounts.map(getAccountIdentity));
+
+    const base = await listenProxy(rotator);
+    const response = await post(`${base}/v1/messages`, {
+      model: "auto",
+      max_tokens: 16,
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(captures.length, 1);
+    assert.equal(captures[0]?.body.model, "gemini-4-argon-high");
+    assert.equal(captures[0]?.body.displayModel, "auto");
+    assert.equal(captures[0]?.account, accounts[1], "the Free account must not receive a paid-only model");
+    assertReleased(accounts);
+  });
+
   it("reports a provider switched off during queue admission as a model-off rejection", async () => {
     const { rotator, accounts } = makeRotator();
     const held = await rotator.getActiveAccount(MODEL, undefined, GOOGLE);
