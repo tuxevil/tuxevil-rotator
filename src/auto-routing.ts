@@ -71,6 +71,7 @@ export interface AutoRoutingRequest {
 
 const aaCandidatesByDecision = new WeakMap<object, {
   shortlist: AutoRoutingCandidate[];
+  fallbackPool?: AutoRoutingCandidate[];
   effortPool?: AutoRoutingCandidate[];
 }>();
 
@@ -346,6 +347,52 @@ function deterministicCompare(a: AutoRoutingCandidate, b: AutoRoutingCandidate):
   return a.modelId.localeCompare(b.modelId);
 }
 
+function isGemini38Flash(candidate: AutoRoutingCandidate): boolean {
+  return candidate.providerId === "google-antigravity"
+    && /^gemini-3\.8-flash(?:-|$)/i.test(candidate.modelId);
+}
+
+function isGpt6Luna(candidate: AutoRoutingCandidate): boolean {
+  return candidate.providerId === "openai-codex"
+    && /^gpt-6-luna(?:-|$)/i.test(candidate.modelId);
+}
+
+function isOpus46(candidate: AutoRoutingCandidate): boolean {
+  return candidate.providerId === "google-antigravity"
+    && /^claude-opus-4-6(?:-|$)/i.test(candidate.modelId);
+}
+
+function geminiEffortRank(modelId: string, taskEffort?: string): number {
+  const effort = modelId.toLowerCase().match(/-(low|medium|high)$/)?.[1] ?? "medium";
+  const order = taskEffort === "high" || taskEffort === "max" || taskEffort === "xhigh"
+    ? ["high", "medium", "low"]
+    : taskEffort === "low"
+      ? ["low", "medium", "high"]
+      : ["medium", "high", "low"];
+  return order.indexOf(effort);
+}
+
+function orderQuotaAwareFallbackCandidates(
+  candidates: AutoRoutingCandidate[],
+  taskEffort?: string,
+): AutoRoutingCandidate[] {
+  // Opus 4.6 has a comparatively small total quota. Keep it available to an
+  // explicit high-confidence classifier choice, but never spend fallback
+  // quota on it while another eligible model exists.
+  const fallbackPool = candidates.filter((candidate) => !isOpus46(candidate));
+  const gemini = fallbackPool
+    .filter(isGemini38Flash)
+    .sort((a, b) => geminiEffortRank(a.modelId, taskEffort) - geminiEffortRank(b.modelId, taskEffort)
+      || deterministicCompare(a, b));
+  const luna = fallbackPool.filter(isGpt6Luna).sort(deterministicCompare);
+  const preferred = new Set([...gemini, ...luna]);
+  return [
+    ...gemini,
+    ...luna,
+    ...fallbackPool.filter((candidate) => !preferred.has(candidate)),
+  ];
+}
+
 /**
  * Keep Jev's question small without allowing the best operational provider to
  * crowd every other provider/family out of the semantic decision. Candidates
@@ -416,7 +463,7 @@ export function buildAutoRoutingCandidates(
   rotator: AutoRoutingRotator,
   catalog: AutoRoutingCatalogEntry[],
   request: AutoRoutingRequest,
-): { candidates: AutoRoutingCandidate[]; requirements: RoutingRequirements; excluded: Record<string, number>; eligibleCount: number } {
+): { candidates: AutoRoutingCandidate[]; fallbackCandidates: AutoRoutingCandidate[]; requirements: RoutingRequirements; excluded: Record<string, number>; eligibleCount: number } {
   const requirements = getRequirements(request.input);
   const requiredTokens = estimateAutoRoutingTokens(request.input);
   const candidates: AutoRoutingCandidate[] = [];
@@ -478,6 +525,9 @@ export function buildAutoRoutingCandidates(
     excluded,
     eligibleCount: candidates.length,
     candidates: diverseShortlist(candidatePool, shortlistSize),
+    // Keep the full eligible pool for deterministic fallbacks. The classifier
+    // shortlist limits prompt size; it must not hide the quota-preferred models.
+    fallbackCandidates: candidates,
     requirements,
   };
 }
@@ -501,13 +551,38 @@ async function selectAutoRoutingTargetInternal(
 ): Promise<AutoRoutingSelection | null> {
   const config = rotator.getConfig?.().typesafeRouting;
   const excerptLimit = Math.max(256, Math.min(50_000, config?.maxExcerptChars ?? DEFAULT_MAX_EXCERPT_CHARS));
-  const { candidates, requirements, excluded, eligibleCount } = buildAutoRoutingCandidates(rotator, catalog, request);
+  const { candidates, fallbackCandidates, requirements, excluded, eligibleCount } = buildAutoRoutingCandidates(rotator, catalog, request);
   aaCandidatesByDecision.set(diagnostics, { shortlist: candidates });
   Object.assign(diagnostics, { excluded, eligible_count: eligibleCount, shortlist_count: candidates.length });
   if (candidates.length === 0) return null;
 
-  const deterministic = (reason: string): AutoRoutingSelection | null =>
-    deterministicSelection(candidates, reason);
+  const deterministic = (
+    reason: string,
+    pool: AutoRoutingCandidate[] = fallbackCandidates,
+    taskEffort?: string,
+  ): AutoRoutingSelection | null => {
+    const available = pool.filter((candidate) => !isOpus46(candidate));
+    const ordered = orderQuotaAwareFallbackCandidates(available, taskEffort);
+    const selection = deterministicSelection(
+      ordered,
+      available.length === 0 ? "no-quota-aware-fallback-candidates" : reason,
+    );
+    const candidateSets = aaCandidatesByDecision.get(diagnostics) ?? { shortlist: candidates };
+    candidateSets.fallbackPool = available;
+    aaCandidatesByDecision.set(diagnostics, candidateSets);
+    Object.assign(diagnostics, {
+      fallback_policy: "quota-aware-v1",
+      fallback_candidate_count: available.length,
+      fallback_preference: selection
+        ? isGemini38Flash(selection.candidate)
+          ? "gemini-3.8-flash"
+          : isGpt6Luna(selection.candidate)
+            ? "gpt-6-luna"
+            : "operational-order"
+        : "none",
+    });
+    return selection;
+  };
   const environmentApiKey = rotatorEnv("TYPESAFE_API_KEY") || process.env.TYPESAFE_API_KEY;
   const apiKey = config?.apiKey?.trim() || environmentApiKey?.trim();
   if (config?.enabled === false || !apiKey || isEncryptedSecret(apiKey) || isRedactedSecret(apiKey)) {
@@ -595,10 +670,10 @@ async function selectAutoRoutingTargetInternal(
         selection_policy: "effort-pools",
       });
       if (!Number.isFinite(effortConfidence) || effortConfidence < minConfidence || effortConfidence > 1) {
-        return deterministic("typesafe-effort-low-confidence");
+        return deterministic("typesafe-effort-low-confidence", fallbackCandidates, taskEffort);
       }
       const pool = config.effortPools?.[taskEffort as keyof typeof EFFORT_CRITERIA];
-      if (!pool?.length) return deterministic("typesafe-effort-pool-missing");
+      if (!pool?.length) return deterministic("typesafe-effort-pool-missing", fallbackCandidates, taskEffort);
       const members = new Set(pool);
       const eligible = buildAutoRoutingCandidates(rotator,
         catalog.filter(entry => members.has(`${entry.providerId}/${entry.modelId}`)), request);
@@ -611,8 +686,11 @@ async function selectAutoRoutingTargetInternal(
         effort_pool_model: recommended?.modelId ?? null,
         effort_pool_provider: recommended?.providerId ?? null,
       });
-      if (!recommended) return deterministic("typesafe-effort-pool-unavailable");
-      if (config.shadowMode) return { candidate: candidates[0], mode: "shadow", reason: "typesafe-effort-pool-shadow" };
+      if (!recommended) return deterministic("typesafe-effort-pool-unavailable", fallbackCandidates, taskEffort);
+      if (config.shadowMode) {
+        const shadowFallback = deterministic("typesafe-effort-pool-shadow", fallbackCandidates, taskEffort);
+        return shadowFallback ? { ...shadowFallback, mode: "shadow" } : null;
+      }
       return { candidate: recommended, mode: "typesafe", confidence: effortConfidence, reason: "typesafe-effort-pool-selected" };
     }
     // Effort confidence is diagnostic evidence; it must not disable the
@@ -620,10 +698,10 @@ async function selectAutoRoutingTargetInternal(
     const effortRequiresReasoning = ["high", "max"].includes(taskEffort);
     const deterministicForEffort = (reason: string): AutoRoutingSelection | null => {
       if (effortRequiresReasoning) {
-        const reasoningCandidates = candidates.filter((candidate) => candidate.reasoning);
-        if (reasoningCandidates.length > 0) return deterministicSelection(reasoningCandidates, reason);
+        const reasoningCandidates = fallbackCandidates.filter((candidate) => candidate.reasoning);
+        if (reasoningCandidates.length > 0) return deterministic(reason, reasoningCandidates, taskEffort);
       }
-      return deterministic(reason);
+      return deterministic(reason, fallbackCandidates, taskEffort);
     };
     const selected = asRecord(answer.answers.selected_model);
     const selectedId = typeof selected?.choice === "string" ? selected.choice : String(selected?.choice ?? "");
@@ -658,7 +736,7 @@ async function selectAutoRoutingTargetInternal(
       return Number.isFinite(probability) && probability >= 0 && probability <= 1 ? probability : 0;
     };
     const jevChoice = candidates.find((candidate) => candidate.id === selectedId);
-    if (!jevChoice) return deterministic("typesafe-invalid-choice");
+    if (!jevChoice) return deterministic("typesafe-invalid-choice", fallbackCandidates, taskEffort);
     let chosen = jevChoice;
     let reason = "typesafe-selected";
     let policyOverrodeChoice = false;
@@ -674,7 +752,7 @@ async function selectAutoRoutingTargetInternal(
       }
     }
     if (config?.shadowMode) {
-      const served = deterministicSelection(candidates, "typesafe-shadow");
+      const served = deterministic("typesafe-shadow", fallbackCandidates, taskEffort);
       if (!served) return null;
       logShadowDecision(
         request.route,
@@ -707,7 +785,10 @@ async function selectAutoRoutingTargetInternal(
     breaker.probing = false;
     // Jev is an optional semantic layer. A transport, timeout, or malformed
     // answer must never make an otherwise routable request fail closed.
-    return deterministic("typesafe-error");
+    const taskEffort = typeof diagnostics.classifier_effort === "string"
+      ? diagnostics.classifier_effort
+      : undefined;
+    return deterministic("typesafe-error", fallbackCandidates, taskEffort);
   }
 }
 
@@ -832,7 +913,7 @@ export async function selectAutoRoutingTarget(
       const effortPoolCandidates = candidateSets?.effortPool ?? [];
       const servedCandidates = selection.reason === "typesafe-effort-pool-selected"
         ? effortPoolCandidates
-        : broadCandidates;
+        : candidateSets?.fallbackPool ?? broadCandidates;
       const resolveLoggedCandidate = (model: unknown, provider: unknown): AutoRoutingCandidate | undefined =>
         typeof model === "string" && typeof provider === "string"
           ? [...broadCandidates, ...effortPoolCandidates].find(candidate => candidate.modelId === model && candidate.providerId === provider)
