@@ -1,5 +1,21 @@
 # Changelog
 
+## [4.4.0] - Unreleased
+
+### Added
+
+- **Auto-routing assessment and evaluation**: Record Artificial Analysis index assessments beside routing decisions, including comparable score versions, candidate ranks and fallback pools. Add effort-pool shadow evaluation, routing quality fixtures, and local evaluation tools for exact-match and isolated coding tasks.
+- **Provider model-access evidence**: Track account-scoped model catalogs and entitlement evidence, run bounded access probes, enforce configured provider/account/model eligibility in `auto`, and expose access diagnostics in the dashboard.
+- **Aggregated usage limits**: Add a read-only API and dashboard views for provider/model quota pools while preserving unknown values, partial coverage and source provenance.
+- **Bounded auto recovery and continuity**: Recover eligible OpenAI Chat Completions requests after empty Ollama output or structured upstream availability failures before client output is committed. Add opt-in session continuity and bounded escalation after repeated structured tool failures.
+
+### Changed
+
+- **Quota-aware deterministic fallback**: Prefer eligible Gemini 3.8 Flash variants matched to task effort, then GPT-6 Luna, followed by operational-score order. Exclude Claude Opus 4.6 from deterministic fallback while retaining confident classifier selection. Keep fallback choices independent of the classifier shortlist.
+- **Provider eligibility and discovery**: Apply account-level access evidence before auto selection, preserve OpenCode-restricted free models for eligible OpenCode-originated requests, and expose `auto` in model discovery.
+- **Provider reliability and metadata**: Preserve access evidence across verified Codex OAuth refreshes, honor discovered Ollama context limits, and reject empty or malformed Ollama completions before they reach clients.
+- **Prompt compression**: Deduplicate repeated routing instructions and filter them before lossy compression.
+
 ## [4.3.0] - 2026-10-29
 
 ### Added

@@ -111,15 +111,15 @@ describe("Artificial Analysis routing assessment", () => {
       console.info = originalInfo;
     }
 
-    assert.equal(selectedModel, "gemini-4-argon-high");
+    assert.equal(selectedModel, "gemini-3.8-flash-high");
     const shadowLog = logArgs.find(args => String(args[1]).includes("auto-routing-decision"));
     assert.ok(shadowLog);
     const shadowEvent = JSON.parse(String(shadowLog[1])) as {
       aa_quality_assessment?: { served?: { scoreVersion?: string; selectedScore?: number; rank?: number } };
     };
     assert.equal(shadowEvent.aa_quality_assessment?.served?.scoreVersion, "v5.0");
-    assert.equal(shadowEvent.aa_quality_assessment?.served?.selectedScore, 50);
-    assert.equal(shadowEvent.aa_quality_assessment?.served?.rank, 1);
+    assert.equal(shadowEvent.aa_quality_assessment?.served?.selectedScore, 31);
+    assert.equal(shadowEvent.aa_quality_assessment?.served?.rank, 2);
 
     const normalLog: unknown[][] = [];
     const normalRotator = {
@@ -145,7 +145,7 @@ describe("Artificial Analysis routing assessment", () => {
     assert.equal(normalSelectedModel, selectedModel);
     assert.equal(normalEvent.model, selectedModel);
     assert.equal(normalEvent.aa_quality_assessment?.served?.scoreVersion, "v5.0");
-    assert.equal(normalEvent.aa_quality_assessment?.served?.selectedScore, 50);
-    assert.equal(normalEvent.aa_quality_assessment?.served?.rank, 1);
+    assert.equal(normalEvent.aa_quality_assessment?.served?.selectedScore, 31);
+    assert.equal(normalEvent.aa_quality_assessment?.served?.rank, 2);
   });
 });

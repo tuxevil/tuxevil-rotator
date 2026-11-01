@@ -8,6 +8,7 @@ import {
   selectAutoRoutingTarget,
   type AutoRoutingCatalogEntry,
   type AutoRoutingRequest,
+  type AutoRoutingRotator,
 } from "../src/auto-routing.js";
 import { isVirtualKeyModelAllowed } from "../src/key-auth.js";
 import type { VirtualKey } from "../src/types.js";
@@ -84,6 +85,36 @@ const catalog: AutoRoutingCatalogEntry[] = [
     family: "ollama",
   },
 ];
+
+type QuotaAwareRotator = AutoRoutingRotator & { getConfig: () => Config };
+
+function quotaAwareRotator(scores: Record<string, number> = {}): QuotaAwareRotator {
+  const rotator = fakeRotator("") as unknown as QuotaAwareRotator;
+  Object.assign(rotator.getConfig().typesafeRouting!, {
+    enabled: false,
+    apiKey: "",
+    minConfidence: 0.45,
+    shortlistSize: 12,
+  });
+  rotator.hasActiveProvider = () => true;
+  rotator.getAutoRoutingCandidateStatus = (modelId, providerId) => ({
+    available: true,
+    operationalScore: scores[`${providerId}/${modelId}`] ?? 0.5,
+    poolKey: `${providerId}:${modelId}`,
+  });
+  return rotator;
+}
+
+function quotaCatalog(...models: Array<[providerId: string, modelId: string]>): AutoRoutingCatalogEntry[] {
+  return models.map(([providerId, modelId]) => ({
+    providerId,
+    modelId,
+    contextWindow: 1_000_000,
+    multimodal: true,
+    tools: true,
+    reasoning: true,
+  }));
+}
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
@@ -756,4 +787,108 @@ it("keeps operational health visible while excluding account-ineligible models f
   }, [entry], { route: "openai-chat", input: { messages: [{ role: "user", content: "test" }] } });
   assert.equal(result.candidates.length, 0);
   assert.equal(result.excluded["access-policy"], 1);
+});
+
+it("uses classified effort across the full eligible pool for quota-aware Gemini fallback", async () => {
+  let effort: "high" | "max" | "low" = "high";
+  const received: Record<string, unknown>[] = [];
+  const baseURL = await startServer((body) => {
+    received.push(body);
+    return {
+      status: 200,
+      body: { answers: {
+        task_effort: { choice: effort, confidence: 0.9 },
+        selected_model: { choice: "candidate_0", confidence: 0.1 },
+      } },
+    };
+  });
+  const rotator = quotaAwareRotator({
+    "google-antigravity/gemini-4-argon-high": 0.99,
+    "google-antigravity/gemini-3.8-flash-low": 0.8,
+    "google-antigravity/gemini-3.8-flash-medium": 0.7,
+    "google-antigravity/gemini-3.8-flash-high": 0.6,
+  });
+  Object.assign(rotator.getConfig()!.typesafeRouting!, {
+    enabled: true,
+    apiKey: "test-typesafe-key",
+    baseURL,
+    shortlistSize: 1,
+  });
+  const candidates = quotaCatalog(
+    ["google-antigravity", "gemini-4-argon-high"],
+    ["google-antigravity", "gemini-3.8-flash-low"],
+    ["google-antigravity", "gemini-3.8-flash-medium"],
+    ["google-antigravity", "gemini-3.8-flash-high"],
+  );
+  const request: AutoRoutingRequest = { route: "openai-chat", input: { messages: [{ role: "user", content: "hello" }] } };
+
+  const high = await selectAutoRoutingTarget(rotator, candidates, request);
+  assert.equal(high?.reason, "typesafe-low-confidence");
+  assert.equal(high?.candidate.modelId, "gemini-3.8-flash-high");
+  const highState = received[0]?.state as { candidates: Array<{ model: string }> };
+  assert.deepEqual(highState.candidates.map((candidate) => candidate.model), ["gemini-4-argon-high"]);
+
+  effort = "max";
+  const max = await selectAutoRoutingTarget(rotator, candidates, request);
+  assert.equal(max?.candidate.modelId, "gemini-3.8-flash-high");
+
+  effort = "low";
+  const low = await selectAutoRoutingTarget(rotator, candidates, request);
+  assert.equal(low?.candidate.modelId, "gemini-3.8-flash-low");
+});
+
+it("defaults quota-aware Gemini fallback to medium and prefers GPT-6 Luna when Gemini is absent", async () => {
+  const variants = quotaCatalog(
+    ["google-antigravity", "gemini-3.8-flash-low"],
+    ["google-antigravity", "gemini-3.8-flash-high"],
+    ["google-antigravity", "gemini-3.8-flash-medium"],
+  );
+  const variantRotator = quotaAwareRotator({
+    "google-antigravity/gemini-3.8-flash-low": 0.99,
+    "google-antigravity/gemini-3.8-flash-high": 0.9,
+    "google-antigravity/gemini-3.8-flash-medium": 0.5,
+  });
+  const request: AutoRoutingRequest = { route: "openai-chat", input: "hello" };
+  assert.equal((await selectAutoRoutingTarget(variantRotator, variants, request))?.candidate.modelId, "gemini-3.8-flash-medium");
+
+  const lunaOnly = quotaCatalog(["ollama", "beam"], ["openai-codex", "gpt-6-luna"]);
+  const lunaRotator = quotaAwareRotator({
+    "ollama/beam": 0.99,
+    "openai-codex/gpt-6-luna": 0.1,
+  });
+  assert.equal((await selectAutoRoutingTarget(lunaRotator, lunaOnly, request))?.candidate.modelId, "gpt-6-luna");
+});
+
+it("excludes Opus 4.6 from deterministic fallback but allows a confident classifier choice", async () => {
+  const candidates = quotaCatalog(
+    ["google-antigravity", "claude-opus-4-6"],
+    ["openai-codex", "gpt-6-luna"],
+  );
+  const rotator = quotaAwareRotator({
+    "google-antigravity/claude-opus-4-6": 0.99,
+    "openai-codex/gpt-6-luna": 0.5,
+  });
+  const request: AutoRoutingRequest = { route: "openai-chat", input: "hello" };
+  assert.equal((await selectAutoRoutingTarget(rotator, candidates, request))?.candidate.modelId, "gpt-6-luna");
+  assert.equal(await selectAutoRoutingTarget(rotator, candidates.slice(0, 1), request), null);
+
+  const baseURL = await startServer(() => ({
+    status: 200,
+    body: { answers: {
+      task_effort: { choice: "medium", confidence: 0.9 },
+      selected_model: { choice: "candidate_0", confidence: 0.99 },
+    } },
+  }));
+  const classifiedRotator = quotaAwareRotator({
+    "google-antigravity/claude-opus-4-6": 0.99,
+    "openai-codex/gpt-6-luna": 0.5,
+  });
+  Object.assign(classifiedRotator.getConfig()!.typesafeRouting!, {
+    enabled: true,
+    apiKey: "test-typesafe-key",
+    baseURL,
+  });
+  const selected = await selectAutoRoutingTarget(classifiedRotator, candidates, request);
+  assert.equal(selected?.mode, "typesafe");
+  assert.equal(selected?.candidate.modelId, "claude-opus-4-6");
 });
