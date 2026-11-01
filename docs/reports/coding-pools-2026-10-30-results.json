@@ -1,0 +1,156 @@
+{
+  "status": "complete",
+  "models": [
+    "gemini-3.8-flash-medium",
+    "gemini-4-argon-medium",
+    "claude-sonnet-5-5-medium",
+    "gpt-6.1-terra"
+  ],
+  "maxTokens": 2048,
+  "timeoutSeconds": 45,
+  "results": [
+    {
+      "task": "merge-intervals",
+      "model": "gemini-3.8-flash-medium",
+      "passed": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 69,
+        "completion_tokens": 199,
+        "total_tokens": 268
+      },
+      "servedModel": "gemini-3.8-flash-medium",
+      "latencyMs": 9561
+    },
+    {
+      "task": "merge-intervals",
+      "model": "gemini-4-argon-medium",
+      "passed": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 97,
+        "completion_tokens": 212,
+        "total_tokens": 309
+      },
+      "servedModel": "gemini-4-argon-medium",
+      "latencyMs": 5526
+    },
+    {
+      "task": "merge-intervals",
+      "model": "claude-sonnet-5-5-medium",
+      "passed": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 136,
+        "completion_tokens": 309,
+        "total_tokens": 445
+      },
+      "servedModel": "claude-sonnet-5-5-medium",
+      "latencyMs": 3091
+    },
+    {
+      "task": "merge-intervals",
+      "model": "gpt-6.1-terra",
+      "passed": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 84,
+        "completion_tokens": 170,
+        "total_tokens": 254
+      },
+      "servedModel": "gpt-6.1-terra",
+      "latencyMs": 3357
+    },
+    {
+      "task": "json-merge-patch",
+      "model": "gemini-4-argon-medium",
+      "passed": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 119,
+        "completion_tokens": 374,
+        "total_tokens": 493
+      },
+      "servedModel": "gemini-4-argon-medium",
+      "latencyMs": 7158
+    },
+    {
+      "task": "json-merge-patch",
+      "model": "claude-sonnet-5-5-medium",
+      "passed": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 174,
+        "completion_tokens": 1818,
+        "total_tokens": 1992
+      },
+      "servedModel": "claude-sonnet-5-5-medium",
+      "latencyMs": 13651
+    },
+    {
+      "task": "json-merge-patch",
+      "model": "gpt-6.1-terra",
+      "passed": false,
+      "error": "http-400",
+      "latencyMs": 606
+    },
+    {
+      "task": "json-merge-patch",
+      "model": "gemini-3.8-flash-medium",
+      "passed": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 88,
+        "completion_tokens": 415,
+        "total_tokens": 503
+      },
+      "servedModel": "gemini-3.8-flash-medium",
+      "latencyMs": 33871
+    },
+    {
+      "task": "csv-parser",
+      "model": "claude-sonnet-5-5-medium",
+      "passed": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 169,
+        "completion_tokens": 1127,
+        "total_tokens": 1296
+      },
+      "servedModel": "claude-sonnet-5-5-medium",
+      "latencyMs": 8707
+    },
+    {
+      "task": "csv-parser",
+      "model": "gpt-6.1-terra",
+      "passed": false,
+      "error": "skipped-after-operational-failure"
+    },
+    {
+      "task": "csv-parser",
+      "model": "gemini-3.8-flash-medium",
+      "passed": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 96,
+        "completion_tokens": 447,
+        "total_tokens": 543
+      },
+      "servedModel": "gemini-3.8-flash-medium",
+      "latencyMs": 30261
+    },
+    {
+      "task": "csv-parser",
+      "model": "gemini-4-argon-medium",
+      "passed": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 126,
+        "completion_tokens": 549,
+        "total_tokens": 675
+      },
+      "servedModel": "gemini-4-argon-medium",
+      "latencyMs": 8310
+    }
+  ]
+}

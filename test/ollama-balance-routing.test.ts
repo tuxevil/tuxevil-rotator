@@ -49,4 +49,40 @@ describe("Ollama balance routing", () => {
     setBalance(0);
     assert.equal(rotator.getAutoRoutingCandidateStatus("gemma4:31b", "ollama").available, false);
   });
+
+  it("excludes Ollama models outside the confirmed Free credits from auto", () => {
+    const rotator = new AccountRotator({
+      accounts: [{ email: "credits@test.dev", credentials: [{ provider: "ollama", apiKey: "test-key" }] }],
+      proxyPort: 0, requestsPerRotation: 5, rotateOnQuotaDrop: 20, quotaPollIntervalMs: 300_000,
+    });
+    rotator.stopQuotaPolling();
+    rotator.setOllamaModels(["beam", "deepseek-v4.1-flash:1017"]);
+    const [account] = (rotator as unknown as { accounts: AccountRuntime[] }).accounts;
+    account.quota = extractBalancePools({ purchased: { balance_usd: 5 } }).map(q => ({ ...q, providerId: "ollama" }));
+    assert.equal(rotator.getAutoRoutingCandidateStatus("beam", "ollama").available, true);
+    const deepseek = rotator.getAutoRoutingCandidateStatus("deepseek-v4.1-flash:1017", "ollama");
+    assert.equal(deepseek.available, true, "operational health stays separate from auto plan eligibility");
+    const access = rotator.getAutoRoutingAccessStatus("deepseek-v4.1-flash:1017", "ollama");
+    assert.equal(access.eligible, false);
+    assert.match(access.reason ?? "", /Free-plan auto-routing list/);
+  });
+
+  it("selects a Codex Plus account for a Plus-only auto model", async () => {
+    const rotator = new AccountRotator({
+      accounts: [
+        { email: "free@test.dev", tier: "free", credentials: [{ provider: "openai-codex", refreshToken: "free", providerAccountId: "free" }] },
+        { email: "plus@test.dev", tier: "plus", credentials: [{ provider: "openai-codex", refreshToken: "plus", providerAccountId: "plus" }] },
+      ],
+      proxyPort: 0, requestsPerRotation: 5, rotateOnQuotaDrop: 20, quotaPollIntervalMs: 300_000,
+    });
+    rotator.stopQuotaPolling();
+    rotator.setCodexModels(["gpt-6.1-terra"]);
+    (rotator as unknown as { ensureValidTokenForModel: () => Promise<void> }).ensureValidTokenForModel = async () => {};
+    const account = await rotator.getActiveAccount("gpt-6.1-terra", undefined, "openai-codex", {
+      providerId: "openai-codex",
+      modelId: "gpt-6.1-terra",
+    });
+    assert.equal(account?.config.email, "plus@test.dev");
+    if (account) rotator.finishRequest(account, "gpt-6.1-terra", "openai-codex");
+  });
 });

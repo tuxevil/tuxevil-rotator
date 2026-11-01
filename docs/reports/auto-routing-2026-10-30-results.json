@@ -1,0 +1,168 @@
+{
+  "evaluatedAt": "2026-10-30T13:33:22.485Z",
+  "check": "trimmed-exact-match",
+  "results": [
+    {
+      "caseId": "arithmetic-repeat-1",
+      "requestedModel": "auto",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 1502.53,
+      "inputTokens": 68,
+      "outputTokens": 70
+    },
+    {
+      "caseId": "arithmetic-repeat-1",
+      "requestedModel": "beam",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 1085.19,
+      "inputTokens": 68,
+      "outputTokens": 75
+    },
+    {
+      "caseId": "json-extraction-repeat-1",
+      "requestedModel": "beam",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 847.4,
+      "inputTokens": 68,
+      "outputTokens": 42
+    },
+    {
+      "caseId": "json-extraction-repeat-1",
+      "requestedModel": "auto",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 1472.42,
+      "inputTokens": 68,
+      "outputTokens": 85
+    },
+    {
+      "caseId": "logic-repeat-1",
+      "requestedModel": "auto",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 1323.89,
+      "inputTokens": 83,
+      "outputTokens": 109
+    },
+    {
+      "caseId": "logic-repeat-1",
+      "requestedModel": "beam",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 1288.01,
+      "inputTokens": 83,
+      "outputTokens": 101
+    },
+    {
+      "caseId": "arithmetic-repeat-2",
+      "requestedModel": "beam",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 752.05,
+      "inputTokens": 68,
+      "outputTokens": 61
+    },
+    {
+      "caseId": "arithmetic-repeat-2",
+      "requestedModel": "auto",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 931.81,
+      "inputTokens": 68,
+      "outputTokens": 40
+    },
+    {
+      "caseId": "json-extraction-repeat-2",
+      "requestedModel": "auto",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 1116.64,
+      "inputTokens": 68,
+      "outputTokens": 61
+    },
+    {
+      "caseId": "json-extraction-repeat-2",
+      "requestedModel": "beam",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 2463.29,
+      "inputTokens": 68,
+      "outputTokens": 48
+    },
+    {
+      "caseId": "logic-repeat-2",
+      "requestedModel": "beam",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 1285.55,
+      "inputTokens": 83,
+      "outputTokens": 140
+    },
+    {
+      "caseId": "logic-repeat-2",
+      "requestedModel": "auto",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 1566.42,
+      "inputTokens": 83,
+      "outputTokens": 113
+    },
+    {
+      "caseId": "arithmetic-repeat-3",
+      "requestedModel": "auto",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 1039.53,
+      "inputTokens": 68,
+      "outputTokens": 69
+    },
+    {
+      "caseId": "arithmetic-repeat-3",
+      "requestedModel": "beam",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 930.82,
+      "inputTokens": 68,
+      "outputTokens": 67
+    },
+    {
+      "caseId": "json-extraction-repeat-3",
+      "requestedModel": "beam",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 964.4,
+      "inputTokens": 68,
+      "outputTokens": 49
+    },
+    {
+      "caseId": "json-extraction-repeat-3",
+      "requestedModel": "auto",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 1107.52,
+      "inputTokens": 68,
+      "outputTokens": 55
+    },
+    {
+      "caseId": "logic-repeat-3",
+      "requestedModel": "auto",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 1340.4,
+      "inputTokens": 83,
+      "outputTokens": 110
+    },
+    {
+      "caseId": "logic-repeat-3",
+      "requestedModel": "beam",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 1155.04,
+      "inputTokens": 83,
+      "outputTokens": 147
+    }
+  ]
+}

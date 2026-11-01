@@ -399,6 +399,10 @@ describe("OpenCode Zen Provider Adapter", () => {
       assert.equal(account.quota[0].providerId, OPENCODE_ZEN_PROVIDER_ID);
       assert.equal(account.quota[0].displayName, "OpenCode");
       assert.equal(account.quota[0].percentRemaining, 100);
+      assert.equal(account.quota[0].observation?.remainingPercent, null);
+      assert.equal(account.quota[0].observation?.percentageSource, "unknown");
+      assert.equal(account.quota[0].observation?.catalogAccessible, true);
+      assert.ok(account.quota[0].observation!.observedAt > 0);
       assert.equal(capturedUserAgent, OPENCODE_ZEN_USER_AGENT);
     } finally {
       globalThis.fetch = originalFetch;

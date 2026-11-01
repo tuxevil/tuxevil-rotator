@@ -118,6 +118,7 @@ function successResponse(providerId = GOOGLE) {
 function makeRotator(overrides: Partial<Config> = {}, count = 1) {
   const configs = Array.from({ length: count }, (): AccountConfig => ({
     email: `switch-${++accountSequence}@example.com`,
+    tier: "free",
     credentials: [
       { provider: GOOGLE, refreshToken: "test-refresh", projectId: `project-${accountSequence}` },
       { provider: "ollama", apiKey: "test-ollama-key" },
@@ -374,6 +375,26 @@ describe("Models switch enforcement at request admission and dispatch", () => {
     await response.text();
     assert.equal(captures[0]?.body.displayModel, "auto");
     assert.equal(captures[0]?.body.model, EFFORT_TARGET);
+    assertReleased(accounts);
+  });
+
+  it("enforces account entitlements for auto requests on non-chat compatibility routes", async () => {
+    const { rotator, accounts } = makeRotator({ typesafeRouting: { enabled: false } }, 2);
+    accounts[1].config.tier = "pro";
+    setAntigravityModelsForTest(["gemini-4-argon-high"], accounts.map(getAccountIdentity));
+
+    const base = await listenProxy(rotator);
+    const response = await post(`${base}/v1/messages`, {
+      model: "auto",
+      max_tokens: 16,
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(captures.length, 1);
+    assert.equal(captures[0]?.body.model, "gemini-4-argon-high");
+    assert.equal(captures[0]?.body.displayModel, "auto");
+    assert.equal(captures[0]?.account, accounts[1], "the Free account must not receive a paid-only model");
     assertReleased(accounts);
   });
 

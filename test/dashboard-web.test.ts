@@ -670,3 +670,126 @@ describe("Ollama credit pools", () => {
     assert.equal(pool.capacity, 0, "included usage stays separate from purchased credit");
   });
 });
+
+
+describe("traceable quota observations", () => {
+  function measured(key: string, value: number, at = NOW, providerId = "google-antigravity"): ModelQuota {
+    return quota(key, value, { providerId, observation: {
+      observedAt: at, percentageSource: "derived", remainingPercent: value,
+      resetSource: "reported", resetAt: new Date(NOW + H).toISOString(),
+    } });
+  }
+  it("keeps legacy/router values but does not invent observations for restored data", () => {
+    const legacy = quota("claude", 100);
+    const restored = JSON.parse(JSON.stringify(legacy));
+    const [pool] = buildPools(overview({ accounts: [account("old", { quota: [restored] })] }), NOW);
+    assert.equal(pool.capacity, 100);
+    assert.equal(pool.observedCapacity, null);
+    assert.equal(pool.observedWithQuota, null);
+    assert.equal(pool.freshness, "unknown");
+    assert.equal(pool.observedAt, null);
+  });
+  it("uses the same tier and allowance formula for observed capacity", () => {
+    const [pool] = buildPools(overview({ accounts: [
+      account("free", { tier: "free", quota: [measured("claude", 100)] }),
+      account("ultra", { tier: "ultra", quota: [measured("claude", 0)] }),
+    ] }), NOW);
+    assert.equal(pool.observedCapacity, 11);
+    assert.equal(pool.observedCapacity, pool.capacity);
+    assert.equal(pool.capacityBasis, "tier-estimate");
+    assert.equal(pool.observedWithQuota, 1);
+  });
+  it("keeps provider collisions separate without changing router model keys", () => {
+    const pools = buildPools(overview({ accounts: [account("shared", { quota: [
+      measured("same", 20, NOW, "ollama"), measured("same", 80, NOW, "other"),
+    ] })] }), NOW);
+    assert.equal(pools.length, 2);
+    assert.equal(new Set(pools.map(p => p.id)).size, 2);
+    assert.deepEqual(pools.map(p => p.key), ["same", "same"]);
+    assert.deepEqual(pools.map(p => p.observedCapacity).sort(), [20, 80]);
+    assert.ok(pools.every(p => p.eligibleNow === null));
+  });
+  it("does not refresh stale or missing sibling-provider observations", () => {
+    const pools = buildPools(overview({ accounts: [account("shared", { quota: [
+      measured("claude", 80, NOW - H), measured("monthly", 90, NOW, "ollama"),
+    ] })] }), NOW);
+    assert.equal(pools.find(p => p.key === "claude")!.freshness, "stale");
+    assert.equal(pools.find(p => p.key === "monthly")!.freshness, "fresh");
+    assert.equal(pools.find(p => p.key === "claude")!.observedAt, NOW - H);
+  });
+  it("separates observed quota from local cooldown overrides", () => {
+    const q = measured("claude", 80);
+    q.percentRemaining = 0;
+    const [pool] = buildPools(overview({ accounts: [account("cooldown", { status: "cooldown", quota: [q] })],
+      routingDiagnostics: { claude: { modelKey: "claude", policy: "timer-first", selectedEmail: null,
+        reason: "cooldown", availableCandidates: 0, rejectedCandidates: 1,
+        accounts: [diagEntry("cooldown", 0, "cooldown")] } },
+    }), NOW);
+    assert.equal(pool.withQuota, 0);
+    assert.equal(pool.observedWithQuota, 1);
+    assert.equal(pool.eligibleNow, 0);
+    assert.equal(pool.observedCapacity, 80);
+  });
+  it("represents catalog access as unknown quota despite compatibility 100", () => {
+    const q = measured("opencode-zen", 100, NOW, "opencode-zen");
+    q.observation = { ...q.observation!, percentageSource: "unknown", remainingPercent: null, catalogAccessible: true };
+    const [pool] = buildPools(overview({ accounts: [account("zen", { quota: [q] })] }), NOW);
+    assert.equal(q.percentRemaining, 100);
+    assert.equal(pool.catalogAccessible, true);
+    assert.equal(pool.observedCapacity, null);
+    assert.equal(pool.observedWithQuota, null);
+  });
+  it("preserves credits, estimated reset provenance and prepaid availability", () => {
+    const q = measured("monthly", 0, NOW, "ollama");
+    q.credits = { balanceUsd: 0, allowanceUsd: 10, purchasedUsd: 5 };
+    q.observation!.resetSource = "estimated";
+    const [pool] = buildPools(overview({ accounts: [account("credit", { quota: [q] })] }), NOW);
+    assert.equal(pool.observedCapacity, 0);
+    assert.equal(pool.observedWithQuota, 1);
+    assert.deepEqual(pool.credits, q.credits);
+    assert.equal(pool.capacityBasis, "included-credits");
+    assert.equal(pool.resetBasis, "estimated");
+    assert.equal(pool.observedNextResetAt, NOW + H);
+  });
+});
+
+it("retains partial observed quota coverage without inventing a fleet percentage", () => {
+  const q = quota("claude", 80, { observation: {
+    observedAt: NOW, percentageSource: "derived", remainingPercent: 80,
+    resetSource: "reported", resetAt: null,
+  } });
+  const missing = quota("claude", 0);
+  const [pool] = buildPools(overview({ accounts: [
+    account("measured", { quota: [q] }), account("unknown", { quota: [missing] }),
+  ] }), NOW);
+  assert.equal(pool.observedCapacity, null);
+  assert.deepEqual(pool.quotaCoverage, { knownAccounts: 1, totalAccounts: 2 });
+  assert.equal(pool.partialObservation?.remainingPercent, 80);
+  assert.equal(pool.partialObservation?.accountsWithQuota, 1);
+  assert.equal(pool.partialObservation?.freshness, "fresh");
+  assert.equal(pool.partialObservation?.observedAt, NOW);
+  assert.equal(pool.partialObservation?.percentageBasis, "tier-estimate");
+  assert.equal(pool.eligibleNow, null);
+});
+
+
+it("keeps partial freshness scoped to measured accounts and preserves unknown catalog quota", () => {
+  const known = quota("claude", 0, { observation: {
+    observedAt: NOW - H, percentageSource: "derived", remainingPercent: 0,
+    resetSource: "unknown", resetAt: null,
+  } });
+  const unknown = quota("claude", 100);
+  const state = overview({ accounts: [account("old", { quota: [known] }), account("missing", { quota: [unknown] })] });
+  const [pool] = buildPools(state, NOW);
+  assert.equal(pool.freshness, "unknown");
+  assert.equal(pool.partialObservation?.freshness, "stale");
+  assert.equal(pool.partialObservation?.observedAt, NOW - H);
+  assert.equal(pool.partialObservation?.remainingPercent, 0);
+  assert.equal(pool.partialObservation?.accountsWithQuota, 0);
+  delete known.observation;
+  const [empty] = buildPools(state, NOW);
+  assert.equal(empty.partialObservation, null);
+  assert.deepEqual(empty.quotaCoverage, { knownAccounts: 0, totalAccounts: 2 });
+  known.observation = { observedAt: NOW, percentageSource: "derived", remainingPercent: 101, resetSource: "unknown", resetAt: null };
+  assert.equal(buildPools(state, NOW)[0].partialObservation, null);
+});

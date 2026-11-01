@@ -1,0 +1,36 @@
+{
+  "evaluatedAt": "2026-10-30T14:29:51.408Z",
+  "check": "trimmed-exact-match",
+  "maxTokens": 128,
+  "models": [
+    "gpt-6-luna",
+    "gpt-6.1-terra"
+  ],
+  "maxFailures": 1,
+  "timeoutMs": 20000,
+  "status": "complete",
+  "results": [
+    {
+      "caseId": "availability",
+      "requestedModel": "gpt-6-luna",
+      "servedModel": "gpt-6-luna",
+      "passed": true,
+      "latencyMs": 1478.35,
+      "inputTokens": 25,
+      "outputTokens": 5,
+      "answerChars": 1,
+      "finishReason": "stop"
+    },
+    {
+      "caseId": "availability",
+      "requestedModel": "gpt-6.1-terra",
+      "servedModel": "gpt-6.1-terra",
+      "passed": true,
+      "latencyMs": 1670.01,
+      "inputTokens": 25,
+      "outputTokens": 5,
+      "answerChars": 1,
+      "finishReason": "stop"
+    }
+  ]
+}

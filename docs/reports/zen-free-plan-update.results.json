@@ -1,0 +1,9 @@
+{
+  "basis": "Explicit operator confirmation",
+  "zenFree": 6,
+  "zenUnknown": 0,
+  "apiAndPostgresVerified": true,
+  "otherProviderPlansUnchanged": true,
+  "routingChanged": false,
+  "automaticEnforcement": false
+}

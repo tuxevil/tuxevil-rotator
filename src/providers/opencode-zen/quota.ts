@@ -1,3 +1,4 @@
+import { observeQuota } from "../../quota-observation.js";
 // OpenCode Zen quota polling.
 
 import { fetchWithRetry } from "../../fetch-with-retry.js";
@@ -58,6 +59,7 @@ export async function fetchOpenCodeZenQuota(
       timerType: "fresh",
     };
 
+    freshQuota.observation = { ...observeQuota(freshQuota, Date.now(), "unknown", "unknown"), catalogAccessible: true };
     account.quota = sortQuotaPools([...otherProviders, freshQuota]);
     account.lastQuotaPoll = Date.now();
 

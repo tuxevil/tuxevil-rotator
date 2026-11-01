@@ -1,3 +1,4 @@
+import { isUsageReadToken } from "./usage-limits-auth.js";
 // Admin API handlers behind the web dashboard. The dashboard UI itself is the
 // Preact app in src/web, served by dashboard-app.ts.
 
@@ -666,6 +667,10 @@ export async function serveCreateSessionApi(
     candidate = null;
   }
   const token = getConfiguredAdminToken();
+  if (typeof candidate === "string" && isUsageReadToken(candidate.trim())) {
+    sendDashboardJson(req, res, 401, { ok: false, error: "That admin token was not accepted." });
+    return;
+  }
   if (!token) {
     sendDashboardJson(req, res, 200, { ok: true, authRequired: false });
     return;

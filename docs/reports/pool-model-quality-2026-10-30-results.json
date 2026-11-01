@@ -1,0 +1,183 @@
+{
+  "evaluatedAt": "2026-10-30T13:51:38.331Z",
+  "check": "trimmed-exact-match",
+  "maxTokens": 2048,
+  "models": [
+    "beam",
+    "nemotron-3-ultra",
+    "deepseek-v4.1-flash:1017"
+  ],
+  "maxFailures": 1,
+  "timeoutMs": 20000,
+  "status": "complete",
+  "results": [
+    {
+      "caseId": "knapsack",
+      "requestedModel": "beam",
+      "servedModel": "beam",
+      "passed": false,
+      "latencyMs": 12545.52,
+      "inputTokens": 142,
+      "outputTokens": 2048
+    },
+    {
+      "caseId": "knapsack",
+      "requestedModel": "nemotron-3-ultra",
+      "servedModel": null,
+      "passed": false,
+      "latencyMs": 20002.38,
+      "inputTokens": null,
+      "outputTokens": null,
+      "error": "completion-failed"
+    },
+    {
+      "caseId": "knapsack",
+      "requestedModel": "deepseek-v4.1-flash:1017",
+      "servedModel": "deepseek-v4.1-flash:1017",
+      "passed": false,
+      "latencyMs": 510.63,
+      "inputTokens": 0,
+      "outputTokens": 0
+    },
+    {
+      "caseId": "weighted-intervals",
+      "requestedModel": "deepseek-v4.1-flash:1017",
+      "servedModel": "deepseek-v4.1-flash:1017",
+      "passed": false,
+      "latencyMs": 335.81,
+      "inputTokens": 0,
+      "outputTokens": 0
+    },
+    {
+      "caseId": "weighted-intervals",
+      "requestedModel": "nemotron-3-ultra",
+      "servedModel": null,
+      "passed": false,
+      "latencyMs": 0,
+      "inputTokens": null,
+      "outputTokens": null,
+      "error": "model-skipped-after-failure"
+    },
+    {
+      "caseId": "weighted-intervals",
+      "requestedModel": "beam",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 5237.24,
+      "inputTokens": 171,
+      "outputTokens": 994
+    },
+    {
+      "caseId": "assignment",
+      "requestedModel": "beam",
+      "servedModel": "beam",
+      "passed": false,
+      "latencyMs": 13750.19,
+      "inputTokens": 166,
+      "outputTokens": 2048
+    },
+    {
+      "caseId": "assignment",
+      "requestedModel": "nemotron-3-ultra",
+      "servedModel": null,
+      "passed": false,
+      "latencyMs": 0,
+      "inputTokens": null,
+      "outputTokens": null,
+      "error": "model-skipped-after-failure"
+    },
+    {
+      "caseId": "assignment",
+      "requestedModel": "deepseek-v4.1-flash:1017",
+      "servedModel": "deepseek-v4.1-flash:1017",
+      "passed": false,
+      "latencyMs": 333.11,
+      "inputTokens": 0,
+      "outputTokens": 0
+    },
+    {
+      "caseId": "grid-paths",
+      "requestedModel": "deepseek-v4.1-flash:1017",
+      "servedModel": "deepseek-v4.1-flash:1017",
+      "passed": false,
+      "latencyMs": 325.56,
+      "inputTokens": 0,
+      "outputTokens": 0
+    },
+    {
+      "caseId": "grid-paths",
+      "requestedModel": "nemotron-3-ultra",
+      "servedModel": null,
+      "passed": false,
+      "latencyMs": 0,
+      "inputTokens": null,
+      "outputTokens": null,
+      "error": "model-skipped-after-failure"
+    },
+    {
+      "caseId": "grid-paths",
+      "requestedModel": "beam",
+      "servedModel": "beam",
+      "passed": false,
+      "latencyMs": 10514.99,
+      "inputTokens": 146,
+      "outputTokens": 2048
+    },
+    {
+      "caseId": "topological-orders",
+      "requestedModel": "beam",
+      "servedModel": "beam",
+      "passed": false,
+      "latencyMs": 13647.47,
+      "inputTokens": 133,
+      "outputTokens": 2048
+    },
+    {
+      "caseId": "topological-orders",
+      "requestedModel": "nemotron-3-ultra",
+      "servedModel": null,
+      "passed": false,
+      "latencyMs": 0,
+      "inputTokens": null,
+      "outputTokens": null,
+      "error": "model-skipped-after-failure"
+    },
+    {
+      "caseId": "topological-orders",
+      "requestedModel": "deepseek-v4.1-flash:1017",
+      "servedModel": "deepseek-v4.1-flash:1017",
+      "passed": false,
+      "latencyMs": 328.61,
+      "inputTokens": 0,
+      "outputTokens": 0
+    },
+    {
+      "caseId": "subset-count",
+      "requestedModel": "deepseek-v4.1-flash:1017",
+      "servedModel": "deepseek-v4.1-flash:1017",
+      "passed": false,
+      "latencyMs": 334.89,
+      "inputTokens": 0,
+      "outputTokens": 0
+    },
+    {
+      "caseId": "subset-count",
+      "requestedModel": "nemotron-3-ultra",
+      "servedModel": null,
+      "passed": false,
+      "latencyMs": 0,
+      "inputTokens": null,
+      "outputTokens": null,
+      "error": "model-skipped-after-failure"
+    },
+    {
+      "caseId": "subset-count",
+      "requestedModel": "beam",
+      "servedModel": "beam",
+      "passed": false,
+      "latencyMs": 11866.66,
+      "inputTokens": 127,
+      "outputTokens": 2048
+    }
+  ]
+}

@@ -15,9 +15,6 @@ export interface RtkCompressionResult {
   linesStripped: number;
 }
 
-const _SHELL_TOOL_NAME_RE =
-  /\b(bash|shell|terminal|run_command|execute_command|exec|command)\b/i;
-
 function isToolOrTerminalMessage(msg: ChatMessage): boolean {
   if (msg.role === "tool") return true;
   if (typeof msg.content === "string") {

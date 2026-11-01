@@ -1,0 +1,52 @@
+[
+  {
+    "plan": "plus",
+    "model": "gpt-6-luna",
+    "apiStatus": 200,
+    "kind": "success",
+    "status": 200,
+    "enforced": false
+  },
+  {
+    "plan": "plus",
+    "model": "gpt-6.1-terra",
+    "apiStatus": 200,
+    "kind": "success",
+    "status": 200,
+    "enforced": false
+  },
+  {
+    "plan": "free",
+    "model": "gpt-6-luna",
+    "apiStatus": 200,
+    "kind": "success",
+    "status": 200,
+    "enforced": false
+  },
+  {
+    "plan": "free",
+    "model": "gpt-6.1-terra",
+    "apiStatus": 200,
+    "kind": "model-unavailable",
+    "status": 400,
+    "failureReason": "provider-model-not-supported-for-account",
+    "enforced": false
+  },
+  {
+    "plan": "free",
+    "model": "gpt-6-luna",
+    "apiStatus": 200,
+    "kind": "success",
+    "status": 200,
+    "enforced": false
+  },
+  {
+    "plan": "free",
+    "model": "gpt-6.1-terra",
+    "apiStatus": 200,
+    "kind": "model-unavailable",
+    "status": 400,
+    "failureReason": "provider-model-not-supported-for-account",
+    "enforced": false
+  }
+]

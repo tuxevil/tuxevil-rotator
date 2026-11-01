@@ -315,11 +315,37 @@ export function validateConfig(value: unknown): ValidationResult<Config> {
 			}
 		}
 	}
+	if (value.modelAccessShadow !== undefined && typeof value.modelAccessShadow !== "boolean") errors.push("config.modelAccessShadow must be a boolean");
 	if (value.typesafeRouting !== undefined) {
 		if (!isRecord(value.typesafeRouting)) {
 			errors.push("config.typesafeRouting must be an object when provided");
 		} else {
 			const routing = value.typesafeRouting;
+            if (routing.restrictToEffortPools !== undefined && typeof routing.restrictToEffortPools !== "boolean") errors.push("config.typesafeRouting.restrictToEffortPools must be a boolean");
+            if (routing.restrictToEffortPools === true && routing.selectionPolicy !== "effort-pools") errors.push("restrictToEffortPools requires effort-pools selectionPolicy");
+            if (routing.selectionPolicy !== undefined && !["model-choice", "effort-pools"].includes(String(routing.selectionPolicy))) {
+                errors.push("config.typesafeRouting.selectionPolicy must be model-choice or effort-pools");
+            }
+            if (routing.effortPools !== undefined || routing.selectionPolicy === "effort-pools") {
+                if (!isRecord(routing.effortPools)) {
+                    errors.push("config.typesafeRouting.effortPools must be an object");
+                } else {
+                    for (const [effort, pool] of Object.entries(routing.effortPools)) {
+                        if (!["low", "medium", "high", "max"].includes(effort) || !Array.isArray(pool) || pool.length === 0 || pool.length > 128 || pool.some(id => typeof id !== "string" || !/^[^/\s]+\/.+/.test(id))) {
+                            errors.push("config.typesafeRouting.effortPools must contain nonempty pools of provider/model IDs for low, medium, high or max");
+                        }
+                    }
+                }
+            }
+            if (routing.stallEscalation !== undefined && typeof routing.stallEscalation !== "boolean") {
+                errors.push("config.typesafeRouting.stallEscalation must be a boolean");
+            }
+            if (routing.sessionAffinity !== undefined && typeof routing.sessionAffinity !== "boolean") {
+                errors.push("config.typesafeRouting.sessionAffinity must be a boolean");
+            }
+            if (routing.sessionAffinityTtlSeconds !== undefined && (!isNonNegativeInteger(routing.sessionAffinityTtlSeconds) || routing.sessionAffinityTtlSeconds < 1 || routing.sessionAffinityTtlSeconds > 86400)) {
+                errors.push("config.typesafeRouting.sessionAffinityTtlSeconds must be an integer between 1 and 86400");
+            }
 			if (routing.enabled !== undefined && typeof routing.enabled !== "boolean") {
 				errors.push("config.typesafeRouting.enabled must be a boolean");
 			}

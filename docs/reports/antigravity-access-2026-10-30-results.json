@@ -1,0 +1,108 @@
+{
+  "evaluatedAt": "2026-10-30T14:29:43.984Z",
+  "check": "trimmed-exact-match",
+  "maxTokens": 128,
+  "models": [
+    "gemini-3.8-flash-low",
+    "gemini-3.8-flash-medium",
+    "gemini-3.8-flash-high",
+    "gemini-4-argon-medium",
+    "gemini-4-argon-high",
+    "claude-sonnet-5-5-medium",
+    "claude-sonnet-5-5-high",
+    "claude-opus-5-5-high"
+  ],
+  "maxFailures": 1,
+  "timeoutMs": 20000,
+  "status": "complete",
+  "results": [
+    {
+      "caseId": "availability",
+      "requestedModel": "gemini-3.8-flash-low",
+      "servedModel": "gemini-3.8-flash-low",
+      "passed": true,
+      "latencyMs": 2579.36,
+      "inputTokens": 10,
+      "outputTokens": 1,
+      "answerChars": 1,
+      "finishReason": "stop"
+    },
+    {
+      "caseId": "availability",
+      "requestedModel": "gemini-3.8-flash-medium",
+      "servedModel": "gemini-3.8-flash-medium",
+      "passed": true,
+      "latencyMs": 2580.03,
+      "inputTokens": 10,
+      "outputTokens": 1,
+      "answerChars": 1,
+      "finishReason": "stop"
+    },
+    {
+      "caseId": "availability",
+      "requestedModel": "gemini-3.8-flash-high",
+      "servedModel": "gemini-3.8-flash-high",
+      "passed": true,
+      "latencyMs": 3129.5,
+      "inputTokens": 10,
+      "outputTokens": 1,
+      "answerChars": 1,
+      "finishReason": "stop"
+    },
+    {
+      "caseId": "availability",
+      "requestedModel": "gemini-4-argon-medium",
+      "servedModel": "gemini-4-argon-medium",
+      "passed": true,
+      "latencyMs": 3679.79,
+      "inputTokens": 40,
+      "outputTokens": 5,
+      "answerChars": 1,
+      "finishReason": "stop"
+    },
+    {
+      "caseId": "availability",
+      "requestedModel": "gemini-4-argon-high",
+      "servedModel": "gemini-4-argon-high",
+      "passed": true,
+      "latencyMs": 4995.73,
+      "inputTokens": 40,
+      "outputTokens": 5,
+      "answerChars": 1,
+      "finishReason": "stop"
+    },
+    {
+      "caseId": "availability",
+      "requestedModel": "claude-sonnet-5-5-medium",
+      "servedModel": "claude-sonnet-5-5-medium",
+      "passed": true,
+      "latencyMs": 1258.58,
+      "inputTokens": 21,
+      "outputTokens": 3,
+      "answerChars": 1,
+      "finishReason": "stop"
+    },
+    {
+      "caseId": "availability",
+      "requestedModel": "claude-sonnet-5-5-high",
+      "servedModel": "claude-sonnet-5-5-high",
+      "passed": true,
+      "latencyMs": 1570.77,
+      "inputTokens": 21,
+      "outputTokens": 3,
+      "answerChars": 1,
+      "finishReason": "stop"
+    },
+    {
+      "caseId": "availability",
+      "requestedModel": "claude-opus-5-5-high",
+      "servedModel": "claude-opus-5-5-high",
+      "passed": true,
+      "latencyMs": 1212.75,
+      "inputTokens": 21,
+      "outputTokens": 3,
+      "answerChars": 1,
+      "finishReason": "stop"
+    }
+  ]
+}

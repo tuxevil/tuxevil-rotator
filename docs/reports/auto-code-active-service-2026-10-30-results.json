@@ -1,0 +1,114 @@
+{
+  "evaluatedAt": "2026-10-30T13:38:56.514Z",
+  "check": "trimmed-exact-match",
+  "results": [
+    {
+      "caseId": "js-closure",
+      "requestedModel": "auto",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 2458.45,
+      "inputTokens": 79,
+      "outputTokens": 75
+    },
+    {
+      "caseId": "js-closure",
+      "requestedModel": "beam",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 1001.66,
+      "inputTokens": 79,
+      "outputTokens": 95
+    },
+    {
+      "caseId": "python-aliasing",
+      "requestedModel": "beam",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 1321.47,
+      "inputTokens": 75,
+      "outputTokens": 111
+    },
+    {
+      "caseId": "python-aliasing",
+      "requestedModel": "auto",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 14302.1,
+      "inputTokens": 75,
+      "outputTokens": 144
+    },
+    {
+      "caseId": "sql-null",
+      "requestedModel": "auto",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 1256.88,
+      "inputTokens": 77,
+      "outputTokens": 60
+    },
+    {
+      "caseId": "sql-null",
+      "requestedModel": "beam",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 1032.01,
+      "inputTokens": 77,
+      "outputTokens": 83
+    },
+    {
+      "caseId": "instruction-boundary",
+      "requestedModel": "beam",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 838.55,
+      "inputTokens": 96,
+      "outputTokens": 71
+    },
+    {
+      "caseId": "instruction-boundary",
+      "requestedModel": "auto",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 1362.1,
+      "inputTokens": 96,
+      "outputTokens": 100
+    },
+    {
+      "caseId": "tool-plan",
+      "requestedModel": "auto",
+      "servedModel": "claude-opus-4-6-thinking",
+      "passed": true,
+      "latencyMs": 4484.46,
+      "inputTokens": 94,
+      "outputTokens": 111
+    },
+    {
+      "caseId": "tool-plan",
+      "requestedModel": "beam",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 1216.1,
+      "inputTokens": 91,
+      "outputTokens": 97
+    },
+    {
+      "caseId": "off-by-one",
+      "requestedModel": "beam",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 1022.29,
+      "inputTokens": 82,
+      "outputTokens": 60
+    },
+    {
+      "caseId": "off-by-one",
+      "requestedModel": "auto",
+      "servedModel": "beam",
+      "passed": true,
+      "latencyMs": 2155.57,
+      "inputTokens": 82,
+      "outputTokens": 113
+    }
+  ]
+}

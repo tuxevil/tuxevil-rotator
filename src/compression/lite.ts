@@ -9,7 +9,7 @@ export interface LiteCompressionOptions {
   maxToolResultChars?: number;
   /** Replace base64 image data URLs / image parts with text placeholders (default: false) */
   replaceImages?: boolean;
-  /** Character length limit for system prompt deduplication hash comparison (default: 200) */
+  /** Deprecated compatibility option; instruction deduplication always compares complete messages. */
   maxSystemCharsHash?: number;
   /** Target model name for model-specific optimizations */
   model?: string;
@@ -37,7 +37,7 @@ export function collapseWhitespace(text: string): string {
 }
 
 /**
- * Applies all 5 lossless lite compression techniques to a list of messages.
+ * Applies lightweight compression. Tool-result truncation and optional image replacement are lossy.
  */
 export function compressLite(
   messages: ChatMessage[],
@@ -54,7 +54,6 @@ export function compressLite(
 
   const maxToolResultChars = options.maxToolResultChars ?? 2000;
   const replaceImages = options.replaceImages ?? false;
-  const maxSystemCharsHash = options.maxSystemCharsHash ?? 200;
 
   const techniquesUsed = new Set<string>();
   let originalCharCount = 0;
@@ -71,12 +70,7 @@ export function compressLite(
 
     // 1. System Prompt Deduplication
     if (msg.role === "system" || msg.role === "developer") {
-      const textContent = typeof msg.content === "string"
-        ? msg.content
-        : (Array.isArray(msg.content)
-            ? msg.content.map((p) => (typeof p === "string" ? p : p.text || "")).join("\n")
-            : "");
-      const promptKey = textContent.slice(0, maxSystemCharsHash).trim();
+      const promptKey = JSON.stringify(msg);
       if (seenSystemPrompts.has(promptKey)) {
         techniquesUsed.add("dedup_system_prompt");
         continue; // Drop duplicate system prompt

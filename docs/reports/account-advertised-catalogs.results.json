@@ -1,0 +1,43 @@
+{
+  "feature": "Antigravity account-advertised catalogs and scoped admin probes",
+  "verification": {
+    "accountCatalogsVisible": 48,
+    "freshAccountCatalogs": 48,
+    "defaultUnadvertisedProbeSkipped": true,
+    "skipCreatedNoObservation": true,
+    "advertisedProbeSucceeded": true,
+    "explicitOverrideReachedProvider": true,
+    "overrideProviderStatus": 404,
+    "observationsVerifiedInPostgres": 2,
+    "planMetadataPreserved": true,
+    "modelAccessShadow": true,
+    "automaticEntitlementEnforcement": false
+  },
+  "supportedAccountCatalogProviders": [
+    "google-antigravity"
+  ],
+  "unavailableCatalogState": "unknown",
+  "freshnessPolicy": {
+    "pollIntervals": 2,
+    "minimumMs": 60000,
+    "maximumMs": 1800000
+  },
+  "probeSkipReasons": [
+    "model-not-advertised",
+    "catalog-stale",
+    "catalog-unknown"
+  ],
+  "diagnosticOverride": {
+    "apiField": "allowUnadvertised",
+    "runnerFlag": "--allow-unadvertised",
+    "explicitBooleanRequired": true
+  },
+  "checks": {
+    "tests": 1371,
+    "passed": 1369,
+    "skipped": 2,
+    "failed": 0,
+    "lintErrors": 0,
+    "existingLintWarnings": 17
+  }
+}

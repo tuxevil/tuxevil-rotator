@@ -1,0 +1,8 @@
+{
+  "status": 400,
+  "errorType": "upstream_error",
+  "errorCode": null,
+  "keywordMatches": [
+    "invalid"
+  ]
+}

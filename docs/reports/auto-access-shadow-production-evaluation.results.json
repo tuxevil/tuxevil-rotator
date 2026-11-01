@@ -1,0 +1,18 @@
+{
+  "checkedAt": "2026-10-31T12:32:41.849Z",
+  "deploymentCommit": "cdab9a3",
+  "windowStart": "2026-10-31T06:59:41-05:00",
+  "journalLines": 530,
+  "completedRequestLogLines": 35,
+  "accountPolicyShadowEvents": 35,
+  "autoRoutingDecisionEvents": 0,
+  "autoAccessShadowEvents": 0,
+  "modelAccessShadow": true,
+  "semanticRoutingEnabled": true,
+  "selectionPolicy": "model-choice",
+  "evaluableAutoSample": false,
+  "estimatedAvoidedFailures": null,
+  "alternativeChanges": null,
+  "noAlternativeCases": null,
+  "enforcementRecommendation": "Remain in shadow; no auto-routing production sample available."
+}

@@ -127,6 +127,10 @@ describe("Ollama balance quota polling", () => {
     assert.equal(account.quota[1].providerId, "ollama");
     assert.equal(account.quota[1].percentRemaining, 71);
     assert.ok(account.lastQuotaPoll > 0);
+    assert.equal(account.quota[1].observation?.percentageSource, "derived");
+    assert.equal(account.quota[1].observation?.resetSource, "reported");
+    assert.ok(account.quota[1].observation!.observedAt > 0);
+    assert.equal(account.quota[0].observation, undefined, "sibling freshness is untouched");
   });
 
   it("keeps last known quotas on an unrecognized successful response", async (t) => {
@@ -151,4 +155,17 @@ describe("Ollama balance quota polling", () => {
     assert.deepEqual(calls, ["https://ollama.com/api/balance", "https://ollama.com/api/usage"]);
     assert.equal(account.quota.find(q => q.modelKey === "monthly")?.percentRemaining, 75);
   });
+  it("marks local legacy resets as estimates", async (t) => {
+    t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL) => String(input).endsWith("/balance")
+      ? Response.json({}, { status: 404 })
+      : Response.json({ limits: { weekly: { usage: 0.25 }, session: { usage: 0.1 } } }));
+    const account = runtimeAccount();
+    await fetchProviderUsage(account, context);
+    for (const q of account.quota.filter(q => q.providerId === "ollama")) {
+      assert.equal(q.observation?.resetSource, "estimated");
+      assert.equal(q.observation?.percentageSource, "derived");
+      assert.equal(q.observation?.resetAt, q.resetTime);
+    }
+  });
+
 });

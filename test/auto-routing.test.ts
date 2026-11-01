@@ -3,10 +3,15 @@ import { createServer, type Server } from "node:http";
 import { afterEach, describe, it } from "node:test";
 import {
   buildAutoRoutingCandidates,
+  estimateAutoRoutingTokens,
+  hasStalledToolExecution,
   selectAutoRoutingTarget,
   type AutoRoutingCatalogEntry,
   type AutoRoutingRequest,
+  type AutoRoutingRotator,
 } from "../src/auto-routing.js";
+import { isVirtualKeyModelAllowed } from "../src/key-auth.js";
+import type { VirtualKey } from "../src/types.js";
 import type { Config } from "../src/types.js";
 
 const servers: Server[] = [];
@@ -80,6 +85,36 @@ const catalog: AutoRoutingCatalogEntry[] = [
     family: "ollama",
   },
 ];
+
+type QuotaAwareRotator = AutoRoutingRotator & { getConfig: () => Config };
+
+function quotaAwareRotator(scores: Record<string, number> = {}): QuotaAwareRotator {
+  const rotator = fakeRotator("") as unknown as QuotaAwareRotator;
+  Object.assign(rotator.getConfig().typesafeRouting!, {
+    enabled: false,
+    apiKey: "",
+    minConfidence: 0.45,
+    shortlistSize: 12,
+  });
+  rotator.hasActiveProvider = () => true;
+  rotator.getAutoRoutingCandidateStatus = (modelId, providerId) => ({
+    available: true,
+    operationalScore: scores[`${providerId}/${modelId}`] ?? 0.5,
+    poolKey: `${providerId}:${modelId}`,
+  });
+  return rotator;
+}
+
+function quotaCatalog(...models: Array<[providerId: string, modelId: string]>): AutoRoutingCatalogEntry[] {
+  return models.map(([providerId, modelId]) => ({
+    providerId,
+    modelId,
+    contextWindow: 1_000_000,
+    multimodal: true,
+    tools: true,
+    reasoning: true,
+  }));
+}
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
@@ -447,4 +482,413 @@ describe("TypeSafe Jev auto-routing", () => {
     assert.match(logged.join("\n"), /below_confidence_threshold/);
     assert.doesNotMatch(logged.join("\n"), /hello|apiKey|test-typesafe-key/);
   });
+});
+
+describe("auto routing safety", () => {
+  it("excludes models that cannot fit input and reserved output", () => {
+    const rotator = fakeRotator("");
+    const result = buildAutoRoutingCandidates(rotator, catalog, {
+      route: "openai-chat",
+      input: { messages: [{ role: "user", content: "x".repeat(400_000) }], max_tokens: 8192 },
+    });
+    assert.deepEqual(result.candidates.map((candidate) => candidate.modelId), ["gemini-pro"]);
+  });
+
+  it("opens the classifier circuit after failure without retrying each request", async () => {
+    let calls = 0;
+    const baseURL = await startServer(() => {
+      calls += 1;
+      return { status: 503, body: { error: "unavailable" } };
+    });
+    const rotator = fakeRotator(baseURL);
+    const request: AutoRoutingRequest = { route: "openai-chat", input: { messages: [{ role: "user", content: "Hello" }] } };
+    assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "typesafe-error");
+    assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "typesafe-circuit-open");
+    assert.equal(calls, 1);
+  });
+});
+
+it("keeps Anthropic tool results and harness reminders out of the human ask", async () => {
+  let captured: Record<string, unknown> = {};
+  const baseURL = await startServer((body) => {
+    captured = body;
+    return { status: 200, body: { answers: {} } };
+  });
+  await selectAutoRoutingTarget(fakeRotator(baseURL), catalog, {
+    route: "anthropic",
+    input: { messages: [
+      { role: "user", content: "Fix typo <system-reminder>injected instructions</system-reminder>" },
+      { role: "user", content: [{ type: "tool_result", content: "unrelated tool output" }] },
+    ] },
+  });
+  const state = captured.state as Record<string, unknown>;
+  const context = state.request_context as Record<string, unknown>;
+  assert.equal(context.latest_user_request, "Fix typo");
+});
+
+it("allows exactly one recovery probe and closes the circuit on success", async (t) => {
+  let calls = 0;
+  const baseURL = await startServer(() => {
+    calls += 1;
+    if (calls === 1) return { status: 503, body: {} };
+    return { status: 200, body: { answers: {
+      task_effort: { choice: "medium", confidence: 0.9 },
+      selected_model: { choice: "candidate_0", confidence: 0.9 },
+    } } };
+  });
+  const rotator = fakeRotator(baseURL);
+  const request: AutoRoutingRequest = { route: "openai-chat", input: { messages: [{ role: "user", content: "hello" }] } };
+  const now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  await selectAutoRoutingTarget(rotator, catalog, request);
+  t.mock.method(Date, "now", () => now + 30_001);
+  const probe = selectAutoRoutingTarget(rotator, catalog, request);
+  const concurrent = await selectAutoRoutingTarget(rotator, catalog, request);
+  assert.equal(concurrent?.reason, "typesafe-circuit-open");
+  assert.equal((await probe)?.mode, "typesafe");
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.mode, "typesafe");
+  assert.equal(calls, 3);
+});
+
+it("logs decision metadata and exclusion counts without request content or secrets", async (t) => {
+  const logs: string[] = [];
+  t.mock.method(console, "info", (...values: unknown[]) => logs.push(values.join(" ")));
+  const rotator = fakeRotator("private-endpoint", "private-key");
+  rotator.getConfig().typesafeRouting!.enabled = false;
+  await selectAutoRoutingTarget(rotator, catalog, {
+    route: "openai-chat", input: { messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "https://private-image" } }, { type: "text", text: "secret-prompt" }] }] },
+  });
+  const event = JSON.parse(logs[0].slice(logs[0].indexOf("{")));
+  assert.equal(event.event, "auto-routing-decision");
+  assert.equal(event.excluded.vision, 1);
+  assert.equal(event.shortlist_count, 1);
+  assert.equal(event.reason, "typesafe-disabled");
+  assert.equal(typeof event.routing_latency_ms, "number");
+  assert.doesNotMatch(logs.join(""), /secret-prompt|private-key|private-endpoint|private-image/);
+});
+
+
+it("selects an authorized alternative and refuses an entirely forbidden catalog", async () => {
+  const rotator = fakeRotator("");
+  rotator.getConfig().typesafeRouting!.enabled = false;
+  const key: VirtualKey = { tokenHash: "hash", keyName: "restricted", keyAlias: "restricted", blocked: false, createdAt: "2026-01-01", models: ["gemini-pro"] };
+  const request: AutoRoutingRequest = { route: "openai-chat", input: { messages: [{ role: "user", content: "hello" }] }, isModelAllowed: model => isVirtualKeyModelAllowed(key, model) };
+  const result = await selectAutoRoutingTarget(rotator, catalog, request);
+  assert.equal(result?.candidate.modelId, "gemini-pro");
+  key.models = ["unavailable-model"];
+  assert.equal(await selectAutoRoutingTarget(rotator, catalog, request), null);
+});
+
+it("budgets inline images independently of encoded byte length and reserves Gemini output", () => {
+  const image = (data: string) => ({ contents: [{ role: "user", parts: [{ inlineData: { mimeType: "image/png", data } }] }], generationConfig: { maxOutputTokens: 8000 } });
+  assert.equal(estimateAutoRoutingTokens(image("x")), estimateAutoRoutingTokens(image("x".repeat(500_000))));
+  assert.ok(estimateAutoRoutingTokens(image("x")) >= 12_096);
+  const openAIImage = { messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64," + "x".repeat(500_000) } }] }] };
+  assert.ok(estimateAutoRoutingTokens(openAIImage) < 10_000);
+});
+
+it("pins continuations while isolating tenants and rechecking permissions, asks and TTL", async (t) => {
+  const rotator = fakeRotator("");
+  const config = rotator.getConfig().typesafeRouting!;
+  config.enabled = false;
+  config.sessionAffinity = true;
+  config.sessionAffinityTtlSeconds = 10;
+  const now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const request: AutoRoutingRequest = { route: "openai-chat", tenantId: "tenant-a", input: { metadata: { session_id: "shared" }, messages: [{ role: "user", content: "first task" }] } };
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "typesafe-disabled");
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "session-continuation");
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, { ...request, tenantId: "tenant-b" }))?.reason, "typesafe-disabled");
+  const restricted = { ...request, isModelAllowed: (model: string) => model === "gemini-pro" };
+  const alternative = await selectAutoRoutingTarget(rotator, catalog, restricted);
+  assert.equal(alternative?.candidate.modelId, "gemini-pro");
+  assert.notEqual(alternative?.reason, "session-continuation");
+  request.input = { metadata: { session_id: "shared" }, messages: [{ role: "user", content: "new task" }] };
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "typesafe-disabled");
+  t.mock.method(Date, "now", () => now + 10_001);
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "typesafe-disabled");
+  config.sessionAffinity = false;
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "typesafe-disabled");
+});
+
+it("drops an unavailable pin and bypasses affinity without tenant identity or in shadow mode", async () => {
+  const rotator = fakeRotator("");
+  const config = rotator.getConfig().typesafeRouting!;
+  config.enabled = false;
+  config.sessionAffinity = true;
+  const request: AutoRoutingRequest = { route: "openai-chat", tenantId: "tenant", input: { metadata: { session_id: "s" }, messages: [{ role: "user", content: "hello" }] } };
+  await selectAutoRoutingTarget(rotator, catalog, request);
+  rotator.getAutoRoutingCandidateStatus = (_model, provider) => ({ available: provider !== "ollama", operationalScore: 0.5, poolKey: provider });
+  const next = await selectAutoRoutingTarget(rotator, catalog, request);
+  assert.equal(next?.candidate.modelId, "gemini-pro");
+  assert.equal(next?.reason, "typesafe-disabled");
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, { ...request, tenantId: undefined }))?.reason, "typesafe-disabled");
+  config.shadowMode = true;
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "typesafe-disabled");
+});
+
+
+it("escalates only once after three structured errors and preserves eligibility", async () => {
+  const rotator = fakeRotator("");
+  Object.assign(rotator.getConfig().typesafeRouting!, { enabled: false, sessionAffinity: true, stallEscalation: true });
+  const input = { metadata: { session_id: "stall" }, messages: [{ role: "user", content: "fix bug" }] as unknown[] };
+  const request: AutoRoutingRequest = { route: "anthropic", tenantId: "tenant", input };
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.candidate.modelId, "local-fast");
+  input.messages.push(...Array.from({ length: 3 }, () => ({ role: "user", content: [{ type: "tool_result", is_error: true, content: "failed" }] })));
+  assert.equal(hasStalledToolExecution(input), true);
+  const escalated = await selectAutoRoutingTarget(rotator, catalog, request);
+  assert.equal(escalated?.reason, "session-stall-escalation");
+  assert.equal(escalated?.candidate.modelId, "gemini-pro");
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "session-continuation");
+  input.messages.push({ role: "user", content: [{ type: "tool_result", is_error: false, content: "error mentioned in successful output" }] });
+  assert.equal(hasStalledToolExecution(input), false);
+  input.messages.push({ role: "user", content: "new task" });
+  assert.equal(hasStalledToolExecution(input), false);
+});
+
+it("keeps the existing pin when escalation alternatives are unauthorized", async () => {
+  const rotator = fakeRotator("");
+  Object.assign(rotator.getConfig().typesafeRouting!, { enabled: false, sessionAffinity: true, stallEscalation: true });
+  const input = { metadata: { session_id: "restricted-stall" }, messages: [{ role: "user", content: "fix" }] as unknown[] };
+  const request: AutoRoutingRequest = { route: "openai-chat", tenantId: "restricted", input, isModelAllowed: model => model === "local-fast" };
+  await selectAutoRoutingTarget(rotator, catalog, request);
+  input.messages.push(...Array.from({ length: 3 }, () => ({ role: "tool", is_error: true, content: "failed" })));
+  const result = await selectAutoRoutingTarget(rotator, catalog, request);
+  assert.equal(result?.reason, "session-continuation");
+  assert.equal(result?.candidate.modelId, "local-fast");
+});
+
+it("does not overwrite a newer task pin when an older escalation finishes late", async (t) => {
+  const rotator = fakeRotator("http://classifier.invalid");
+  const config = rotator.getConfig().typesafeRouting!;
+  Object.assign(config, { enabled: false, sessionAffinity: true, stallEscalation: true });
+  const oldInput = { metadata: { session_id: "race" }, messages: [{ role: "user", content: "old task" }] as unknown[] };
+  const request: AutoRoutingRequest = { route: "anthropic", tenantId: "tenant", input: oldInput };
+  await selectAutoRoutingTarget(rotator, catalog, request);
+  oldInput.messages.push(...Array.from({ length: 3 }, () => ({ role: "user", content: [{ type: "tool_result", is_error: true, content: "failed" }] })));
+  let release!: () => void;
+  let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  t.mock.method(globalThis, "fetch", async () => {
+    entered();
+    await pending;
+    return new Response(JSON.stringify({ answers: { task_effort: { choice: "medium", confidence: 0.9 }, selected_model: { choice: "candidate_0", confidence: 0.9 } } }), { headers: { "content-type": "application/json" } });
+  });
+  config.enabled = true;
+  const oldSelection = selectAutoRoutingTarget(rotator, catalog, request);
+  await started;
+  config.enabled = false;
+  const newer = { ...request, input: { metadata: { session_id: "race" }, messages: [{ role: "user", content: "new task" }] } };
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, newer))?.candidate.modelId, "local-fast");
+  release();
+  await oldSelection;
+  const continuation = await selectAutoRoutingTarget(rotator, catalog, newer);
+  assert.equal(continuation?.reason, "session-continuation");
+  assert.equal(continuation?.candidate.modelId, "local-fast");
+});
+
+it("keeps low-confidence evidence in metadata without lowering the routing threshold", async (t) => {
+  const logs: string[] = [];
+  t.mock.method(console, "info", (...values: unknown[]) => logs.push(values.join(" ")));
+  const baseURL = await startServer(() => ({ status: 200, body: { answers: {
+    task_effort: { choice: "low", confidence: 0.9 },
+    selected_model: { choice: "candidate_1", confidence: 0.2, probabilities: { candidate_0: 0.4, candidate_1: 0.6 } },
+  } } }));
+  const result = await selectAutoRoutingTarget(fakeRotator(baseURL), catalog, { route: "openai-chat", input: { messages: [{ role: "user", content: "private task" }] } });
+  assert.equal(result?.reason, "typesafe-low-confidence");
+  const event = JSON.parse(logs.at(-1)!.slice(logs.at(-1)!.indexOf("{")));
+  assert.equal(event.classifier_confidence, 0.2);
+  assert.equal(event.classifier_min_confidence, 0.45);
+  assert.equal(event.classifier_top_probability, 0.6);
+  assert.ok(Math.abs(event.classifier_probability_margin - 0.2) < 1e-10);
+  assert.doesNotMatch(logs.join(""), /private task|test-typesafe-key/);
+});
+
+it("classifies effort without model-choice and selects an eligible configured pool outside the global shortlist", async () => {
+  let received: Record<string, unknown> = {};
+  const baseURL = await startServer(body => { received = body; return { status: 200, body: { answers: { task_effort: { choice: "high", confidence: 0.9 } } } }; });
+  const rotator = fakeRotator(baseURL);
+  Object.assign(rotator.getConfig().typesafeRouting!, { selectionPolicy: "effort-pools", shortlistSize: 1, effortPools: { high: ["google-antigravity/gemini-pro"] } });
+  const request: AutoRoutingRequest = { route: "openai-chat", input: { messages: [{ role: "user", content: "investigate" }] } };
+  const selected = await selectAutoRoutingTarget(rotator, catalog, request);
+  assert.equal(selected?.reason, "typesafe-effort-pool-selected");
+  assert.equal(selected?.candidate.modelId, "gemini-pro");
+  assert.deepEqual(Object.keys(received.questions as object), ["task_effort"]);
+  const forbidden = await selectAutoRoutingTarget(rotator, catalog, { ...request, isModelAllowed: id => id === "local-fast" });
+  assert.equal(forbidden?.reason, "typesafe-effort-pool-unavailable");
+  assert.equal(forbidden?.candidate.modelId, "local-fast");
+  rotator.getConfig().typesafeRouting!.shadowMode = true;
+  const shadow = await selectAutoRoutingTarget(rotator, catalog, request);
+  assert.equal(shadow?.candidate.modelId, "local-fast");
+  assert.equal(shadow?.mode, "shadow");
+});
+
+it("retains deterministic fallback for uncertain effort and missing pools", async () => {
+  let confidence = 0.1;
+  const baseURL = await startServer(() => ({ status: 200, body: { answers: { task_effort: { choice: "medium", confidence } } } }));
+  const rotator = fakeRotator(baseURL);
+  rotator.getConfig().typesafeRouting!.selectionPolicy = "effort-pools";
+  const request: AutoRoutingRequest = { route: "openai-chat", input: { messages: [{ role: "user", content: "hello" }] } };
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "typesafe-effort-low-confidence");
+  confidence = 0.9;
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.reason, "typesafe-effort-pool-missing");
+});
+
+it("restricts disabled-classifier fallback and old session pins to the configured pool union", async () => {
+  const rotator = fakeRotator("");
+  const config = rotator.getConfig().typesafeRouting!;
+  Object.assign(config, { enabled: false, sessionAffinity: true });
+  const request: AutoRoutingRequest = { route: "openai-chat", tenantId: "t", input: { metadata: { session_id: "policy-change" }, messages: [{ role: "user", content: "hello" }] } };
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.candidate.modelId, "local-fast");
+  Object.assign(config, { selectionPolicy: "effort-pools", restrictToEffortPools: true, effortPools: { high: ["google-antigravity/gemini-pro"] } });
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, request))?.candidate.modelId, "gemini-pro");
+  config.effortPools = { low: ["ollama/absent"] };
+  assert.equal(await selectAutoRoutingTarget(rotator, catalog, request), null);
+});
+
+it("does not overwrite a newer task pin when ordinary classification finishes late", async (t) => {
+  const rotator = fakeRotator("http://classifier.invalid");
+  const config = rotator.getConfig().typesafeRouting!;
+  config.sessionAffinity = true;
+  let release!: () => void;
+  let entered!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  t.mock.method(globalThis, "fetch", async () => {
+    entered(); await pending;
+    return new Response(JSON.stringify({ answers: { task_effort: { choice: "medium", confidence: 0.9 }, selected_model: { choice: "candidate_0", confidence: 0.9 } } }), { headers: { "content-type": "application/json" } });
+  });
+  const request: AutoRoutingRequest = { route: "openai-chat", tenantId: "tenant", input: { metadata: { session_id: "normal-race" }, messages: [{ role: "user", content: "old task" }] } };
+  const old = selectAutoRoutingTarget(rotator, catalog, request);
+  await started;
+  config.enabled = false;
+  const newer = { ...request, input: { metadata: { session_id: "normal-race" }, messages: [{ role: "user", content: "new task" }] } };
+  await selectAutoRoutingTarget(rotator, catalog, newer);
+  release(); await old;
+  assert.equal((await selectAutoRoutingTarget(rotator, catalog, newer))?.reason, "session-continuation");
+});
+
+it("does not automatically select OpenCode-only free models for an unverified client",()=>{
+ const entries:AutoRoutingCatalogEntry[]=['big-pickle','ling-3.0-flash-fin-free'].map(modelId=>({providerId:'opencode-zen',modelId,contextWindow:100000,multimodal:false,tools:true,reasoning:false}));
+ entries.push({providerId:'ollama',modelId:'beam',contextWindow:100000,multimodal:false,tools:true,reasoning:false});
+ const result=buildAutoRoutingCandidates({getAutoRoutingCandidateStatus:()=>({available:true,operationalScore:1})},entries,{route:'openai-chat',input:{messages:[{role:'user',content:'test'}]}});
+ assert.deepEqual(result.candidates.map(c=>c.modelId),['beam']);assert.equal(result.excluded['client-restricted'],2);
+});
+
+it("keeps operational health visible while excluding account-ineligible models from auto", () => {
+  const entry: AutoRoutingCatalogEntry = {
+    providerId: "ollama", modelId: "deepseek-v4.1-flash:1017", contextWindow: 100_000,
+    multimodal: false, tools: true, reasoning: false,
+  };
+  const result = buildAutoRoutingCandidates({
+    getAutoRoutingCandidateStatus: () => ({ available: true, operationalScore: 1 }),
+    getAutoRoutingAccessStatus: () => ({ eligible: false, reason: "outside confirmed Free-plan list" }),
+  }, [entry], { route: "openai-chat", input: { messages: [{ role: "user", content: "test" }] } });
+  assert.equal(result.candidates.length, 0);
+  assert.equal(result.excluded["access-policy"], 1);
+});
+
+it("uses classified effort across the full eligible pool for quota-aware Gemini fallback", async () => {
+  let effort: "high" | "max" | "low" = "high";
+  const received: Record<string, unknown>[] = [];
+  const baseURL = await startServer((body) => {
+    received.push(body);
+    return {
+      status: 200,
+      body: { answers: {
+        task_effort: { choice: effort, confidence: 0.9 },
+        selected_model: { choice: "candidate_0", confidence: 0.1 },
+      } },
+    };
+  });
+  const rotator = quotaAwareRotator({
+    "google-antigravity/gemini-4-argon-high": 0.99,
+    "google-antigravity/gemini-3.8-flash-low": 0.8,
+    "google-antigravity/gemini-3.8-flash-medium": 0.7,
+    "google-antigravity/gemini-3.8-flash-high": 0.6,
+  });
+  Object.assign(rotator.getConfig()!.typesafeRouting!, {
+    enabled: true,
+    apiKey: "test-typesafe-key",
+    baseURL,
+    shortlistSize: 1,
+  });
+  const candidates = quotaCatalog(
+    ["google-antigravity", "gemini-4-argon-high"],
+    ["google-antigravity", "gemini-3.8-flash-low"],
+    ["google-antigravity", "gemini-3.8-flash-medium"],
+    ["google-antigravity", "gemini-3.8-flash-high"],
+  );
+  const request: AutoRoutingRequest = { route: "openai-chat", input: { messages: [{ role: "user", content: "hello" }] } };
+
+  const high = await selectAutoRoutingTarget(rotator, candidates, request);
+  assert.equal(high?.reason, "typesafe-low-confidence");
+  assert.equal(high?.candidate.modelId, "gemini-3.8-flash-high");
+  const highState = received[0]?.state as { candidates: Array<{ model: string }> };
+  assert.deepEqual(highState.candidates.map((candidate) => candidate.model), ["gemini-4-argon-high"]);
+
+  effort = "max";
+  const max = await selectAutoRoutingTarget(rotator, candidates, request);
+  assert.equal(max?.candidate.modelId, "gemini-3.8-flash-high");
+
+  effort = "low";
+  const low = await selectAutoRoutingTarget(rotator, candidates, request);
+  assert.equal(low?.candidate.modelId, "gemini-3.8-flash-low");
+});
+
+it("defaults quota-aware Gemini fallback to medium and prefers GPT-6 Luna when Gemini is absent", async () => {
+  const variants = quotaCatalog(
+    ["google-antigravity", "gemini-3.8-flash-low"],
+    ["google-antigravity", "gemini-3.8-flash-high"],
+    ["google-antigravity", "gemini-3.8-flash-medium"],
+  );
+  const variantRotator = quotaAwareRotator({
+    "google-antigravity/gemini-3.8-flash-low": 0.99,
+    "google-antigravity/gemini-3.8-flash-high": 0.9,
+    "google-antigravity/gemini-3.8-flash-medium": 0.5,
+  });
+  const request: AutoRoutingRequest = { route: "openai-chat", input: "hello" };
+  assert.equal((await selectAutoRoutingTarget(variantRotator, variants, request))?.candidate.modelId, "gemini-3.8-flash-medium");
+
+  const lunaOnly = quotaCatalog(["ollama", "beam"], ["openai-codex", "gpt-6-luna"]);
+  const lunaRotator = quotaAwareRotator({
+    "ollama/beam": 0.99,
+    "openai-codex/gpt-6-luna": 0.1,
+  });
+  assert.equal((await selectAutoRoutingTarget(lunaRotator, lunaOnly, request))?.candidate.modelId, "gpt-6-luna");
+});
+
+it("excludes Opus 4.6 from deterministic fallback but allows a confident classifier choice", async () => {
+  const candidates = quotaCatalog(
+    ["google-antigravity", "claude-opus-4-6"],
+    ["openai-codex", "gpt-6-luna"],
+  );
+  const rotator = quotaAwareRotator({
+    "google-antigravity/claude-opus-4-6": 0.99,
+    "openai-codex/gpt-6-luna": 0.5,
+  });
+  const request: AutoRoutingRequest = { route: "openai-chat", input: "hello" };
+  assert.equal((await selectAutoRoutingTarget(rotator, candidates, request))?.candidate.modelId, "gpt-6-luna");
+  assert.equal(await selectAutoRoutingTarget(rotator, candidates.slice(0, 1), request), null);
+
+  const baseURL = await startServer(() => ({
+    status: 200,
+    body: { answers: {
+      task_effort: { choice: "medium", confidence: 0.9 },
+      selected_model: { choice: "candidate_0", confidence: 0.99 },
+    } },
+  }));
+  const classifiedRotator = quotaAwareRotator({
+    "google-antigravity/claude-opus-4-6": 0.99,
+    "openai-codex/gpt-6-luna": 0.5,
+  });
+  Object.assign(classifiedRotator.getConfig()!.typesafeRouting!, {
+    enabled: true,
+    apiKey: "test-typesafe-key",
+    baseURL,
+  });
+  const selected = await selectAutoRoutingTarget(classifiedRotator, candidates, request);
+  assert.equal(selected?.mode, "typesafe");
+  assert.equal(selected?.candidate.modelId, "claude-opus-4-6");
 });

@@ -85,6 +85,7 @@ const DISK_FILES: Record<string, DiskFileSpec> = {
     trim: false,
     mode: 0o600,
   },
+  model_access_evidence: { filename: "model-access-evidence.json", backup: false, trim: false, mode: 0o600 },
   rotator_state: { filename: "state.json", backup: true, trim: false },
   token_usage: { filename: "token-usage.json", backup: false, trim: false },
   responses_store: { filename: "responses.json", backup: false, trim: false },

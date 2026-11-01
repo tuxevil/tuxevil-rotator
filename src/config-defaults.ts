@@ -27,6 +27,7 @@ function safeStreamRecoveryMaxRetries(value: number | undefined): number {
 export function applyConfigDefaults(config: Config): Config {
 	return {
 		proxyPort: config.proxyPort || 51200,
+		modelAccessShadow: config.modelAccessShadow ?? false,
 		bindHost: config.bindHost || rotatorEnv("BIND_HOST") || "0.0.0.0",
 		routingPolicy: config.routingPolicy || "timer-first",
 		requestsPerRotation: config.requestsPerRotation || 5,
@@ -70,6 +71,12 @@ export function applyConfigDefaults(config: Config): Config {
 					maxCandidates: config.typesafeRouting.maxCandidates ?? 32,
 					shortlistSize: config.typesafeRouting.shortlistSize ?? 12,
 					maxExcerptChars: config.typesafeRouting.maxExcerptChars ?? 12_000,
+					selectionPolicy: config.typesafeRouting.selectionPolicy ?? "model-choice",
+					restrictToEffortPools: config.typesafeRouting.restrictToEffortPools ?? false,
+					effortPools: config.typesafeRouting.effortPools,
+					sessionAffinity: config.typesafeRouting.sessionAffinity ?? false,
+					stallEscalation: config.typesafeRouting.stallEscalation ?? false,
+					sessionAffinityTtlSeconds: config.typesafeRouting.sessionAffinityTtlSeconds ?? 1800,
 				}
 				: undefined,
 		providerOrder: config.providerOrder,

@@ -1,3 +1,8 @@
+import { serveAccessProbe } from "./access-probe.js";
+import { observeAccessAttempt, logAccessPolicyShadow } from "./access-evidence.js";
+import { serveModelAccessApi, serveProviderPlanApi } from "./model-access-api.js";
+import { createUsageLimitsHandler, USAGE_LIMITS_PATH } from "./usage-limits.js";
+import { carriesUsageReadToken } from "./usage-limits-auth.js";
 // HTTP reverse proxy - forwards requests to Antigravity with credential rotation
 
 import {
@@ -1265,6 +1270,7 @@ export async function withRotation<T>(
     context: RotationAttemptContext,
   ) => Promise<T>,
   signal?: AbortSignal,
+  options?: { autoRecovery?: boolean },
 ): Promise<RotationOutcome<T>> {
   // Keep the admission pool and wire protocol stable across async waits and
   // retries, even if provider order or switches change while the request waits.
@@ -1272,6 +1278,9 @@ export async function withRotation<T>(
     ollamaModels: new Set(rotator.getOllamaModels?.() ?? []),
     codexModels: new Set(rotator.getCodexModels?.() ?? []),
   })?.id;
+  const autoScope = body.displayModel?.toLowerCase() === "auto" && providerId
+    ? { providerId, modelId: model }
+    : undefined;
   const modelQuotaFamily = resolveQuotaModelKey(model) ??
     resolveQuotaModelKey(applyModelAlias(model));
   if (
@@ -1329,7 +1338,7 @@ export async function withRotation<T>(
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (requestIsOff()) return modelOffOutcome();
     const admissionStartedMs = Date.now();
-    const account = await rotator.getActiveAccount(model, signal, providerId);
+    const account = await rotator.getActiveAccount(model, signal, providerId, autoScope);
     if (!account) {
       if (signal?.aborted) {
         return { ok: false, status: 499, errorText: "Client closed request" };
@@ -1358,7 +1367,7 @@ export async function withRotation<T>(
     };
     const rotateAndRelease = async (): Promise<AccountRuntime | null> => {
       releaseCurrentAccount();
-      const nextAccount = await rotator.rotateToNext(model, account, providerId);
+      const nextAccount = await rotator.rotateToNext(model, account, providerId, autoScope);
       return nextAccount;
     };
     const logRequestEnd = (status: string | number, extra = ""): void => {
@@ -1374,6 +1383,7 @@ export async function withRotation<T>(
       rotator,
     );
 
+    let accessHttpStatus: number | null = null;
     try {
       const provider = providerAdapterForModel(account, model, rotator, providerId);
       if (requestIsOff(provider.id)) return modelOffOutcome();
@@ -1414,6 +1424,7 @@ export async function withRotation<T>(
         if (attempt < maxRetries) continue;
         return sendNoAccountsAvailable(`${provider.id} turned off for ${label}`);
       }
+      if (rotator.getConfig?.().modelAccessShadow === true) logAccessPolicyShadow(account.config, provider.id, model, originalHeaders);
       rotator.recordUpstreamAttempt(account);
       const forwarded = await provider.forwardRequest(
         account,
@@ -1422,6 +1433,7 @@ export async function withRotation<T>(
         signal,
       );
       const { response, endpoint } = forwarded;
+      accessHttpStatus = response.status;
       const context: RotationAttemptContext = {
         account,
         label,
@@ -1439,6 +1451,26 @@ export async function withRotation<T>(
         selectionReason: body.selectionReason,
       };
 
+      // Preserve explicit-model behavior. Auto uses payment/plan and timeout
+      // responses as request-local exclusions before any client bytes are sent.
+      if (options?.autoRecovery && [402, 408].includes(response.status)) {
+        const errorText = response.status === 402
+          ? "Upstream payment or plan restriction"
+          : "Upstream request timed out";
+        await response.body?.cancel().catch(() => {});
+        observeAccessAttempt(account.config, provider.id, model, originalHeaders, response.status, errorText);
+        logRequestEnd(response.status);
+        return {
+          ok: false,
+          status: response.status,
+          errorText,
+          endpoint,
+          context,
+          totalMs: Date.now() - requestStartMs,
+        };
+      }
+
+      if (!response.ok) observeAccessAttempt(account.config, provider.id, model, originalHeaders, response.status);
       const action = await classifyUpstreamResponse(
         response,
         endpoint,
@@ -1449,6 +1481,7 @@ export async function withRotation<T>(
       );
 
       if (action.kind !== "success") {
+        observeAccessAttempt(account.config, provider.id, model, originalHeaders, response.status, action.errorText);
         const decision = await handleUpstreamAccountAction({
           action,
           provider,
@@ -1469,6 +1502,7 @@ export async function withRotation<T>(
 
       // success
       const result = await onSuccess(response, context);
+      observeAccessAttempt(account.config, provider.id, model, originalHeaders, response.ok && result && typeof result === "object" && "streamError" in result && result.streamError ? 502 : response.status);
       const shouldRotate = rotator.recordRequest(account, model, providerId);
       const inTokens =
         result && typeof result === "object" && "inputTokens" in result
@@ -1487,13 +1521,14 @@ export async function withRotation<T>(
         inTokens || outTokens ? ` inTokens=${inTokens} outTokens=${outTokens}` : "";
       logRequestEnd(response.status, `endpoint=${endpoint}${ttfbInfo}${tokensInfo}`);
       if (shouldRotate) {
-        await rotator.rotateToNext(model, account, providerId);
+        await rotator.rotateToNext(model, account, providerId, autoScope);
       }
       return { ok: true, result, endpoint, context };
     } catch (err) {
       if (signal?.aborted) {
         return { ok: false, status: 499, errorText: "Client closed request" };
       }
+      if (accessHttpStatus === null || accessHttpStatus < 400) observeAccessAttempt(account.config, providerId ?? DEFAULT_PROVIDER, model, originalHeaders, null, "", isFetchTransportError(err));
       const formattedError = formatError(err);
       log(
         `[${label}] Request failed: ${formattedError}`,
@@ -1909,6 +1944,7 @@ async function handleProxyRequest(
       });
     };
 
+    let accessHttpStatus: number | null = null;
     try {
       if (requestIsOff()) {
         sendModelOff();
@@ -1955,6 +1991,7 @@ async function handleProxyRequest(
         sendNoAccountsAvailable(`${providerId} turned off for ${label}`);
         return;
       }
+      if (rotator.getConfig?.().modelAccessShadow === true) logAccessPolicyShadow(account.config, provider.id, body.model, flattenHeaders(req.headers));
       rotator.recordUpstreamAttempt(account);
       const forwarded = await provider.forwardRequest(
         account,
@@ -1963,6 +2000,7 @@ async function handleProxyRequest(
         clientController.signal,
       );
       const { response, endpoint } = forwarded;
+      accessHttpStatus = response.status;
       const context: RotationAttemptContext = {
         account,
         label,
@@ -1980,6 +2018,7 @@ async function handleProxyRequest(
         selectionReason: body.selectionReason,
       };
 
+      if (!response.ok) observeAccessAttempt(account.config, provider.id, body.model, flattenHeaders(req.headers), response.status);
       const action = await classifyUpstreamResponse(
         response,
         endpoint,
@@ -1990,6 +2029,7 @@ async function handleProxyRequest(
       );
 
       if (action.kind !== "success") {
+        observeAccessAttempt(account.config, provider.id, body.model, flattenHeaders(req.headers), response.status, action.errorText);
         const decision = await handleUpstreamAccountAction({
           action,
           provider,
@@ -2052,6 +2092,7 @@ async function handleProxyRequest(
         const totalMs = Date.now() - requestStartMs;
         const ttfbMs = usage?.firstByteMs ?? totalMs;
         const outcomeStatus = usage?.streamError ? 502 : response.status;
+        observeAccessAttempt(account.config, provider.id, body.model, flattenHeaders(req.headers), response.ok ? outcomeStatus : response.status);
         rotator.recordLatency(body.displayModel || body.model, ttfbMs, totalMs);
         logRequestEnd(outcomeStatus, `ttfbMs=${ttfbMs} inTokens=${usage?.inputTokens ?? 0} outTokens=${usage?.outputTokens ?? 0} endpoint=${endpoint}`);
         rotator.recordRequestLog({
@@ -2102,6 +2143,7 @@ async function handleProxyRequest(
       return;
     } catch (err) {
       if (clientController.signal.aborted || res.destroyed) return;
+      if (accessHttpStatus === null || accessHttpStatus < 400) observeAccessAttempt(account.config, providerId, body.model, flattenHeaders(req.headers), null, "", isFetchTransportError(err));
       const formattedError = formatError(err);
       proxyLog(
         `[${label}] Request failed: ${formattedError}`,
@@ -2335,10 +2377,21 @@ export function startProxy(
     return write;
   };
 
+  const usageLimits = createUsageLimitsHandler(() => liveHub.snapshot().overview);
   const server = createServer((req, res) => {
     const method = req.method?.toUpperCase();
     const url = req.url || "";
     const pathname = url.split("?")[0];
+
+    if (pathname === USAGE_LIMITS_PATH) {
+      void usageLimits(req, res);
+      return;
+    }
+    if (carriesUsageReadToken(req)) {
+      res.writeHead(403, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      res.end('{"error":"read_credential_scope"}');
+      return;
+    }
 
     // CORS headers for API consumers (e.g. MindWhisperAI, local frontends)
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -2466,6 +2519,24 @@ export function startProxy(
         }
         res.end("<h1>Internal login error</h1>");
       });
+      return;
+    }
+
+    if (method === "POST" && pathname === "/api/model-access/probe") {
+      if (!requireAdmin(req, res)) return;
+      void serveAccessProbe(req, res, rotator);
+      return;
+    }
+
+    if (method === "PUT" && pathname === "/api/model-access/plan") {
+      if (!requireAdmin(req, res)) return;
+      void serveProviderPlanApi(req, res, rotator.getConfig());
+      return;
+    }
+
+    if (method === "GET" && pathname === "/api/model-access") {
+      if (!requireAdmin(req, res)) return;
+      serveModelAccessApi(res, rotator.getConfig(), new URL(req.url ?? "/", "http://localhost").searchParams);
       return;
     }
 
@@ -2979,6 +3050,10 @@ export function startProxy(
   const serverClosing = new AbortController();
 
   server.on("upgrade", (req, socket) => {
+    if (carriesUsageReadToken(req)) {
+      socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+      return;
+    }
     const url = req.url || "";
     const pathname = url.split("?")[0];
     if (

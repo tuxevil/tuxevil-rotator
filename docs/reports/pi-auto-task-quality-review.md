@@ -1,0 +1,17 @@
+# Real Pi task-quality review
+
+Read-only access to the authorized remote Pi host located the recent session using auto. Snapshot:2026-10-31T13:09:17.492280Z. The sample is one repository installation followed by advisory and code-inspection turns, not a representative benchmark or independent comparison between models. No remote configuration, source files or running agent state were changed.
+
+The transcript contains54 assistant messages:44 tool-use turns,6 provider-error turns and4 completed text responses. All44 tool calls (25 bash,19 read) have corresponding results; none is unmatched. This supports working tool serialization/execution in this sample, not semantic correctness of every command. An earlier marked shell error during environment inspection is not by itself a malformed tool call or a task failure.
+
+The installation completion claim is supported: the recorded typecheck succeeded,228 tests across27 files passed, the build succeeded, and the recorded startup check returned HTTP200. A fresh read-only HTTP check also returned200 and the application was listening. This is stronger evidence of task completion than proxy HTTP success alone. It does not establish that live model evaluation, optional durable services, production persistence or reboot recovery were configured.
+
+All six provider errors in the transcript precede the client-compatibility correction: one429 and five400 responses, matching the previously diagnosed Zen selections. No later provider-error message appears through this snapshot. This is an observed window, not a guarantee against future failures.
+
+The initial advisory responses were broad and oriented around documentation/features. They did not yet demonstrate detailed source-level grounding. After the user explicitly requested analysis of real code, the agent read implementation files covering providers, contracts, exports, evaluation, database/queue behavior and UI components. At the snapshot, that investigation was still running and no final code-review answer was available. The initial advice cannot be declared technically false without checking each claim, and the clarification alone is not evidence of a model defect. It does show why a grader must distinguish general advice from source-grounded findings.
+
+No model-quality ranking, automatic escalation or task-affinity change is justified by this sample. The local transcript identifies the virtual auto model; aggregate upstream selection logs do not provide a reliable per-task causal attribution. Classifier confidence is not a quality grade. A model change during a conversation is not automatically harmful or beneficial.
+
+Follow-up evaluation belongs to i4zi: define task-specific acceptance checks, connect decisions to a privacy-preserving task/session reference, and evaluate matched tasks before changing selection behavior. Installation criteria should include executable checks and application readiness; review criteria should require implementation references, demonstrated behavior and a completed assessment. Tool-error counts, retries and HTTP200 must not substitute for these outcomes. Compare automatic versus fixed-model runs on approved reproducible tasks before claiming an improvement.
+
+Public artifacts contain aggregate metadata and deidentified findings only. Transcript excerpts, commands, tool arguments, account identities, host addresses, session IDs and credentials are not published. No application code changed; whitespace validation passed.

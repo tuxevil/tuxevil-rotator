@@ -318,23 +318,23 @@ export function Meter({
   tone,
   size = "md",
 }: {
-  value: number;
+  value: number | null;
   label: string;
   tone?: Tone;
   size?: "sm" | "md";
 }): JSX.Element {
-  const clamped = Math.max(0, Math.min(100, Math.round(value)));
-  const resolved = tone ?? quotaTone(clamped);
+  const clamped = value === null ? null : Math.max(0, Math.min(100, Math.round(value)));
+  const resolved = clamped === null ? "neutral" : tone ?? quotaTone(clamped);
   return (
     <span
-      class={`meter meter-${size} tone-${resolved}`}
-      role="meter"
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={clamped}
+      class={`meter meter-${size} tone-${resolved}${clamped === null ? " meter-unknown" : ""}`}
+      role={clamped === null ? "img" : "meter"}
+      aria-valuemin={clamped === null ? undefined : 0}
+      aria-valuemax={clamped === null ? undefined : 100}
+      aria-valuenow={clamped ?? undefined}
       aria-label={label}
     >
-      <span class="meter-fill" style={{ width: `${clamped}%` }} />
+      {clamped !== null && <span class="meter-fill" style={{ width: `${clamped}%` }} />}
     </span>
   );
 }

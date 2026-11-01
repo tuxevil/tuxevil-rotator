@@ -1,0 +1,37 @@
+{
+  "snapshotAt": "2026-10-31T13:09:17.492280+00:00",
+  "source": "Authorized remote Pi session; read-only inspection",
+  "sample": "One repository installation and subsequent advisory/code-inspection turns",
+  "assistantMessages": 54,
+  "assistantStops": {
+    "stop": 4,
+    "toolUse": 44,
+    "error": 6
+  },
+  "toolCalls": {
+    "bash": 25,
+    "read": 19
+  },
+  "matchedToolResults": 44,
+  "unmatchedToolResults": 0,
+  "providerErrors": {
+    "beforeClientCompatibilityFix": 6,
+    "afterClientCompatibilityFix": 0
+  },
+  "installationValidation": {
+    "typecheckPassed": true,
+    "testsPassed": 228,
+    "testFilesPassed": 27,
+    "buildPassed": true,
+    "applicationHttpStatusAtInspection": 200
+  },
+  "qualityFindings": {
+    "installationOutcome": "verified in sampled workflow",
+    "initialAdviceGrounding": "general/README-level; not sufficient for a code-review quality claim",
+    "subsequentCodeInspection": "observed after user clarification",
+    "finalCodeReviewOutcome": "not yet observed at snapshot",
+    "causalModelQualityRanking": "not established"
+  },
+  "routingChangesMade": false,
+  "remoteChangesMade": false
+}

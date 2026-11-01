@@ -1,0 +1,487 @@
+{
+  "generatedAt": "2026-10-31T02:10:55.290Z",
+  "scope": "Selected model IDs per provider, exact account targeting; not every catalog variant",
+  "combinations": 620,
+  "observedCombinations": 309,
+  "skippedCombinations": 311,
+  "observations": {
+    "success": 181,
+    "unknown": 74,
+    "quota": 51,
+    "transport": 3
+  },
+  "skipped": {
+    "quota": 159,
+    "model-disabled": 134,
+    "account-busy": 18
+  },
+  "missingCatalogModels": [],
+  "providers": {
+    "google-antigravity": {
+      "combinations": 288,
+      "observations": {
+        "success": 54,
+        "unknown": 52,
+        "quota": 44
+      },
+      "skipped": {
+        "quota": 132,
+        "account-busy": 6
+      }
+    },
+    "ollama": {
+      "combinations": 196,
+      "observations": {
+        "success": 105,
+        "transport": 3
+      },
+      "skipped": {
+        "model-disabled": 84,
+        "account-busy": 4
+      }
+    },
+    "openai-codex": {
+      "combinations": 100,
+      "observations": {
+        "success": 22,
+        "unknown": 22,
+        "quota": 2
+      },
+      "skipped": {
+        "model-disabled": 50,
+        "account-busy": 2,
+        "quota": 2
+      }
+    },
+    "opencode-zen": {
+      "combinations": 36,
+      "observations": {
+        "quota": 5
+      },
+      "skipped": {
+        "quota": 25,
+        "account-busy": 6
+      }
+    }
+  },
+  "modelPlans": [
+    {
+      "provider": "google-antigravity",
+      "model": "claude-opus-4-6-thinking",
+      "plan": "free",
+      "combinations": 46,
+      "observations": {
+        "success": 2
+      },
+      "httpStatuses": {
+        "200": 2
+      },
+      "skipped": {
+        "quota": 44
+      }
+    },
+    {
+      "provider": "google-antigravity",
+      "model": "claude-opus-4-6-thinking",
+      "plan": "pro-paid",
+      "combinations": 2,
+      "observations": {
+        "unknown": 1
+      },
+      "httpStatuses": {
+        "None": 1
+      },
+      "skipped": {
+        "account-busy": 1
+      }
+    },
+    {
+      "provider": "google-antigravity",
+      "model": "claude-opus-5-5-medium",
+      "plan": "free",
+      "combinations": 46,
+      "observations": {
+        "unknown": 2
+      },
+      "httpStatuses": {
+        "404": 2
+      },
+      "skipped": {
+        "quota": 44
+      }
+    },
+    {
+      "provider": "google-antigravity",
+      "model": "claude-opus-5-5-medium",
+      "plan": "pro-paid",
+      "combinations": 2,
+      "observations": {
+        "success": 1
+      },
+      "httpStatuses": {
+        "200": 1
+      },
+      "skipped": {
+        "account-busy": 1
+      }
+    },
+    {
+      "provider": "google-antigravity",
+      "model": "claude-sonnet-4-6",
+      "plan": "free",
+      "combinations": 46,
+      "observations": {
+        "quota": 44,
+        "success": 2
+      },
+      "httpStatuses": {
+        "429": 44,
+        "200": 2
+      },
+      "skipped": {}
+    },
+    {
+      "provider": "google-antigravity",
+      "model": "claude-sonnet-4-6",
+      "plan": "pro-paid",
+      "combinations": 2,
+      "observations": {
+        "unknown": 1
+      },
+      "httpStatuses": {
+        "None": 1
+      },
+      "skipped": {
+        "account-busy": 1
+      }
+    },
+    {
+      "provider": "google-antigravity",
+      "model": "claude-sonnet-5-5-medium",
+      "plan": "free",
+      "combinations": 46,
+      "observations": {
+        "unknown": 2
+      },
+      "httpStatuses": {
+        "404": 2
+      },
+      "skipped": {
+        "quota": 44
+      }
+    },
+    {
+      "provider": "google-antigravity",
+      "model": "claude-sonnet-5-5-medium",
+      "plan": "pro-paid",
+      "combinations": 2,
+      "observations": {
+        "success": 1
+      },
+      "httpStatuses": {
+        "200": 1
+      },
+      "skipped": {
+        "account-busy": 1
+      }
+    },
+    {
+      "provider": "google-antigravity",
+      "model": "gemini-3.8-flash-medium",
+      "plan": "free",
+      "combinations": 46,
+      "observations": {
+        "success": 46
+      },
+      "httpStatuses": {
+        "200": 46
+      },
+      "skipped": {}
+    },
+    {
+      "provider": "google-antigravity",
+      "model": "gemini-3.8-flash-medium",
+      "plan": "pro-paid",
+      "combinations": 2,
+      "observations": {
+        "success": 1
+      },
+      "httpStatuses": {
+        "200": 1
+      },
+      "skipped": {
+        "account-busy": 1
+      }
+    },
+    {
+      "provider": "google-antigravity",
+      "model": "gemini-4-argon-medium",
+      "plan": "free",
+      "combinations": 46,
+      "observations": {
+        "unknown": 46
+      },
+      "httpStatuses": {
+        "404": 46
+      },
+      "skipped": {}
+    },
+    {
+      "provider": "google-antigravity",
+      "model": "gemini-4-argon-medium",
+      "plan": "pro-paid",
+      "combinations": 2,
+      "observations": {
+        "success": 1
+      },
+      "httpStatuses": {
+        "200": 1
+      },
+      "skipped": {
+        "account-busy": 1
+      }
+    },
+    {
+      "provider": "ollama",
+      "model": "beam",
+      "plan": "free",
+      "combinations": 28,
+      "observations": {
+        "success": 27
+      },
+      "httpStatuses": {
+        "200": 27
+      },
+      "skipped": {
+        "account-busy": 1
+      }
+    },
+    {
+      "provider": "ollama",
+      "model": "gemma4:31b",
+      "plan": "free",
+      "combinations": 28,
+      "observations": {
+        "success": 27
+      },
+      "httpStatuses": {
+        "200": 27
+      },
+      "skipped": {
+        "account-busy": 1
+      }
+    },
+    {
+      "provider": "ollama",
+      "model": "gpt-oss:120b",
+      "plan": "free",
+      "combinations": 28,
+      "observations": {},
+      "httpStatuses": {},
+      "skipped": {
+        "model-disabled": 28
+      }
+    },
+    {
+      "provider": "ollama",
+      "model": "gpt-oss:20b",
+      "plan": "free",
+      "combinations": 28,
+      "observations": {},
+      "httpStatuses": {},
+      "skipped": {
+        "model-disabled": 28
+      }
+    },
+    {
+      "provider": "ollama",
+      "model": "nemotron-3-nano:30b",
+      "plan": "free",
+      "combinations": 28,
+      "observations": {},
+      "httpStatuses": {},
+      "skipped": {
+        "model-disabled": 28
+      }
+    },
+    {
+      "provider": "ollama",
+      "model": "nemotron-3-super",
+      "plan": "free",
+      "combinations": 28,
+      "observations": {
+        "success": 27
+      },
+      "httpStatuses": {
+        "200": 27
+      },
+      "skipped": {
+        "account-busy": 1
+      }
+    },
+    {
+      "provider": "ollama",
+      "model": "nemotron-3-ultra",
+      "plan": "free",
+      "combinations": 28,
+      "observations": {
+        "success": 24,
+        "transport": 3
+      },
+      "httpStatuses": {
+        "200": 24,
+        "None": 3
+      },
+      "skipped": {
+        "account-busy": 1
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-5.6-luna",
+      "plan": "unknown",
+      "combinations": 25,
+      "observations": {},
+      "httpStatuses": {},
+      "skipped": {
+        "model-disabled": 25
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-5.6-terra",
+      "plan": "unknown",
+      "combinations": 25,
+      "observations": {},
+      "httpStatuses": {},
+      "skipped": {
+        "model-disabled": 25
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-6-luna",
+      "plan": "unknown",
+      "combinations": 25,
+      "observations": {
+        "success": 22,
+        "quota": 2
+      },
+      "httpStatuses": {
+        "200": 22,
+        "429": 2
+      },
+      "skipped": {
+        "account-busy": 1
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-6.1-terra",
+      "plan": "unknown",
+      "combinations": 25,
+      "observations": {
+        "unknown": 22
+      },
+      "httpStatuses": {
+        "400": 22
+      },
+      "skipped": {
+        "account-busy": 1,
+        "quota": 2
+      }
+    },
+    {
+      "provider": "opencode-zen",
+      "model": "big-pickle",
+      "plan": "free",
+      "combinations": 6,
+      "observations": {
+        "quota": 5
+      },
+      "httpStatuses": {
+        "429": 5
+      },
+      "skipped": {
+        "account-busy": 1
+      }
+    },
+    {
+      "provider": "opencode-zen",
+      "model": "ling-3.0-flash-fin-free",
+      "plan": "free",
+      "combinations": 6,
+      "observations": {},
+      "httpStatuses": {},
+      "skipped": {
+        "quota": 5,
+        "account-busy": 1
+      }
+    },
+    {
+      "provider": "opencode-zen",
+      "model": "mimo-v2.5-free",
+      "plan": "free",
+      "combinations": 6,
+      "observations": {},
+      "httpStatuses": {},
+      "skipped": {
+        "quota": 5,
+        "account-busy": 1
+      }
+    },
+    {
+      "provider": "opencode-zen",
+      "model": "muse-spark-1.3-contributor-free",
+      "plan": "free",
+      "combinations": 6,
+      "observations": {},
+      "httpStatuses": {},
+      "skipped": {
+        "quota": 5,
+        "account-busy": 1
+      }
+    },
+    {
+      "provider": "opencode-zen",
+      "model": "nemotron-3-ultra-free",
+      "plan": "free",
+      "combinations": 6,
+      "observations": {},
+      "httpStatuses": {},
+      "skipped": {
+        "quota": 5,
+        "account-busy": 1
+      }
+    },
+    {
+      "provider": "opencode-zen",
+      "model": "nemotron-3.5-lightning-free",
+      "plan": "free",
+      "combinations": 6,
+      "observations": {},
+      "httpStatuses": {},
+      "skipped": {
+        "quota": 5,
+        "account-busy": 1
+      }
+    }
+  ],
+  "verification": {
+    "apiAndPostgresVerified": true,
+    "freshObservationsVerified": 224,
+    "credentialScopedObservationsFiltered": 44,
+    "supersededByNewerObservations": 0,
+    "subscriptionDeclarationsUnchanged": true,
+    "modelAccessShadow": true,
+    "automaticEnforcement": false
+  },
+  "checks": {
+    "suiteTests": 1366,
+    "passed": 1364,
+    "skipped": 2,
+    "failed": 0,
+    "lintErrors": 0,
+    "existingLintWarnings": 17
+  }
+}

@@ -97,6 +97,8 @@ export interface AccountConfig {
 }
 
 export interface Config {
+  /** Log informational account/model policy comparisons without enforcing them. */
+  modelAccessShadow?: boolean;
   accounts: AccountConfig[];
   requestsPerRotation: number;
   proxyPort: number;
@@ -168,6 +170,17 @@ export interface Config {
 }
 
 export interface TypeSafeRoutingConfig {
+  /** Classify effort then select operationally from explicit pools; default model-choice. */
+  selectionPolicy?: "model-choice" | "effort-pools";
+  /** Restrict all selections, including fallback and affinity, to the union of configured pools. */
+  restrictToEffortPools?: boolean;
+  effortPools?: Partial<Record<"low" | "medium" | "high" | "max", string[]>>;
+  /** Reuse a valid model for tool continuations with metadata.session_id. */
+  sessionAffinity?: boolean;
+  /** Once per pinned task, seek a reasoning model after three consecutive tool errors. */
+  stallEscalation?: boolean;
+  /** Absolute pin lifetime, seconds; default 1800, maximum 86400. */
+  sessionAffinityTtlSeconds?: number;
   /** Explicit opt-in. When omitted, a configured apiKey enables the feature. */
   enabled?: boolean;
   /** TypeSafe API key. Persisted encrypted by the settings layer. */
@@ -344,7 +357,18 @@ export interface ModelSpecConfig {
 }
 
 // Per-model quota info for an account
+/** Observability only: never an input to routing policy. Missing means unknown. */
+export interface QuotaObservation {
+  observedAt: number;
+  percentageSource: "reported" | "derived" | "estimated" | "unknown";
+  remainingPercent: number | null;
+  resetSource: "reported" | "estimated" | "unknown";
+  resetAt: string | null;
+  catalogAccessible?: boolean;
+}
+
 export interface ModelQuota {
+  observation?: QuotaObservation;
   modelKey: string;
   displayName: string;
   /** Owner of this quota pool when the account has several providers. */
@@ -1082,7 +1106,9 @@ export function getModelPricing(model: string): ModelPricing | undefined {
 // "free" = served on the free tier; "subscription" = requires a paid plan.
 export type ModelTierAccess = "free" | "subscription";
 export const MODEL_TIER_ACCESS: Record<string, ModelTierAccess> = {
+  // Free-credit list refreshed from operator-provided Ollama list, 2026-10-30.
   // ── Free tier (HTTP 200 on free accounts) ───────────────────────────────
+  "beam":                        "free",
   "gpt-oss:20b":                  "free",
   "gpt-oss:120b":                 "free",
   "gemma4:31b":                   "free",
@@ -1090,6 +1116,8 @@ export const MODEL_TIER_ACCESS: Record<string, ModelTierAccess> = {
   "nemotron-3-super":             "free",
   "nemotron-3-ultra":             "free",
   // ── Subscription tier (HTTP 402 on free accounts) ───────────────────────
+  "deepseek-v4.1-flash:1017":     "subscription",
+  "minimax-m3.1-flash":           "subscription",
   "deepseek-v4-flash:0731":       "subscription",
   "deepseek-v4-pro:0813":         "subscription",
   "glm-5.1":                      "subscription",

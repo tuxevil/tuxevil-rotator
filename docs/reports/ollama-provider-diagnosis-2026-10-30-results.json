@@ -1,0 +1,74 @@
+[
+  {
+    "model": "beam",
+    "status": 200,
+    "contentType": "application/json",
+    "records": [
+      {
+        "keys": [
+          "model",
+          "created_at",
+          "message",
+          "done",
+          "done_reason",
+          "total_duration",
+          "prompt_eval_count",
+          "prompt_eval_cached_count",
+          "eval_count"
+        ],
+        "done": true,
+        "hasError": false,
+        "contentChars": 1,
+        "thinkingChars": 62,
+        "promptTokens": 53,
+        "outputTokens": 26,
+        "errorCategory": null
+      }
+    ]
+  },
+  {
+    "model": "deepseek-v4.1-flash:1017",
+    "status": 402,
+    "contentType": "application/json",
+    "records": [
+      {
+        "keys": [
+          "error"
+        ],
+        "done": null,
+        "hasError": true,
+        "contentChars": null,
+        "thinkingChars": null,
+        "promptTokens": null,
+        "outputTokens": null,
+        "errorCategory": "quota-or-payment"
+      }
+    ]
+  },
+  {
+    "model": "nemotron-3-ultra",
+    "status": 200,
+    "contentType": "application/json",
+    "records": [
+      {
+        "keys": [
+          "model",
+          "created_at",
+          "message",
+          "done",
+          "done_reason",
+          "total_duration",
+          "prompt_eval_count",
+          "eval_count"
+        ],
+        "done": true,
+        "hasError": false,
+        "contentChars": 1,
+        "thinkingChars": 101,
+        "promptTokens": 23,
+        "outputTokens": 29,
+        "errorCategory": null
+      }
+    ]
+  }
+]

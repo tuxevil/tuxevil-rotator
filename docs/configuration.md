@@ -424,3 +424,13 @@ For real-time voice and streaming applications, client requests can bypass artif
 
 - `X-Skip-Safety-Jitter: true`
 - `X-Live-Request: true`
+
+### Compression behavior
+
+`lite` removes duplicate messages and redundant whitespace, and truncates long tool
+results (default threshold: 2,000 characters after extracting protected blocks).
+Truncation loses information; use `off` when complete output is required.
+System and developer instructions are deduplicated only when the complete messages match.
+`rtk+lite` applies RTK filters first, then lite cleanup and truncation, so command-specific
+filters can preserve errors and summaries before the final size reduction.
+Compression savings headers report characters, not measured token savings.
