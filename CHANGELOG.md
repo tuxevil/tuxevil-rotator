@@ -15,6 +15,11 @@
 - **Provider eligibility and discovery**: Apply account-level access evidence before auto selection, preserve OpenCode-restricted free models for eligible OpenCode-originated requests, and expose `auto` in model discovery.
 - **Provider reliability and metadata**: Preserve access evidence across verified Codex OAuth refreshes, honor discovered Ollama context limits, and reject empty or malformed Ollama completions before they reach clients.
 - **Prompt compression**: Deduplicate repeated routing instructions and filter them before lossy compression.
+- **Dashboard Playground design alignment**: Use shared layout and controls across the Playground tabs, improve compliance details and runnable-model selection, and streamline transcription actions ([PR #46](https://github.com/tuxevil/tuxevil-rotator/pull/46) by [@CyR1en](https://github.com/CyR1en)).
+
+### Contributors
+
+- Thanks to [@CyR1en](https://github.com/CyR1en) for aligning the Dashboard Playground (Chat, Compare, Compliance, and Transcription) with the shared design system, expandable compliance results table, request/response/routing inspector, audio-only model guards, and accessibility improvements in [PR #46](https://github.com/tuxevil/tuxevil-rotator/pull/46).
 
 ## [4.3.0] - 2026-10-29
 
