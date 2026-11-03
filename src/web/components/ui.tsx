@@ -204,7 +204,7 @@ export function Segmented<T extends string>({
   size = "md",
   class: className,
 }: {
-  options: Array<{ value: T; label: ComponentChildren; title?: string }>;
+  options: Array<{ value: T; label: ComponentChildren; title?: string; disabled?: boolean }>;
   value: T;
   onChange: (value: T) => void;
   label: string;
@@ -220,6 +220,7 @@ export function Segmented<T extends string>({
           class={option.value === value ? "is-active" : undefined}
           aria-pressed={option.value === value}
           title={option.title}
+          disabled={option.disabled}
           onClick={() => onChange(option.value)}
         >
           {option.label}
