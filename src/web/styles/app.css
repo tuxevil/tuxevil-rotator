@@ -4574,56 +4574,38 @@ a.hero-metric:hover {
 
 /* ── Model access (Models page) ───────────────────────────────────────── */
 
-.access-check {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 4px 20px 20px;
-  border-bottom: 1px solid var(--border);
-}
-
-.access-account {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--text-3);
-}
-
 .access-account .select {
   height: 30px;
-  max-width: 240px;
+  max-width: 220px;
   font-size: 13px;
 }
 
-/* Provider, plan and client: the context the rules table and the check share. */
+/* Provider, plan and client: one quiet row the check and the rules share. */
 .access-context {
-  display: grid;
-  grid-template-columns: 80px minmax(0, 1fr);
-  gap: 16px;
-  align-items: start;
-}
-
-.access-context-label {
   display: flex;
   align-items: center;
-  min-height: 32px;
-  font-size: 12.5px;
-  font-weight: 560;
-  color: var(--text-2);
+  gap: 12px 16px;
+  flex-wrap: wrap;
+  padding: 4px 20px 20px;
 }
 
-.access-context-control {
+.access-context > .segmented,
+.access-context-group > .segmented {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.access-context-group {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
   min-width: 0;
 }
 
-.access-context-control > .segmented {
-  max-width: 100%;
-  overflow-x: auto;
+.access-known {
+  margin-left: 4px;
+  color: var(--text-3);
+  font-weight: 500;
 }
 
 .segmented button:disabled {
@@ -4631,34 +4613,74 @@ a.hero-metric:hover {
   cursor: not-allowed;
 }
 
-.access-more {
-  height: 32px;
-  padding: 0 4px;
-  font-size: 13px;
-}
-
-.access-hint-row {
-  display: flex;
-  align-items: baseline;
-  gap: 4px 12px;
-  flex-wrap: wrap;
-}
-
-.access-hint-row .link-button {
+.link-button.access-quiet-link {
+  color: var(--text-3);
+  font-weight: 500;
   font-size: 12.5px;
 }
 
-.access-query {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 176px;
-  gap: 16px;
-  padding-top: 16px;
+.link-button.access-quiet-link:hover {
+  color: var(--text);
+}
+
+.access-check {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 20px;
   border-top: 1px solid var(--border);
+}
+
+.access-check-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 30px;
+}
+
+.access-date {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.access-date .input {
+  width: 152px;
+}
+
+.access-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.access-icon-button:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+/* The verdict sits inside the field, so the question and answer read as one. */
+.access-probe {
+  position: relative;
+}
+
+.access-probe .input {
+  width: 100%;
+  padding-right: 136px;
 }
 
 .mono-input {
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 /* Suggestions appear while typing; the native arrow would read as a select. */
@@ -4666,107 +4688,80 @@ a.hero-metric:hover {
   display: none !important;
 }
 
-.access-result {
+.access-verdict {
+  position: absolute;
+  top: 50%;
+  right: 16px;
+  transform: translateY(-50%);
+  pointer-events: none;
   transition: opacity 0.15s;
 }
 
-.access-result.is-pending {
-  opacity: 0.6;
-}
-
-.access-result-body {
+.access-explain {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  min-width: 0;
+  min-height: 44px;
+  padding-top: 4px;
+  transition: opacity 0.15s;
 }
 
-.access-result-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  flex-wrap: wrap;
+.access-probe.is-pending .access-verdict,
+.access-probe.is-pending + .access-explain {
+  opacity: 0.5;
 }
 
-.access-result-head strong {
-  font-weight: 600;
+.access-reason {
+  color: var(--text-2);
 }
 
-.access-result .access-result-body p {
-  margin: 0;
-}
-
-.access-result .access-result-meta {
+.access-meta {
   font-size: 12.5px;
   color: var(--text-3);
+}
+
+.access-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 560;
+  color: var(--tone);
+  white-space: nowrap;
+}
+
+.access-state.tone-neutral {
+  color: var(--text-2);
+}
+
+.access-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tone);
+  box-shadow: 0 0 0 3px var(--tone-soft);
 }
 
 .access-evidence {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-}
-
-.access-evidence > * + .access-disclosure {
+  gap: 12px;
+  padding-top: 12px;
   border-top: 1px solid var(--border);
 }
 
-.access-disclosure {
+.access-well {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  height: 40px;
-  padding: 0 12px;
-  border: 0;
-  background: none;
-  color: var(--text);
-  font: inherit;
-  font-weight: 560;
-  text-align: left;
-  cursor: pointer;
-  transition: background-color 0.15s;
-}
-
-.access-disclosure:hover {
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--radius);
   background: var(--surface-2);
 }
 
-.access-disclosure:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-.access-disclosure .icon {
-  color: var(--text-3);
-  transition: transform 0.15s ease-out;
-}
-
-.access-disclosure[aria-expanded="true"] .icon {
-  transform: rotate(90deg);
-}
-
-.access-disclosure .num {
-  margin-left: auto;
-  font-weight: 500;
-}
-
-/* Indented to the disclosure label: 12 padding + 14 icon + 8 gap. */
-.access-disclosure-body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 0 12px 16px 34px;
-}
-
-.access-catalog-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 16px;
-  font-size: 12.5px;
-  color: var(--text-2);
+.access-well .table th,
+.access-well .table td {
+  border-color: var(--border);
 }
 
 .access-model-tag {
@@ -4782,23 +4777,24 @@ a.hero-metric:hover {
 
 .access-rules-toolbar {
   padding-top: 16px;
+  border-top: 1px solid var(--border);
 }
 
 .access-rules-title {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  flex-wrap: wrap;
-}
-
-.access-rules-title h3 {
   font-size: 14px;
   font-weight: 600;
   color: var(--text);
 }
 
-.access-table tbody th .cell-sub {
-  white-space: nowrap;
+.access-rules-title .num {
+  font-weight: 500;
+}
+
+.access-rules-toolbar .search {
+  min-width: 200px;
 }
 
 .access-table .model-id {
@@ -4806,50 +4802,41 @@ a.hero-metric:hover {
   word-break: normal;
 }
 
-.access-evidence-dates {
+.access-table tbody th .cell-sub {
   white-space: nowrap;
 }
 
-.access-table .tag-row {
-  min-width: 176px;
-  max-width: 240px;
+.access-plans {
+  color: var(--text-3);
+  white-space: nowrap;
 }
 
 .access-note {
-  min-width: 260px;
+  min-width: 240px;
   color: var(--text-2);
 }
 
 .access-source {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  margin-left: 4px;
+  vertical-align: -2px;
   color: var(--text-3);
   transition: color 0.15s;
 }
 
 .access-source:hover {
   color: var(--text);
-  text-decoration: underline;
-  text-underline-offset: 2px;
 }
 
 @container canvas (max-width: 700px) {
-  .access-context {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 8px;
+  .access-probe .input {
+    padding-right: 124px;
   }
 
-  .access-context-label {
-    min-height: 0;
-  }
-
-  .access-context-control + .access-context-label {
-    margin-top: 8px;
-  }
-
-  .access-query {
-    grid-template-columns: minmax(0, 1fr);
+  .access-rules-toolbar .search {
+    min-width: 0;
+    flex: 1;
   }
 }
 

@@ -4,7 +4,7 @@
 
 ### Changed
 
-- **Model access panel**: Rebuild the Models page's Model access panel from the dashboard's shared components and cut it to one dropdown. Account moves to the panel header; provider is a segmented control; plan is a row of chips limited to plans that change the selected provider's rules (the rest fold behind "more", and the row is hidden when plans do not matter); client appears only for providers with client-dependent rules. Checking a model runs as you type, with suggestions from the rules and the account's advertised models. The result is a callout toned by its state, account observations and advertised models are toggle disclosures, and the rules are a standard table with a model filter, plan tags, state pills, evidence dates and source links. Saving a plan declaration is a contextual link next to the plan hint.
+- **Model access panel**: Rebuild the Models page's Model access panel from the dashboard's shared components and reduce it to one dropdown. The account select sits in the panel header; provider and plan are segmented controls in one row (plans that do not change the provider's rules fold behind "+N"; the plan control is hidden when plans do not matter), and client appears only for providers with client-dependent rules. Checking a model runs as you type, with the verdict inside the field, the reason and plan source on two quiet lines below, an "As of today" link that opens a date picker, and suggestions from the rules and the account's advertised models. Account observations and advertised models are one line of links that open inset details. Rules show model, access state, plans and note, with evidence dates in a tooltip, end dates under the state and the source as an icon link.
 
 ### Security
 
