@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- **Model access panel**: Rebuild the Models page's Model access panel from the dashboard's shared components. Labeled fields in a responsive grid with hints for plan source and client verification, a primary Explain access action, the result as a callout toned by its state, account observations and advertised models as toggle disclosures, and the rules as a standard table with a model filter, plan tags, state pills, evidence dates and source links. Request behavior is unchanged.
+
 ### Security
 
 - Override the development-only `minimatch` dependency to the patched 11.x release line for CVE-2026-118764 (Dependabot alert #8). The lockfile resolves 11.0.3. This override keeps ESLint and coverage dependencies patched while their upstream dependency ranges still target 10.x.

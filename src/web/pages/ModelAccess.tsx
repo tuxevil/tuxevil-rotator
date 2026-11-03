@@ -1,10 +1,49 @@
+// Model access: what each plan is documented to reach, and an explainer for
+// one account, provider and model. Informational only; nothing here routes.
+
 import type { JSX } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import type { AccessReport } from "../../model-access-api.js";
+import type { AccessRule, AccessState } from "../../model-access.js";
+import { formatDateTime, pluralize } from "../lib/format.js";
+import { providerLabel, type Tone } from "../lib/status.js";
 import { api } from "../state/api.js";
 import { query } from "../state/router.js";
 import { masker } from "../state/store.js";
-import { Panel, Button } from "../components/ui.js";
+import { Icon, type IconName } from "../components/icons.js";
+import { Button, EmptyState, Panel, Pill, SearchInput, Spinner } from "../components/ui.js";
+
+const PROVIDERS = ["google-antigravity", "openai-codex", "ollama", "opencode-zen"];
+const PLANS = ["unknown", "free", "plus", "pro-trial", "pro-paid", "ultra", "enterprise"];
+const CLIENTS = ["unknown", "opencode", "other"];
+
+const STATE: Record<AccessState, { label: string; tone: Tone; icon: IconName }> = {
+  allowed: { label: "Allowed", tone: "ok", icon: "checkCircle" },
+  blocked: { label: "Blocked", tone: "bad", icon: "ban" },
+  conditional: { label: "Conditional", tone: "warn", icon: "warning" },
+  unknown: { label: "Unknown", tone: "neutral", icon: "info" },
+};
+
+const EVIDENCE: Record<AccessRule["evidence"], string> = {
+  documented: "Documented",
+  "operator-confirmed": "Operator confirmed",
+  "operator-pending": "Operator pending",
+};
+
+const PLAN_SOURCE: Record<NonNullable<AccessReport["planSource"]>, string> = {
+  "query-assumption": "Plan assumed for this check",
+  "single-provider-account": "Plan from the account tier",
+  "provider-declaration": "Plan from the stored declaration",
+  unknown: "Plan unknown",
+};
+
+function sourceHost(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
 
 export function ModelAccessPanel(): JSX.Element {
   const [now, setNow] = useState(Date.now());
@@ -19,6 +58,8 @@ export function ModelAccessPanel(): JSX.Element {
   const [model, setModel] = useState("gemini-3.8-flash-medium");
   const [decision, setDecision] = useState<AccessReport | null>(null);
   const [decisionKey, setDecisionKey] = useState("");
+  const [openObservations, setOpenObservations] = useState(false);
+  const [openCatalog, setOpenCatalog] = useState(false);
   const formKey = JSON.stringify([accountId, provider, plan, client, model, at]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -36,8 +77,13 @@ export function ModelAccessPanel(): JSX.Element {
   const catalog = selected?.providerCatalogs?.find(c => c.provider === provider);
   const catalogFreshness = catalog?.freshness === "fresh" && catalog.expiresAt !== null && catalog.expiresAt <= now ? "stale" : catalog?.freshness;
   const declaredPlan = selected?.providerPlans.find(p => p.provider === provider);
-  const effectivePlan = plan || declaredPlan?.plan || selected?.inferredPlan || "unknown";
-  const rules = report?.rules.filter(r => r.modelPrefix.toLowerCase().includes(ruleFilter.toLowerCase()) && r.provider === provider && ((effectivePlan === "unknown" || !accountId && !plan) || r.plans.includes(effectivePlan) || r.plans.includes("*"))) ?? [];
+  const knownPlan = declaredPlan?.plan || selected?.inferredPlan || "unknown";
+  const effectivePlan = plan || knownPlan;
+  const allPlans = effectivePlan === "unknown" || !accountId && !plan;
+  const providerRules = report?.rules.filter(r => r.provider === provider && (allPlans || r.plans.includes(effectivePlan) || r.plans.includes("*"))) ?? [];
+  const rules = providerRules.filter(r => r.modelPrefix.toLowerCase().includes(ruleFilter.toLowerCase()));
+  const observations = selected?.observations.filter(o => o.provider === provider) ?? [];
+
   const inspect = async () => {
     setBusy(true); setError("");
     try {
@@ -57,32 +103,256 @@ export function ModelAccessPanel(): JSX.Element {
     catch { setError("Provider plan could not be persisted."); }
     finally { setBusy(false); }
   };
-  return <Panel id="model-access" title="Model access" subtitle="Informational rules only. Quota, credentials, capabilities and routing are checked separately.">
-    <div class="form-grid">
-      <label>Account<select value={accountId} onChange={e => setAccount(e.currentTarget.value)}><option value="">No account — simulate policy</option>{report?.accounts.map(a => <option key={a.id} value={a.id}>{masker.value.email(a.label)}</option>)}</select></label>
-      <label>Provider<select value={provider} onChange={e => setProvider(e.currentTarget.value)}>{["google-antigravity", "openai-codex", "ollama", "opencode-zen"].map(p => <option key={p}>{p}</option>)}</select></label>
-      <label>Plan assumption<select value={plan} onChange={e => setPlan(e.currentTarget.value)}><option value="">Use known account plan</option>{["unknown", "free", "plus", "pro-trial", "pro-paid", "ultra", "enterprise"].map(p => <option key={p}>{p}</option>)}</select></label>
-      <label>Client declaration<select value={client} onChange={e => setClient(e.currentTarget.value)}>{["unknown", "opencode", "other"].map(p => <option key={p}>{p}</option>)}</select></label>
-      <label>Policy date (optional)<input type="date" value={at} onInput={e => setAt(e.currentTarget.value)} /></label>
-      <label>Model ID<input value={model} onInput={e => setModel(e.currentTarget.value)} maxLength={256} /></label>
-    </div>
-    <p>Plan: {effectivePlan}. {selected && selected.providers.length > 1 ? "Linked providers need separate plan evidence." : "Pro without billing evidence remains unknown."} Client identity is not verified here.</p>
-    <p>{declaredPlan ? `Stored provider declaration: ${declaredPlan.plan}, expires ${new Date(declaredPlan.expiresAt).toISOString()}.` : "No current provider-specific plan declaration."}</p>
-    <Button onClick={() => { void savePlan(); }} disabled={busy || !accountId || !plan}>Save provider plan declaration</Button>
-    <Button onClick={() => { void inspect(); }} disabled={busy || !report || !model}>{busy ? "Checking…" : "Explain access"}</Button>
-    {error && <p role="alert">{error}</p>}
-    {decisionKey === formKey && decision?.decision && <div role="status"><strong>{decision.decision.state}</strong><p>{decision.decision.reason}</p><p>Plan source: {decision.planSource}. This result does not grant access.</p><p>Account catalog: {decision.catalogAvailability?.expiresAt != null && decision.catalogAvailability.expiresAt <= now ? "unknown (expired snapshot)" : decision.catalogAvailability?.state ?? "unknown"}.</p></div>}
-    {selected && <details><summary>Recent account observations ({selected.observations.filter(o => o.provider === provider).length})</summary>
-      <p>Latest result per model and declared client. No plan inference or routing blocks are created.</p>
-      <div class="table-wrap"><table><thead><tr><th>Model</th><th>Client</th><th>Result</th><th>HTTP</th><th>Observed</th><th>Expires</th></tr></thead><tbody>{selected.observations.filter(o => o.provider === provider).map(o => <tr key={`${o.provider}/${o.model}/${o.client}`}><td>{o.model}</td><td>{o.client}</td><td>{o.kind === "model-unavailable" ? "Provider rejects this model for this account" : o.kind}</td><td>{o.status ?? "—"}</td><td>{new Date(o.observedAt).toISOString()}</td><td>{new Date(o.expiresAt).toISOString()}</td></tr>)}</tbody></table></div>
-    </details>}
-    {selected && <details><summary>Provider-advertised models ({catalog?.observedAt == null ? "unknown" : catalog.models.length})</summary>
-      <p>{catalog ? `Source: ${catalog.source}. Snapshot: ${catalogFreshness}. Observed: ${catalog.observedAt === null ? "unknown" : new Date(catalog.observedAt).toISOString()}. Valid until: ${catalog.expiresAt === null ? "unknown" : new Date(catalog.expiresAt).toISOString()}.` : "No account-level provider catalog is available for this provider."}</p>
-      <p>Advertisement is separate from subscription rules and observed access. Missing or stale data means unknown.</p>
-      {catalog && <ul>{catalog.models.map(id => <li key={id}>{id}</li>)}</ul>}
-    </details>}
-    <label>Filter rule models<input value={ruleFilter} onInput={e => setRuleFilter(e.currentTarget.value)} /></label>
-    <div class="table-wrap"><table><thead><tr><th>Model / family</th><th>Plans</th><th>Declared access</th><th>Evidence</th><th>Availability ends</th><th>Notes / source</th></tr></thead><tbody>{rules.map(r => <tr key={r.id}><td>{r.modelPrefix}{r.exact ? " (exact model)" : ""}</td><td>{r.plans.join(", ")}</td><td>{r.state}</td><td>{r.evidence}<br />{r.verifiedAt}<br />Review: {r.reviewAfter}</td><td>{r.validUntil ?? "Not specified"}</td><td>{r.note}<br />{r.source.startsWith("https://") ? <a href={r.source} target="_blank" rel="noreferrer">Source</a> : r.source}</td></tr>)}</tbody></table></div>
-    {!report && !error && <p>Loading access rules…</p>}
-  </Panel>;
+
+  let planHint: string;
+  if (plan) planHint = accountId ? "Assumed for this check. Saving stores an unverified 30-day declaration" : "Assumed for this check only";
+  else if (declaredPlan) planHint = `Stored declaration, expires ${formatDateTime(declaredPlan.expiresAt)}`;
+  else if (selected && selected.providers.length > 1) planHint = "Linked providers need separate plan evidence";
+  else if (selected && selected.inferredPlan !== "unknown") planHint = "From the account tier";
+  else planHint = "Pro without billing evidence stays unknown";
+
+  const result = decisionKey === formKey ? decision : null;
+  const resultState = result?.decision ? STATE[result.decision.state] : null;
+  const catalogState = result?.catalogAvailability;
+  const catalogText = !catalogState || catalogState.state === "unknown"
+    ? "Account catalog unknown"
+    : catalogState.expiresAt != null && catalogState.expiresAt <= now
+      ? "Account catalog snapshot expired"
+      : catalogState.state === "advertised" ? "Listed in the account catalog" : "Not listed in the account catalog";
+
+  return (
+    <Panel
+      flush
+      id="model-access"
+      class="access-panel"
+      title="Model access"
+      subtitle="What each plan is documented to reach. Quota, credentials, capabilities and routing are checked separately."
+    >
+      <div class="access-check">
+        <div class="access-fields">
+          <label class="field">
+            <span class="field-label">Account</span>
+            <select class="select" value={accountId} onChange={e => setAccount(e.currentTarget.value)}>
+              <option value="">None, simulate the policy</option>
+              {report?.accounts.map(a => <option key={a.id} value={a.id}>{masker.value.email(a.label)}</option>)}
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">Provider</span>
+            <select class="select" value={provider} onChange={e => setProvider(e.currentTarget.value)}>
+              {PROVIDERS.map(p => <option key={p} value={p} disabled={Boolean(selected) && !selected!.providers.includes(p)}>{providerLabel(p)}</option>)}
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">Plan</span>
+            <select class="select" value={plan} onChange={e => setPlan(e.currentTarget.value)}>
+              <option value="">{selected ? `Known plan (${knownPlan})` : "Unknown"}</option>
+              {PLANS.map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+            <span class="field-hint">{planHint}</span>
+          </label>
+          <label class="field">
+            <span class="field-label">Model ID</span>
+            <input class="input mono-input" value={model} onInput={e => setModel(e.currentTarget.value)} maxLength={256} spellcheck={false} autocomplete="off" />
+          </label>
+          <label class="field">
+            <span class="field-label">Client</span>
+            <select class="select" value={client} onChange={e => setClient(e.currentTarget.value)}>
+              {CLIENTS.map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+            <span class="field-hint">Declared, not verified</span>
+          </label>
+          <label class="field">
+            <span class="field-label">Policy date</span>
+            <input class="input" type="date" value={at} onInput={e => setAt(e.currentTarget.value)} />
+            <span class="field-hint">Leave empty for today</span>
+          </label>
+        </div>
+
+        <div class="access-actions">
+          {accountId && (
+            <Button onClick={() => { void savePlan(); }} disabled={busy || !plan} title={plan ? undefined : "Choose a plan to store it for this account"}>
+              Save plan for {providerLabel(provider)}
+            </Button>
+          )}
+          <Button variant="primary" onClick={() => { void inspect(); }} loading={busy} disabled={!report || !model}>
+            Explain access
+          </Button>
+        </div>
+
+        {error && (
+          <div class="callout tone-bad" role="alert">
+            <Icon name="critical" size={16} />
+            <div>{error}</div>
+          </div>
+        )}
+
+        {result?.decision && resultState && (
+          <div class={`callout tone-${resultState.tone} access-result`} role="status">
+            <Icon name={resultState.icon} size={16} />
+            <div class="access-result-body">
+              <div class="access-result-head">
+                <strong>{resultState.label}</strong>
+                <span class="model-id">{model}</span>
+              </div>
+              <p>{result.decision.reason}</p>
+              <p class="access-result-meta">
+                {PLAN_SOURCE[result.planSource ?? "unknown"]} · {catalogText} · This result does not grant access
+              </p>
+            </div>
+          </div>
+        )}
+
+        {selected && (
+          <div class="access-evidence">
+            <button type="button" class="access-disclosure" aria-expanded={openObservations} onClick={() => setOpenObservations(!openObservations)}>
+              <Icon name="chevronRight" size={14} />
+              <span>Recent observations</span>
+              <span class="num muted">{observations.length}</span>
+            </button>
+            {openObservations && (
+              <div class="access-disclosure-body">
+                <p class="field-hint">Latest result per model and declared client. Observations never infer a plan or block routing.</p>
+                {observations.length === 0 ? (
+                  <p class="muted">No observations for {providerLabel(provider)} on this account yet.</p>
+                ) : (
+                  <div class="table-scroll">
+                    <table class="table table-compact">
+                      <thead>
+                        <tr>
+                          <th scope="col">Model</th>
+                          <th scope="col">Client</th>
+                          <th scope="col">Result</th>
+                          <th scope="col" class="num-col">HTTP</th>
+                          <th scope="col" class="hide-sm">Observed</th>
+                          <th scope="col" class="hide-sm">Expires</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {observations.map(o => (
+                          <tr key={`${o.provider}/${o.model}/${o.client}`}>
+                            <th scope="row"><span class="model-id">{o.model}</span></th>
+                            <td>{o.client}</td>
+                            <td>{o.kind === "model-unavailable" ? "Provider rejects this model for this account" : o.kind}</td>
+                            <td class="num num-col">{o.status ?? <span class="muted">—</span>}</td>
+                            <td class="num hide-sm" title={new Date(o.observedAt).toISOString()}>{formatDateTime(o.observedAt)}</td>
+                            <td class="num hide-sm" title={new Date(o.expiresAt).toISOString()}>{formatDateTime(o.expiresAt)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <button type="button" class="access-disclosure" aria-expanded={openCatalog} onClick={() => setOpenCatalog(!openCatalog)}>
+              <Icon name="chevronRight" size={14} />
+              <span>Advertised models</span>
+              <span class="num muted">{catalog?.observedAt == null ? "unknown" : catalog.models.length}</span>
+            </button>
+            {openCatalog && (
+              <div class="access-disclosure-body">
+                {catalog ? (
+                  <p class="access-catalog-meta">
+                    <span>Source {catalog.source}</span>
+                    <span>Snapshot {catalogFreshness}</span>
+                    <span>Observed <span class="num">{catalog.observedAt === null ? "unknown" : formatDateTime(catalog.observedAt)}</span></span>
+                    <span>Valid until <span class="num">{catalog.expiresAt === null ? "unknown" : formatDateTime(catalog.expiresAt)}</span></span>
+                  </p>
+                ) : (
+                  <p class="muted">No account-level catalog is available for {providerLabel(provider)}.</p>
+                )}
+                <p class="field-hint">Advertisement is separate from plan rules and observed access. Missing or stale data means unknown.</p>
+                {catalog && catalog.models.length > 0 && (
+                  <div class="tag-row">
+                    {catalog.models.map(id => <span key={id} class="tag access-model-tag">{id}</span>)}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div class="toolbar panel-toolbar access-rules-toolbar">
+        <div class="access-rules-title">
+          <h3>Rules</h3>
+          <span class="muted">
+            {providerLabel(provider)} · {allPlans ? "all plans" : `${effectivePlan} plan`} · <span class="num">{pluralize(rules.length, "rule")}</span>
+          </span>
+        </div>
+        <div class="toolbar-right">
+          <SearchInput value={ruleFilter} onInput={setRuleFilter} placeholder="Model" label="Filter rules by model" />
+        </div>
+      </div>
+
+      {!report ? (
+        error ? null : <div class="panel-loading"><Spinner /></div>
+      ) : rules.length === 0 ? (
+        <EmptyState icon="search" title={providerRules.length === 0 ? "No rules for this provider and plan" : "No rules match"}>
+          {providerRules.length === 0 ? "Absence of a rule is not permission; the explainer reports it as unknown." : undefined}
+        </EmptyState>
+      ) : (
+        <div class="table-scroll">
+          <table class="table access-table">
+            <thead>
+              <tr>
+                <th scope="col">Model or family</th>
+                <th scope="col">Plans</th>
+                <th scope="col">Access</th>
+                <th scope="col" class="hide-sm">Evidence</th>
+                <th scope="col" class="hide-sm">Ends</th>
+                <th scope="col">Note</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rules.map(r => {
+                const state = STATE[r.state];
+                return (
+                  <tr key={r.id}>
+                    <th scope="row">
+                      <span class="model-id">{r.modelPrefix}</span>
+                      {(r.exact || r.client) && (
+                        <div class="cell-sub">
+                          {r.exact && "Exact model"}
+                          {r.exact && r.client && " · "}
+                          {r.client && `${r.client} client only`}
+                        </div>
+                      )}
+                    </th>
+                    <td>
+                      <span class="tag-row">
+                        {r.plans.map(p => <span key={p} class="tag">{p === "*" ? "Any plan" : p}</span>)}
+                      </span>
+                    </td>
+                    <td><Pill tone={state.tone}>{state.label}</Pill></td>
+                    <td class="hide-sm">
+                      {EVIDENCE[r.evidence]}
+                      <div class="cell-sub num access-evidence-dates">Verified {r.verifiedAt}</div>
+                      <div class="cell-sub num access-evidence-dates">Review {r.reviewAfter}</div>
+                    </td>
+                    <td class="hide-sm num">{r.validUntil ?? <span class="muted">—</span>}</td>
+                    <td class="access-note">
+                      {r.note}
+                      <div class="cell-sub">
+                        {r.source.startsWith("https://") ? (
+                          <a href={r.source} target="_blank" rel="noreferrer" class="access-source">
+                            {sourceHost(r.source)}
+                            <Icon name="arrowUpRight" size={12} />
+                          </a>
+                        ) : (
+                          r.source
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  );
 }
