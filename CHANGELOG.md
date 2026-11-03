@@ -4,7 +4,7 @@
 
 ### Changed
 
-- **Model access panel**: Rebuild the Models page's Model access panel from the dashboard's shared components. Labeled fields in a responsive grid with hints for plan source and client verification, a primary Explain access action, the result as a callout toned by its state, account observations and advertised models as toggle disclosures, and the rules as a standard table with a model filter, plan tags, state pills, evidence dates and source links. Request behavior is unchanged.
+- **Model access panel**: Rebuild the Models page's Model access panel from the dashboard's shared components and cut it to one dropdown. Account moves to the panel header; provider is a segmented control; plan is a row of chips limited to plans that change the selected provider's rules (the rest fold behind "more", and the row is hidden when plans do not matter); client appears only for providers with client-dependent rules. Checking a model runs as you type, with suggestions from the rules and the account's advertised models. The result is a callout toned by its state, account observations and advertised models are toggle disclosures, and the rules are a standard table with a model filter, plan tags, state pills, evidence dates and source links. Saving a plan declaration is a contextual link next to the plan hint.
 
 ### Security
 

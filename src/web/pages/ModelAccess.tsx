@@ -2,7 +2,7 @@
 // one account, provider and model. Informational only; nothing here routes.
 
 import type { JSX } from "preact";
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import type { AccessReport } from "../../model-access-api.js";
 import type { AccessRule, AccessState } from "../../model-access.js";
 import { formatDateTime, pluralize } from "../lib/format.js";
@@ -11,11 +11,12 @@ import { api } from "../state/api.js";
 import { query } from "../state/router.js";
 import { masker } from "../state/store.js";
 import { Icon, type IconName } from "../components/icons.js";
-import { Button, EmptyState, Panel, Pill, SearchInput, Spinner } from "../components/ui.js";
+import { EmptyState, Panel, Pill, SearchInput, Segmented, Spinner } from "../components/ui.js";
 
 const PROVIDERS = ["google-antigravity", "openai-codex", "ollama", "opencode-zen"];
 const PLANS = ["unknown", "free", "plus", "pro-trial", "pro-paid", "ultra", "enterprise"];
-const CLIENTS = ["unknown", "opencode", "other"];
+const CLIENTS = ["unknown", "opencode", "other"] as const;
+const CLIENT_LABEL: Record<(typeof CLIENTS)[number], string> = { unknown: "Unknown", opencode: "OpenCode", other: "Other" };
 
 const STATE: Record<AccessState, { label: string; tone: Tone; icon: IconName }> = {
   allowed: { label: "Allowed", tone: "ok", icon: "checkCircle" },
@@ -52,66 +53,102 @@ export function ModelAccessPanel(): JSX.Element {
   const [accountId, setAccount] = useState(query.value.get("accessAccount") ?? "");
   const [provider, setProvider] = useState("google-antigravity");
   const [plan, setPlan] = useState("");
-  const [client, setClient] = useState("unknown");
+  const [morePlans, setMorePlans] = useState(false);
+  const [client, setClient] = useState<(typeof CLIENTS)[number]>("unknown");
   const [at, setAt] = useState("");
   const [ruleFilter, setRuleFilter] = useState("");
   const [model, setModel] = useState("gemini-3.8-flash-medium");
-  const [decision, setDecision] = useState<AccessReport | null>(null);
-  const [decisionKey, setDecisionKey] = useState("");
+  const [decision, setDecision] = useState<{ report: AccessReport; key: string; model: string } | null>(null);
   const [openObservations, setOpenObservations] = useState(false);
   const [openCatalog, setOpenCatalog] = useState(false);
-  const formKey = JSON.stringify([accountId, provider, plan, client, model, at]);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [checkError, setCheckError] = useState("");
+  const [saveError, setSaveError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const trimmedModel = model.trim();
+  const formKey = JSON.stringify([accountId, provider, plan, client, trimmedModel, at]);
+  const request = useRef(0);
+
   useEffect(() => {
     let active = true;
-    api.modelAccess().then(value => { if (active) setReport(value); }).catch(() => { if (active) setError("Access rules could not be loaded."); });
+    api.modelAccess().then(value => { if (active) setReport(value); }).catch(() => { if (active) setLoadError("Access rules could not be loaded."); });
     return () => { active = false; };
   }, []);
-  // Clear an earlier decision when its inputs no longer apply.
-  useEffect(() => { setDecision(null); }, [accountId, provider, plan, client, model, at]);
+
   const selected = report?.accounts.find(a => a.id === accountId);
   useEffect(() => {
     if (selected && !selected.providers.includes(provider)) setProvider(selected.providers[0] ?? "google-antigravity");
   }, [selected, provider]);
+
   const catalog = selected?.providerCatalogs?.find(c => c.provider === provider);
   const catalogFreshness = catalog?.freshness === "fresh" && catalog.expiresAt !== null && catalog.expiresAt <= now ? "stale" : catalog?.freshness;
   const declaredPlan = selected?.providerPlans.find(p => p.provider === provider);
   const knownPlan = declaredPlan?.plan || selected?.inferredPlan || "unknown";
   const effectivePlan = plan || knownPlan;
   const allPlans = effectivePlan === "unknown" || !accountId && !plan;
-  const providerRules = report?.rules.filter(r => r.provider === provider && (allPlans || r.plans.includes(effectivePlan) || r.plans.includes("*"))) ?? [];
+  const ruleSet = report?.rules.filter(r => r.provider === provider) ?? [];
+  const providerRules = ruleSet.filter(r => allPlans || r.plans.includes(effectivePlan) || r.plans.includes("*"));
   const rules = providerRules.filter(r => r.modelPrefix.toLowerCase().includes(ruleFilter.toLowerCase()));
   const observations = selected?.observations.filter(o => o.provider === provider) ?? [];
 
-  const inspect = async () => {
-    setBusy(true); setError("");
-    try {
-      const params = new URLSearchParams({ provider, model, client });
+  // Plans that change this provider's rules come first; the rest wait behind "more".
+  const rulePlans = new Set(ruleSet.flatMap(r => r.plans).filter(p => p !== "*"));
+  const offeredPlans = PLANS.filter(p => p !== "unknown" || selected);
+  const relevantPlans = offeredPlans.filter(p => rulePlans.has(p) || p === plan);
+  // Folding away a single plan saves nothing, so only fold two or more.
+  const foldable = offeredPlans.length - relevantPlans.length >= 2;
+  const planChoices = morePlans || !foldable ? offeredPlans : relevantPlans;
+  const planMatters = rulePlans.size > 0;
+  const clientMatters = ruleSet.some(r => r.client);
+
+  // Suggestions for the model field: rule families and the account's advertised IDs.
+  const suggestions = [...new Set([...ruleSet.filter(r => !r.modelPrefix.includes("*")).map(r => r.modelPrefix), ...(catalog?.models ?? [])])].sort();
+
+  // Explain as the inputs change. The previous answer stays visible, dimmed,
+  // until the new one arrives; late responses for older inputs are dropped.
+  const ready = Boolean(report) && (!accountId || Boolean(selected?.providers.includes(provider)));
+  useEffect(() => {
+    if (!ready) return;
+    if (!trimmedModel) { request.current++; setDecision(null); setCheckError(""); return; }
+    const id = ++request.current;
+    const key = formKey;
+    const timer = setTimeout(() => {
+      const params = new URLSearchParams({ provider, model: trimmedModel, client });
       if (accountId) params.set("accountId", accountId);
       if (plan) params.set("plan", plan);
       if (at) params.set("at", at);
-      const result = await api.modelAccess(params);
-      setReport(result); setDecision(result); setDecisionKey(formKey);
-    } catch { setError("Check the selected account, provider and model."); }
-    finally { setBusy(false); }
-  };
+      api.modelAccess(params)
+        .then(result => {
+          if (id !== request.current) return;
+          setReport(result); setDecision({ report: result, key, model: trimmedModel }); setCheckError("");
+        })
+        .catch(() => {
+          if (id !== request.current) return;
+          setDecision(null); setCheckError("Access could not be explained for this account, provider and model.");
+        });
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [formKey, ready]);
+
   const savePlan = async () => {
     if (!accountId || !plan) return;
-    setBusy(true); setError("");
-    try { setReport(await api.declareProviderPlan(accountId, provider, plan)); setPlan(""); setDecision(null); }
-    catch { setError("Provider plan could not be persisted."); }
-    finally { setBusy(false); }
+    setSaving(true); setSaveError("");
+    try { setReport(await api.declareProviderPlan(accountId, provider, plan)); setPlan(""); }
+    catch { setSaveError("The plan could not be saved."); }
+    finally { setSaving(false); }
   };
 
   let planHint: string;
-  if (plan) planHint = accountId ? "Assumed for this check. Saving stores an unverified 30-day declaration" : "Assumed for this check only";
+  if (plan && accountId) planHint = "Assumed for this check";
+  else if (plan) planHint = "Simulated plan";
   else if (declaredPlan) planHint = `Stored declaration, expires ${formatDateTime(declaredPlan.expiresAt)}`;
   else if (selected && selected.providers.length > 1) planHint = "Linked providers need separate plan evidence";
   else if (selected && selected.inferredPlan !== "unknown") planHint = "From the account tier";
-  else planHint = "Pro without billing evidence stays unknown";
+  else if (selected) planHint = "Pro without billing evidence stays unknown";
+  else planHint = "Every rule is listed; checks stay unknown without a plan";
 
-  const result = decisionKey === formKey ? decision : null;
+  const result = decision?.report;
+  const pending = decision !== null && decision.key !== formKey;
   const resultState = result?.decision ? STATE[result.decision.state] : null;
   const catalogState = result?.catalogAvailability;
   const catalogText = !catalogState || catalogState.state === "unknown"
@@ -127,73 +164,118 @@ export function ModelAccessPanel(): JSX.Element {
       class="access-panel"
       title="Model access"
       subtitle="What each plan is documented to reach. Quota, credentials, capabilities and routing are checked separately."
+      actions={
+        <label class="access-account">
+          Account
+          <select class="select" value={accountId} onChange={e => { setAccount(e.currentTarget.value); setPlan(""); }}>
+            <option value="">None, simulate</option>
+            {report?.accounts.map(a => <option key={a.id} value={a.id}>{masker.value.email(a.label)}</option>)}
+          </select>
+        </label>
+      }
     >
       <div class="access-check">
-        <div class="access-fields">
-          <label class="field">
-            <span class="field-label">Account</span>
-            <select class="select" value={accountId} onChange={e => setAccount(e.currentTarget.value)}>
-              <option value="">None, simulate the policy</option>
-              {report?.accounts.map(a => <option key={a.id} value={a.id}>{masker.value.email(a.label)}</option>)}
-            </select>
-          </label>
-          <label class="field">
-            <span class="field-label">Provider</span>
-            <select class="select" value={provider} onChange={e => setProvider(e.currentTarget.value)}>
-              {PROVIDERS.map(p => <option key={p} value={p} disabled={Boolean(selected) && !selected!.providers.includes(p)}>{providerLabel(p)}</option>)}
-            </select>
-          </label>
-          <label class="field">
-            <span class="field-label">Plan</span>
-            <select class="select" value={plan} onChange={e => setPlan(e.currentTarget.value)}>
-              <option value="">{selected ? `Known plan (${knownPlan})` : "Unknown"}</option>
-              {PLANS.map(p => <option key={p} value={p}>{p}</option>)}
-            </select>
-            <span class="field-hint">{planHint}</span>
-          </label>
-          <label class="field">
-            <span class="field-label">Model ID</span>
-            <input class="input mono-input" value={model} onInput={e => setModel(e.currentTarget.value)} maxLength={256} spellcheck={false} autocomplete="off" />
-          </label>
-          <label class="field">
-            <span class="field-label">Client</span>
-            <select class="select" value={client} onChange={e => setClient(e.currentTarget.value)}>
-              {CLIENTS.map(p => <option key={p} value={p}>{p}</option>)}
-            </select>
-            <span class="field-hint">Declared, not verified</span>
-          </label>
-          <label class="field">
-            <span class="field-label">Policy date</span>
-            <input class="input" type="date" value={at} onInput={e => setAt(e.currentTarget.value)} />
-            <span class="field-hint">Leave empty for today</span>
-          </label>
-        </div>
+        <div class="access-context">
+          <span class="access-context-label">Provider</span>
+          <div class="access-context-control">
+            <Segmented
+              label="Provider"
+              value={provider}
+              onChange={p => { setProvider(p); setPlan(""); setMorePlans(false); }}
+              options={PROVIDERS.map(p => {
+                const missing = Boolean(selected) && !selected!.providers.includes(p);
+                return { value: p, label: providerLabel(p), disabled: missing, title: missing ? "Not connected on this account" : undefined };
+              })}
+            />
+          </div>
 
-        <div class="access-actions">
-          {accountId && (
-            <Button onClick={() => { void savePlan(); }} disabled={busy || !plan} title={plan ? undefined : "Choose a plan to store it for this account"}>
-              Save plan for {providerLabel(provider)}
-            </Button>
+          {planMatters && (
+            <>
+              <span class="access-context-label">Plan</span>
+              <div class="access-context-control">
+                <div class="chips" role="group" aria-label="Plan">
+                  <button type="button" class={`filter-chip${plan === "" ? " is-active" : ""}`} aria-pressed={plan === ""} onClick={() => setPlan("")}>
+                    {selected ? <>Account plan <span class="filter-count">{knownPlan}</span></> : "Unknown"}
+                  </button>
+                  {planChoices.map(p => (
+                    <button key={p} type="button" class={`filter-chip${plan === p ? " is-active" : ""}`} aria-pressed={plan === p} onClick={() => setPlan(p)}>
+                      {p}
+                    </button>
+                  ))}
+                  {foldable && (
+                    <button type="button" class="link-button access-more" aria-expanded={morePlans} onClick={() => setMorePlans(!morePlans)}>
+                      {morePlans ? "Fewer" : `${offeredPlans.length - relevantPlans.length} more`}
+                    </button>
+                  )}
+                </div>
+                <div class="access-hint-row">
+                  <span class="field-hint">{planHint}</span>
+                  {accountId && plan && (
+                    <button type="button" class="link-button" disabled={saving} onClick={() => { void savePlan(); }} title="Stores an unverified operator declaration for 30 days">
+                      {saving ? "Saving…" : `Save as this account's ${providerLabel(provider)} plan`}
+                    </button>
+                  )}
+                </div>
+                {saveError && <span class="form-error" role="alert">{saveError}</span>}
+              </div>
+            </>
           )}
-          <Button variant="primary" onClick={() => { void inspect(); }} loading={busy} disabled={!report || !model}>
-            Explain access
-          </Button>
+
+          {clientMatters && (
+            <>
+              <span class="access-context-label">Client</span>
+              <div class="access-context-control">
+                <Segmented label="Client" size="sm" value={client} onChange={setClient} options={CLIENTS.map(c => ({ value: c, label: CLIENT_LABEL[c] }))} />
+                <span class="field-hint">Declared, not verified</span>
+              </div>
+            </>
+          )}
         </div>
 
-        {error && (
+        <div class="access-query">
+          <label class="field">
+            <span class="field-label">Check a model</span>
+            <input
+              class="input mono-input"
+              value={model}
+              onInput={e => setModel(e.currentTarget.value)}
+              maxLength={256}
+              spellcheck={false}
+              autocomplete="off"
+              placeholder="Model ID"
+              list="access-model-suggestions"
+            />
+            <datalist id="access-model-suggestions">
+              {suggestions.map(id => <option key={id} value={id} />)}
+            </datalist>
+          </label>
+          <label class="field">
+            <span class="field-label">On date</span>
+            <input class="input" type="date" value={at} onInput={e => setAt(e.currentTarget.value)} />
+          </label>
+        </div>
+
+        {loadError && (
           <div class="callout tone-bad" role="alert">
             <Icon name="critical" size={16} />
-            <div>{error}</div>
+            <div>{loadError}</div>
           </div>
         )}
 
-        {result?.decision && resultState && (
-          <div class={`callout tone-${resultState.tone} access-result`} role="status">
+        {checkError && (
+          <div class="callout tone-bad" role="alert">
+            <Icon name="critical" size={16} />
+            <div>{checkError}</div>
+          </div>
+        )}
+
+        {!checkError && result?.decision && resultState && (
+          <div class={`callout tone-${resultState.tone} access-result${pending ? " is-pending" : ""}`} role="status" aria-busy={pending}>
             <Icon name={resultState.icon} size={16} />
             <div class="access-result-body">
               <div class="access-result-head">
                 <strong>{resultState.label}</strong>
-                <span class="model-id">{model}</span>
+                <span class="model-id">{decision!.model}</span>
               </div>
               <p>{result.decision.reason}</p>
               <p class="access-result-meta">
@@ -263,10 +345,12 @@ export function ModelAccessPanel(): JSX.Element {
                 ) : (
                   <p class="muted">No account-level catalog is available for {providerLabel(provider)}.</p>
                 )}
-                <p class="field-hint">Advertisement is separate from plan rules and observed access. Missing or stale data means unknown.</p>
+                <p class="field-hint">Advertisement is separate from plan rules and observed access. Missing or stale data means unknown. Select a model to check it.</p>
                 {catalog && catalog.models.length > 0 && (
                   <div class="tag-row">
-                    {catalog.models.map(id => <span key={id} class="tag access-model-tag">{id}</span>)}
+                    {catalog.models.map(id => (
+                      <button key={id} type="button" class="tag access-model-tag" onClick={() => setModel(id)}>{id}</button>
+                    ))}
                   </div>
                 )}
               </div>
@@ -288,10 +372,10 @@ export function ModelAccessPanel(): JSX.Element {
       </div>
 
       {!report ? (
-        error ? null : <div class="panel-loading"><Spinner /></div>
+        loadError ? null : <div class="panel-loading"><Spinner /></div>
       ) : rules.length === 0 ? (
         <EmptyState icon="search" title={providerRules.length === 0 ? "No rules for this provider and plan" : "No rules match"}>
-          {providerRules.length === 0 ? "Absence of a rule is not permission; the explainer reports it as unknown." : undefined}
+          {providerRules.length === 0 ? "Absence of a rule is not permission; checks report it as unknown." : undefined}
         </EmptyState>
       ) : (
         <div class="table-scroll">
@@ -317,7 +401,7 @@ export function ModelAccessPanel(): JSX.Element {
                         <div class="cell-sub">
                           {r.exact && "Exact model"}
                           {r.exact && r.client && " · "}
-                          {r.client && `${r.client} client only`}
+                          {r.client && `${r.client === "opencode" ? "OpenCode" : r.client} client only`}
                         </div>
                       )}
                     </th>
