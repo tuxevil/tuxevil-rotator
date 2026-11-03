@@ -1,6 +1,6 @@
 # Model access rules (informational)
 
-The Models dashboard has a Model access panel. Account details link to it with the account preselected. Filter rules by provider, plan and model; inspect a concrete model with an optional policy date and client declaration. Sources, verification/review dates and removal dates remain visible.
+The Models dashboard has a Model access panel. Account details link to it with the account preselected. Choose a provider and plan to filter the rules, and type a model ID to check it; the check runs as you type, with an optional policy date (**As of today**) and, for OpenCode Zen, a client declaration. Each rule links its source; hover its state for the evidence, verification and review dates. Removal dates show under the state.
 
 `GET /api/model-access` returns the rules and sanitized account summaries. It requires the existing administrator authentication and uses `Cache-Control: no-store`. It never returns credentials. Add query parameters to explain a combination:
 
@@ -25,7 +25,7 @@ This release does not change routing or enforce this registry. It collects scope
 
 ## Provider plans and observed access
 
-`PUT /api/model-access/plan` accepts `{ "accountId": "…", "provider": "openai-codex", "plan": "free" }` using administrator authentication. The provider must be connected to that account. Plans are operator declarations, not independently verified subscriptions; they expire after 30 days. The dashboard's save button makes this distinction explicit. A stored provider declaration takes precedence over a generic single-provider tier, while an explicit query plan remains a simulation override.
+`PUT /api/model-access/plan` accepts `{ "accountId": "…", "provider": "openai-codex", "plan": "free" }` using administrator authentication. The provider must be connected to that account. Plans are operator declarations, not independently verified subscriptions; they expire after 30 days. In the dashboard, choosing an account and a plan offers **Save … as this account's … plan**, which stores such a declaration. A stored provider declaration takes precedence over a generic single-provider tier, while an explicit query plan remains a simulation override.
 
 Private evidence uses the existing settings repository (`model_access_evidence` in PostgreSQL or owner-only `model-access-evidence.json` in file mode). Raw credentials are not stored; evidence carries a credential fingerprint. Account identity or credential changes invalidate earlier evidence. For accounts whose identity includes a key fingerprint, changing one provider credential may invalidate all linked evidence conservatively.
 
