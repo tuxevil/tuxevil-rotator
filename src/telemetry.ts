@@ -351,7 +351,9 @@ export class TelemetryReporter {
 		};
 
 		// Fire-and-forget
-		void this.sendPayload(payload);
+		void this.sendPayload(payload).catch(() => {
+			// Telemetry failures must never terminate the proxy.
+		});
 
 		telemetryLogger.log("info",
 			`Flag event reported: ${data.flagHttpStatus} [${data.flagPatternsMatched.join(",")}] model=${data.model}`,
