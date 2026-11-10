@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## [4.4.1] - 2026-11-09
+
+### Fixed
+
+- Prevent a failed or timed-out flag telemetry request from terminating the rotator through an unhandled promise rejection. Telemetry remains best-effort and cannot interrupt proxy availability.
+
 ### Security
 
 - Override the development-only `minimatch` dependency to the patched 11.x release line for CVE-2026-118764 (Dependabot alert #8). The lockfile resolves 11.0.3. This override keeps ESLint and coverage dependencies patched while their upstream dependency ranges still target 10.x.
