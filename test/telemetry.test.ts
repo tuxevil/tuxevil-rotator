@@ -1,5 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
 	TelemetryReporter,
 	isTelemetryEnabled,
@@ -230,6 +231,21 @@ describe("telemetry", () => {
 			uptimeSeconds: 7200,
 			timeSinceLastFlagSeconds: -1,
 		};
+
+		it("survives a rejected flag telemetry request", () => {
+			const script = `
+				import { TelemetryReporter } from './src/telemetry.ts';
+				globalThis.fetch = async () => { throw new DOMException('timeout', 'TimeoutError'); };
+				new TelemetryReporter(() => ({})).reportFlag(${JSON.stringify(sampleFlagData)});
+				setTimeout(() => {}, 25);
+			`;
+			const result = spawnSync(process.execPath, ["--unhandled-rejections=strict", "--import", "tsx/esm", "--input-type=module", "-e", script], {
+				cwd: process.cwd(),
+				env: { ...process.env, PI_ROTATOR_TELEMETRY: "on", TUXEVIL_ROTATOR_TELEMETRY: "on" },
+				encoding: "utf8",
+			});
+			assert.equal(result.status, 0, result.stderr);
+		});
 
 		it("builds a valid flag payload", () => {
 			const reporter = new TelemetryReporter(mockMetrics);
