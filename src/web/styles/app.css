@@ -4572,6 +4572,274 @@ a.hero-metric:hover {
   }
 }
 
+/* ── Model access (Models page) ───────────────────────────────────────── */
+
+.access-account .select {
+  height: 30px;
+  max-width: 220px;
+  font-size: 13px;
+}
+
+/* Provider, plan and client: one quiet row the check and the rules share. */
+.access-context {
+  display: flex;
+  align-items: center;
+  gap: 12px 16px;
+  flex-wrap: wrap;
+  padding: 4px 20px 20px;
+}
+
+.access-context > .segmented,
+.access-context-group > .segmented {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.access-context-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.access-known {
+  margin-left: 4px;
+  color: var(--text-3);
+  font-weight: 500;
+}
+
+.segmented button:disabled {
+  color: var(--text-4);
+  cursor: not-allowed;
+}
+
+.link-button.access-quiet-link {
+  color: var(--text-3);
+  font-weight: 500;
+  font-size: 12.5px;
+}
+
+.link-button.access-quiet-link:hover {
+  color: var(--text);
+}
+
+.access-check {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.access-check-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 30px;
+}
+
+.access-date {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.access-date .input {
+  width: 152px;
+}
+
+.access-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.access-icon-button:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+/* The verdict sits inside the field, so the question and answer read as one. */
+.access-probe {
+  position: relative;
+}
+
+.access-probe .input {
+  width: 100%;
+  padding-right: 136px;
+}
+
+.mono-input {
+  font-family: var(--mono);
+  font-size: 14px;
+}
+
+/* Suggestions appear while typing; the native arrow would read as a select. */
+.mono-input::-webkit-calendar-picker-indicator {
+  display: none !important;
+}
+
+.access-verdict {
+  position: absolute;
+  top: 50%;
+  right: 16px;
+  transform: translateY(-50%);
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+.access-explain {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 44px;
+  padding-top: 4px;
+  transition: opacity 0.15s;
+}
+
+.access-probe.is-pending .access-verdict,
+.access-probe.is-pending + .access-explain {
+  opacity: 0.5;
+}
+
+.access-reason {
+  color: var(--text-2);
+}
+
+.access-meta {
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+.access-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 560;
+  color: var(--tone);
+  white-space: nowrap;
+}
+
+.access-state.tone-neutral {
+  color: var(--text-2);
+}
+
+.access-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tone);
+  box-shadow: 0 0 0 3px var(--tone-soft);
+}
+
+.access-evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.access-well {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.access-well .table th,
+.access-well .table td {
+  border-color: var(--border);
+}
+
+.access-model-tag {
+  font-family: var(--mono);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.access-model-tag:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.access-rules-toolbar {
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.access-rules-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.access-rules-title .num {
+  font-weight: 500;
+}
+
+.access-rules-toolbar .search {
+  min-width: 200px;
+}
+
+.access-table .model-id {
+  white-space: nowrap;
+  word-break: normal;
+}
+
+.access-table tbody th .cell-sub {
+  white-space: nowrap;
+}
+
+.access-plans {
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.access-note {
+  min-width: 240px;
+  color: var(--text-2);
+}
+
+.access-source {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  vertical-align: -2px;
+  color: var(--text-3);
+  transition: color 0.15s;
+}
+
+.access-source:hover {
+  color: var(--text);
+}
+
+@container canvas (max-width: 700px) {
+  .access-probe .input {
+    padding-right: 124px;
+  }
+
+  .access-rules-toolbar .search {
+    min-width: 0;
+    flex: 1;
+  }
+}
+
 /* ── Keys ─────────────────────────────────────────────────────────────── */
 
 .model-groups {
