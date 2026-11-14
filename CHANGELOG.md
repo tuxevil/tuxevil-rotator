@@ -2,9 +2,19 @@
 
 ## Unreleased
 
+## [4.4.2] - 2026-11-14
+
 ### Changed
 
 - **Model access panel**: Rebuild the Models page's Model access panel from the dashboard's shared components and reduce it to one dropdown. The account select sits in the panel header; provider and plan are segmented controls in one row (plans that do not change the provider's rules fold behind "+N"; the plan control is hidden when plans do not matter), and client appears only for providers with client-dependent rules. Checking a model runs as you type, with the verdict inside the field, the reason and plan source on two quiet lines below, an "As of today" link that opens a date picker, and suggestions from the rules and the account's advertised models. Account observations and advertised models are one line of links that open inset details. Rules show model, access state, plans and note, with evidence dates in a tooltip, end dates under the state and the source as an icon link.
+
+### Fixed
+
+- Preserve a newer plan selection when a previous plan declaration finishes saving, and guard access checks during the save.
+
+### Contributors
+
+- Thanks to [@CyR1en](https://github.com/CyR1en) for redesigning the Model access panel in [PR #49](https://github.com/tuxevil/tuxevil-rotator/pull/49).
 
 ## [4.4.1] - 2026-11-09
 

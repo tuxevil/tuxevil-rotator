@@ -55,6 +55,8 @@ Originally built as a multi-account rotator for Google Antigravity. It now gener
 
 ## Current Model Update
 
+- **v4.4.2: Model access dashboard**: A redesigned Model access panel with live checks, account evidence, clearer rules and safer plan saving. Thanks to [@CyR1en](https://github.com/CyR1en) for [PR #49](https://github.com/tuxevil/tuxevil-rotator/pull/49). ([Release notes](https://github.com/tuxevil/tuxevil-rotator/releases/tag/v4.4.2))
+
 - **v4.4.1: Telemetry reliability**: Prevent failed or timed-out flag telemetry requests from terminating the rotator, and update the development-only minimatch override. ([Release notes](https://github.com/tuxevil/tuxevil-rotator/releases/tag/v4.4.1))
 - **v4.4.0: Benchmark-informed auto routing, provider access, and usage visibility**: Rank eligible models with Artificial Analysis scores and effort-aware, quota-conscious fallbacks; enforce provider/account entitlements; add access diagnostics and aggregated usage-limit views. Includes bounded auto recovery and session continuity, Ollama empty-output handling, and prompt-compression improvements. The Playground now follows the dashboard design system. ([Release notes](https://github.com/tuxevil/tuxevil-rotator/releases/tag/v4.4.0); [PR #46](https://github.com/tuxevil/tuxevil-rotator/pull/46) by [@CyR1en](https://github.com/CyR1en))
 
