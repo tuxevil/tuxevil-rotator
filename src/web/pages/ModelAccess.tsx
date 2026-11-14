@@ -83,6 +83,8 @@ export function ModelAccessPanel(): JSX.Element {
   const trimmedModel = model.trim();
   const formKey = JSON.stringify([accountId, provider, plan, client, trimmedModel, at]);
   const request = useRef(0);
+  const currentForm = useRef(formKey);
+  currentForm.current = formKey;
 
   useEffect(() => {
     let active = true;
@@ -123,7 +125,7 @@ export function ModelAccessPanel(): JSX.Element {
   // until the new one arrives; late responses for older inputs are dropped.
   const ready = Boolean(report) && (!accountId || Boolean(selected?.providers.includes(provider)));
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || saving) return;
     if (!trimmedModel) { request.current++; setDecision(null); setCheckError(""); return; }
     const id = ++request.current;
     const key = formKey;
@@ -143,12 +145,19 @@ export function ModelAccessPanel(): JSX.Element {
         });
     }, 250);
     return () => clearTimeout(timer);
-  }, [formKey, ready]);
+  }, [formKey, ready, saving]);
 
   const savePlan = async () => {
     if (!accountId || !plan) return;
+    const savedForm = formKey;
+    request.current++;
     setSaving(true); setSaveError("");
-    try { setReport(await api.declareProviderPlan(accountId, provider, plan)); setPlan(""); }
+    try {
+      const updated = await api.declareProviderPlan(accountId, provider, plan);
+      request.current++;
+      setReport(updated);
+      if (currentForm.current === savedForm) setPlan("");
+    }
     catch { setSaveError("The plan could not be saved."); }
     finally { setSaving(false); }
   };
