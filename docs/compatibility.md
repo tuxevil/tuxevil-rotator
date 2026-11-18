@@ -55,6 +55,7 @@ curl http://localhost:51200/v1/chat/completions \
 - `system`, `user`, `assistant`, `developer`, and `model` roles
 - Tool/function calling (`tools`, `tool_choice`)
 - Image input (base64 data URL: `image_url.url = data:image/...;base64,...`)
+- Image output from Gemini image models, as a markdown data-URI image in `content` (see [Generated images](#generated-images))
 - Native reasoning visibility as `reasoning_content` chunks (models with thinking enabled)
 - Request normalization (non-array messages, legacy `prompt`/`input` fields, raw native requests)
 
@@ -132,7 +133,33 @@ curl http://localhost:51200/v1/messages \
 - Tool use (`tool_use` / `tool_result` content block format)
 - Parallel tool calls (batched into a single turn, results properly grouped)
 - Image input (base64 source: `type=image`, `source.type=base64`)
+- Image output from Gemini image models, as a markdown data-URI image in a text block
 - Thinking blocks exposed as `thinking_delta` chunks
+
+---
+
+## Generated images
+
+Gemini image models (for example `gemini-3.1-flash-image`) answer with image
+parts. The OpenAI Chat, OpenAI Responses and Anthropic Messages adapters have no
+image output block, so each generated image is delivered as a markdown image
+with a data URI in the text, in both streaming and non-streaming responses:
+
+```markdown
+![image](data:image/jpeg;base64,/9j/4AAQ...)
+```
+
+Clients that render markdown show the image directly. Interim images the model
+produces while thinking are not forwarded.
+
+When the client sends that reply back as assistant history, the proxy turns the
+markdown image into an image part again, together with its thought signature
+when the proxy still has it cached. The base64 is not counted as text against
+the model's context, and the image can be edited in the next turn ("now make it
+blue"). Claude models do not accept images in assistant turns, so for them the
+image is replaced with an `[image]` placeholder.
+
+The native `generateContent` routes return the image as an `inlineData` part.
 
 ---
 
@@ -144,6 +171,7 @@ curl http://localhost:51200/v1/messages \
 | Streaming | ✓ | ✓ | ✓ |
 | Tool/function calling | ✓ | ✓ (function only) | ✓ |
 | Image input | ✓ | — | ✓ |
+| Image output (Gemini image models) | ✓ | ✓ | ✓ |
 | Thinking/reasoning blocks | ✓ | ✓ | ✓ |
 | Multi-turn conversations | ✓ | ✓ | ✓ |
 | Parallel tool calls | ✓ | ✓ | ✓ |
