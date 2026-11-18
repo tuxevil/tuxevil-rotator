@@ -18,6 +18,8 @@ import {
 import { dynamicCatalog } from "./dynamic-catalog.js";
 import {
   thoughtSignatureCache,
+  cacheThoughtSignature,
+  imageSignatureKey,
   getStoredResponse,
   setStoredResponse,
   makeCompatId,
@@ -301,6 +303,73 @@ export function dataUrlToInlineData(url: string): AntigravityPart | null {
   const match = url.match(/^data:([^;,]+);base64,(.+)$/s);
   if (!match) return null;
   return { inlineData: { mimeType: match[1], data: match[2] } };
+}
+
+const MARKDOWN_DATA_IMAGE =
+  /!\[[^\]\n]*\]\(data:(image\/[A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/=]+)\)/g;
+
+/**
+ * Normalize one Gemini response part for the compat (OpenAI/Anthropic/
+ * Responses) encoders, which only understand text, thoughts and function
+ * calls. A generated image (`inlineData`) becomes a markdown data-URI image
+ * text part so clients that render markdown can show it. Returns null for
+ * parts that must not reach the client: non-records, interim "thought"
+ * images and non-image inline payloads.
+ */
+export function geminiResponsePartToCompat(
+  part: unknown,
+): Record<string, unknown> | null {
+  if (!isRecord(part)) return null;
+  if (!isRecord(part.inlineData)) return part;
+  const { mimeType, data } = part.inlineData;
+  if (
+    part.thought === true ||
+    typeof mimeType !== "string" ||
+    !mimeType.startsWith("image/") ||
+    typeof data !== "string" ||
+    !data
+  ) {
+    return null;
+  }
+  if (typeof part.thoughtSignature === "string" && part.thoughtSignature) {
+    cacheThoughtSignature(imageSignatureKey(data), part.thoughtSignature);
+  }
+  return { text: `\n\n![image](data:${mimeType};base64,${data})\n\n` };
+}
+
+/**
+ * Inverse of geminiResponsePartToCompat for model turns sent back by the
+ * client: markdown data-URI images become `inlineData` parts again, so the
+ * base64 is not billed as text and the image can be edited in later turns.
+ * With `inlineImages` false (models that do not accept images in model turns)
+ * each image collapses to an `[image]` placeholder instead.
+ */
+export function modelTextToGeminiParts(
+  text: string,
+  inlineImages: boolean,
+): Array<Record<string, unknown>> {
+  if (!text.includes("](data:image/")) return [{ text }];
+  if (!inlineImages) return [{ text: text.replace(MARKDOWN_DATA_IMAGE, "[image]") }];
+  const parts: Array<Record<string, unknown>> = [];
+  const pushText = (segment: string): void => {
+    const trimmed = segment.trim();
+    if (trimmed) parts.push({ text: trimmed });
+  };
+  let last = 0;
+  for (const match of text.matchAll(MARKDOWN_DATA_IMAGE)) {
+    const index = match.index ?? 0;
+    pushText(text.slice(last, index));
+    last = index + match[0].length;
+    const [, mimeType, data] = match;
+    const signature = thoughtSignatureCache.get(imageSignatureKey(data));
+    parts.push({
+      inlineData: { mimeType, data },
+      ...(signature ? { thoughtSignature: signature } : {}),
+    });
+  }
+  if (last === 0) return [{ text }];
+  pushText(text.slice(last));
+  return parts;
 }
 
 export function extractParts(
@@ -1088,7 +1157,9 @@ export function openAIToAntigravityBody(
           typeof msg.content === "string"
             ? msg.content
             : extractText(msg.content);
-        if (textContent) parts.push({ text: textContent });
+        if (textContent) {
+          parts.push(...modelTextToGeminiParts(textContent, !isClaude));
+        }
       }
       if (Array.isArray(msgToolCalls) && msgToolCalls.length > 0) {
         let isFirstInMessage = true;

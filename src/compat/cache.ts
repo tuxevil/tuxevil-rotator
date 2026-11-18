@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { ResponsesStore, type StoredResponseEntry } from "../responses-store.js";
 
 export const thoughtSignatureCache = new Map<string, string>();
@@ -35,4 +36,13 @@ export function cacheThoughtSignature(callId: string, signature: string): void {
 		if (firstKey !== undefined) thoughtSignatureCache.delete(firstKey);
 	}
 	thoughtSignatureCache.set(callId, signature);
+}
+
+/**
+ * Generated images reach compat clients as markdown data URIs, which have no
+ * room for a thought signature. Key the signature by the image bytes so it can
+ * be re-attached when the client sends the image back in the history.
+ */
+export function imageSignatureKey(base64Data: string): string {
+	return `image:${createHash("sha256").update(base64Data).digest("hex")}`;
 }

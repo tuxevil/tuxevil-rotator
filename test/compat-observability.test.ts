@@ -1067,6 +1067,55 @@ describe("compat observability", () => {
     assert.match(res.body, /"cached_tokens":400/);
   });
 
+  it("streams generated images as markdown data URIs in every compat format", async () => {
+    const upstream = (): ReadableStream<Uint8Array> => {
+      const body = new Response([
+        'data: {"response":{"candidates":[{"content":{"parts":[{"thought":true,"inlineData":{"mimeType":"image/png","data":"VGhvdWdodA=="}}]}}]}}',
+        'data: {"response":{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/jpeg","data":"Q2F0SW1n"}}]},"finishReason":"STOP"}]}}',
+        "",
+      ].join("\n")).body;
+      assert.ok(body);
+      return body;
+    };
+    const image = "![image](data:image/jpeg;base64,Q2F0SW1n)";
+
+    for (const format of ["openai", "anthropic"] as const) {
+      const res = responseStub();
+      const completion = await streamCompatSse(
+        upstream(),
+        new PassThrough() as unknown as IncomingMessage,
+        res,
+        "gemini-3.1-flash-image",
+        format,
+        undefined,
+        undefined,
+        undefined,
+        "google",
+      );
+      assert.equal(completion.streamError, undefined, format);
+      assert.ok(res.body.includes(image), format);
+      assert.doesNotMatch(res.body, /VGhvdWdodA/, format);
+    }
+
+    const res = responseStub();
+    const completion = await streamResponsesSse(
+      upstream(),
+      new PassThrough() as unknown as IncomingMessage,
+      res,
+      { model: "gemini-3.1-flash-image", input: "draw a cat", stream: true },
+      "resp_image_test",
+      null,
+      Math.floor(Date.now() / 1000),
+      undefined,
+      undefined,
+      undefined,
+      "google",
+    );
+    assert.equal(completion.streamError, undefined);
+    assert.ok(completion.text.includes(image));
+    assert.ok(res.body.includes(image));
+  });
+
   it("cancels a queued non-stream compat request before it can be admitted", async () => {
     let upstreamCalls = 0;
     const upstream = await listenServer((req, res) => {

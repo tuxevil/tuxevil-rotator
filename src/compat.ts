@@ -82,6 +82,8 @@ import {
   buildResponsesResponse,
   saveResponsesEntry,
   toolArgumentsToObject,
+  geminiResponsePartToCompat,
+  modelTextToGeminiParts,
 } from "./providers/google-antigravity/translators.js";
 import {
   openAIToOllamaBody,
@@ -565,8 +567,9 @@ export function parseAntigravitySse(raw: string): CompatCompletion {
           !Array.isArray(candidate.content.parts)
         )
           continue;
-        for (const part of candidate.content.parts) {
-          if (!isRecord(part)) continue;
+        for (const rawPart of candidate.content.parts) {
+          const part = geminiResponsePartToCompat(rawPart);
+          if (!part) continue;
           if (typeof part.text === "string") {
             // Route thought blocks separately from normal text
             if (part.thought === true) {
@@ -1226,8 +1229,9 @@ export async function streamCompatSse(
               !Array.isArray(candidate.content.parts)
             )
               continue;
-            for (const part of candidate.content.parts) {
-              if (!isRecord(part)) continue;
+            for (const rawPart of candidate.content.parts) {
+              const part = geminiResponsePartToCompat(rawPart);
+              if (!part) continue;
               if (typeof part.text === "string" && part.text) {
                 if (part.thought === true) {
                   // Thought block → reasoning_content (OpenAI) or thinking_delta (Anthropic)
@@ -2000,8 +2004,9 @@ export async function streamResponsesSse(
               !Array.isArray(candidate.content.parts)
             )
               continue;
-            for (const part of candidate.content.parts) {
-              if (!isRecord(part)) continue;
+            for (const rawPart of candidate.content.parts) {
+              const part = geminiResponsePartToCompat(rawPart);
+              if (!part) continue;
               if (typeof part.text === "string" && part.text) {
                 if (part.thought === true) {
                   // Stream reasoning content via Responses API reasoning events.
@@ -2980,7 +2985,7 @@ export async function handleGeminiGenerateContent(
       {
         content: {
           role: "model",
-          parts: [{ text: result.completion.text }],
+          parts: modelTextToGeminiParts(result.completion.text, true),
         },
         finishReason: "STOP",
       },
