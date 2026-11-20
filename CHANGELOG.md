@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## [4.4.3] - 2026-11-20
+
+### Fixed
+
+- Enforce provider and model eligibility for direct requests, account selection, and retries across Antigravity and Codex, preventing requests from being sent to accounts without the required plan access.
+- Record compatibility requests rejected before account selection in request history and spend logs, including their HTTP status.
+- Calculate retry estimates from accounts eligible for the requested provider model so unavailable accounts do not distort cooldown responses.
+
 ## [4.4.2] - 2026-11-14
 
 ### Changed
