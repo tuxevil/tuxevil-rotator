@@ -2117,7 +2117,7 @@ export class AccountRotator {
     autoScope?: AutoAccountScope,
   ): Promise<AccountRuntime | null> {
     if (signal?.aborted) return null;
-    autoScope ??= this.getExplicitAntigravityAccessScope(model, providerId);
+    autoScope ??= this.getExplicitAccessScope(model, providerId);
     const queueKey = this.getRequestQueueKey(model, providerId);
     if (
       this.hasQueuedRequest(queueKey) ||
@@ -2794,7 +2794,7 @@ export class AccountRotator {
     autoScope?: AutoAccountScope,
   ): Promise<AccountRuntime | null> {
     if (this.isProtectivePauseActive(Date.now())) return null;
-    autoScope ??= this.getExplicitAntigravityAccessScope(model, providerId);
+    autoScope ??= this.getExplicitAccessScope(model, providerId);
     const modelKey = model ? this.resolveRequestPoolKey(model, providerId) : null;
     let excludeIdx: number;
     if (typeof failedAccount === "number") {
@@ -2817,10 +2817,11 @@ export class AccountRotator {
       : this.rotateDefault(Date.now(), false, excludeIdx);
   }
 
-  private getExplicitAntigravityAccessScope(model?: string, providerId?: string): AutoAccountScope | undefined {
-    if (!model || !requiresAntigravityAccessPolicy(model)) return undefined;
+  private getExplicitAccessScope(model?: string, providerId?: string): AutoAccountScope | undefined {
+    if (!model) return undefined;
     const provider = providerId ?? getProviderIdForPoolKey(this.resolveRequestPoolKey(model, providerId));
-    return provider === DEFAULT_PROVIDER ? { providerId: provider, modelId: model } : undefined;
+    return provider === "openai-codex" || (provider === DEFAULT_PROVIDER && requiresAntigravityAccessPolicy(model))
+      ? { providerId: provider, modelId: model } : undefined;
   }
 
   // Record a successful request. Returns true if rotation is needed.

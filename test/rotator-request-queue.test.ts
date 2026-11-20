@@ -576,7 +576,7 @@ describe("Antigravity request queue", () => {
       },
     };
 
-    const codexModel = "gpt-5.6-luna";
+    const codexModel = "gpt-6-luna";
     const activeCodex = await rotator.getActiveAccount(codexModel);
     assert.equal(activeCodex, accounts[0]);
 

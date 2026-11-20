@@ -103,6 +103,27 @@ describe("v2 routing and status", () => {
     }
   });
 
+  it("enforces Codex plan eligibility for direct admission and retry rotation", async () => {
+    const { accessEvidenceStore } = await import("../src/access-evidence.js");
+    const config = makeConfig();
+    config.accounts = ["free", "paid"].map((name) => ({
+      email: `${name}-codex@example.com`,
+      credentials: [{ provider: "openai-codex", refreshToken: name, providerAccountId: name }],
+    }));
+    const rotator = new AccountRotator(config) as any;
+    rotator.stopQuotaPolling();
+    rotator.setCodexModels(["gpt-6.1-terra", "gpt-6-luna"]);
+    rotator.ensureValidTokenForProvider = async () => {};
+    accessEvidenceStore().declarePlan(rotator.accounts[0].config, "openai-codex", "free");
+    accessEvidenceStore().declarePlan(rotator.accounts[1].config, "openai-codex", "plus");
+    const paid = await rotator.getActiveAccount("gpt-6.1-terra", undefined, "openai-codex");
+    assert.equal(paid?.config.email, "paid-codex@example.com");
+    rotator.finishRequest(paid, "gpt-6.1-terra", "openai-codex");
+    assert.equal(await rotator.rotateToNext("gpt-6.1-terra", paid, "openai-codex"), null);
+    const free = await rotator.rotateToNext("gpt-6-luna", paid, "openai-codex");
+    assert.equal(free?.config.email, "free-codex@example.com");
+  });
+
   it("merges different account catalogs without losing models or discovered metadata", async () => {
     const { getCodexModel, setDiscoveredCodexModels } = await import("../src/providers/openai-codex/catalog.js");
     const config = makeConfig();

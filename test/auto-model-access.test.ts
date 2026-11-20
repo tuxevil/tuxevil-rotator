@@ -56,6 +56,20 @@ it("uses account/model 402 evidence as a temporary exclusion and re-enables afte
   assert.equal(evaluateAutoModelAccess(account, "openai-codex", "gpt-6-luna", store, now + 3_600_011).eligible, true);
 });
 
+it("limits Codex Free to the documented model IDs and fails closed on unknown plans", () => {
+  const store = new AccessEvidenceStore();
+  const account = { email: "free-codex@test", credentials: [{ provider: "openai-codex", refreshToken: "free", providerAccountId: "free" }] };
+  assert.equal(evaluateAutoModelAccess(account, "openai-codex", "gpt-6.1-sol", store, now).eligible, false);
+  assert.equal(evaluateAutoModelAccess(account, "openai-codex", "gpt-6-luna", store, now).eligible, true);
+  store.declarePlan(account, "openai-codex", "free", now);
+  for (const model of ["gpt-6-luna", "gpt-5.6-terra"]) {
+    assert.equal(evaluateAutoModelAccess(account, "openai-codex", model, store, now).eligible, true, model);
+  }
+  for (const model of ["gpt-5.6-luna", "gpt-6.1-terra", "gpt-6.1-sol", "gpt-6.2-sol", "gpt-6-luna-extra"]) {
+    assert.equal(evaluateAutoModelAccess(account, "openai-codex", model, store, now).eligible, false, model);
+  }
+});
+
 it("applies the dated Antigravity Free legacy-model window", () => {
   const account = { email: "google@test", credentials: [{ provider: "google-antigravity", refreshToken: "google" }] };
   const store = new AccessEvidenceStore();

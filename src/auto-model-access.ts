@@ -115,6 +115,14 @@ export function evaluateAutoModelAccess(
   }
 
   if (plan === "unknown") {
+    // A verified Free-plan model is also safe to try when the Codex plan is
+    // unknown; paid-only and unlisted models still require a known plan.
+    if (provider === "openai-codex" && MODEL_ACCESS_RULES.some((rule) =>
+      rule.provider === provider && rule.plans.includes("free") && rule.state === "allowed" &&
+      matchesRule(rule, model) && evaluateModelAccess({ provider, model, plan: "free", at: new Date(now).toISOString() }).state === "allowed",
+    )) {
+      return { eligible: true, plan, planSource, reason: "model is documented for Codex Free" };
+    }
     const hasPlanSpecificRule = MODEL_ACCESS_RULES.some((rule) =>
       rule.provider === provider && matchesRule(rule, model),
     );
@@ -160,11 +168,11 @@ export function evaluateAutoModelAccess(
     return { eligible: false, plan, planSource, reason: decision.reason };
   }
 
-  // Free accounts have a complete, operator-confirmed catalog for these
-  // providers. Unknown or stale entries must not silently inherit free access.
+  // Unknown or stale entries must not silently inherit free access.
   if ((provider === "ollama" || provider === "openai-codex") && plan === "free") {
     const confirmedAllow = matchingRules.some((rule) =>
-      rule.state === "allowed" && rule.evidence === "operator-confirmed",
+      rule.state === "allowed" && (rule.evidence === "operator-confirmed" ||
+        (provider === "openai-codex" && rule.evidence === "documented")),
     );
     if (!confirmedAllow || decision.state === "unknown") {
       return {
@@ -173,7 +181,7 @@ export function evaluateAutoModelAccess(
         planSource,
         reason: confirmedAllow
           ? "Free-plan model policy needs re-verification"
-          : "model is outside the confirmed Free-plan auto-routing list",
+          : provider === "ollama" ? "model is outside the confirmed Free-plan auto-routing list" : "model is outside the confirmed Free-plan model list",
       };
     }
   }
