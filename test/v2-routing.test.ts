@@ -103,6 +103,22 @@ describe("v2 routing and status", () => {
     }
   });
 
+  it("calculates retry time using only accounts eligible for the selected model", () => {
+    const config = makeConfig();
+    config.accounts![1].tier = "pro";
+    const rotator = new AccountRotator(config) as any;
+    rotator.stopQuotaPolling();
+    const model = "claude-sonnet-5-5-medium";
+    setAntigravityModelsForTest([model], rotator.accounts.map((a: any) => getAccountIdentity(a.config)));
+    const poolKey = rotator.resolveRequestPoolKey(model, "google-antigravity");
+    const key = rotator.resolveQuotaStateKey(poolKey);
+    const now = Date.now();
+    rotator.accounts[0].cooldownsByModel[key] = now + 60_000;
+    rotator.accounts[1].cooldownsByModel[key] = now + 600_000;
+    const delay = rotator.getRetryAfterMs(model, "google-antigravity");
+    assert.ok(delay > 590_000 && delay <= 600_000, `expected Pro cooldown, got ${delay}`);
+  });
+
   it("enforces Codex plan eligibility for direct admission and retry rotation", async () => {
     const { accessEvidenceStore } = await import("../src/access-evidence.js");
     const config = makeConfig();
@@ -1646,7 +1662,7 @@ describe("v2 routing and status", () => {
   it("marks positive-quota accounts as exhausted once local daily safety budget is spent", () => {
     const rotator = new AccountRotator(makeConfig()) as any;
     rotator.stopQuotaPolling();
-    advertiseGoogleModelForRotator(rotator);
+    advertiseGoogleModelForRotator(rotator, "gemini-3.8-flash-high");
     for (const account of rotator.accounts) {
       account.quota = [
         {
@@ -1660,22 +1676,22 @@ describe("v2 routing and status", () => {
       account.dailyRequestCount = 350;
     }
 
-    const best = rotator.pickBestModelAccount("gemini-3.1-pro", Date.now(), -1);
+    const best = rotator.pickBestModelAccount("gemini-3.8-flash-high", Date.now(), -1);
     assert.equal(best, null);
-    rotator.modelState.set("gemini-3.1-pro", { activeAccountIndex: 0, quotaAtRotationStart: 44, requestsOnActiveAccount: 0 });
+    rotator.modelState.set("gemini-3.8-flash-high", { activeAccountIndex: 0, quotaAtRotationStart: 44, requestsOnActiveAccount: 0 });
 
     const status = rotator.getStatus();
     assert.equal(status.accounts[0].status, "exhausted");
     assert.equal(status.accounts[0].dailyRequestCount, 350);
     assert.equal(
-      status.routingDiagnostics["gemini-3.1-pro"].accounts[0].rejectedReason,
+      status.routingDiagnostics["gemini-3.8-flash-high"].accounts[0].rejectedReason,
       "daily-account-stop",
     );
     assert.match(
-      status.routingDiagnostics["gemini-3.1-pro"].reason,
+      status.routingDiagnostics["gemini-3.8-flash-high"].reason,
       /daily account budget exhausted/,
     );
-    const retryAfterMs = rotator.getRetryAfterMs("gemini-3.1-pro");
+    const retryAfterMs = rotator.getRetryAfterMs("gemini-3.8-flash-high");
     assert.ok(retryAfterMs > 0);
     assert.ok(retryAfterMs <= 24 * 60 * 60 * 1000);
   });

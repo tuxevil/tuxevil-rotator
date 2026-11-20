@@ -4286,6 +4286,7 @@ export class AccountRotator {
     for (const account of this.accounts) {
       if (account.disabled || account.flagged) continue;
       const candidateProviderId = providerId ?? getProviderIdForPoolKey(modelKey);
+      if (this.getProviderEligibilityRejection(account, modelKey, now)?.reason === "provider-ineligible") continue;
       if (
         autoScope &&
         !evaluateAutoModelAccess(
@@ -4342,9 +4343,9 @@ export class AccountRotator {
     return retryTimes.length > 0 ? Math.min(...retryTimes) : null;
   }
 
-  getRetryAfterMs(model?: string, providerId?: string): number {
+  getRetryAfterMs(model?: string, providerId?: string, autoScope?: AutoAccountScope): number {
     const now = Date.now();
-    const retryTimes = this.getRequestAvailabilityTimes(model, now, providerId);
+    const retryTimes = this.getRequestAvailabilityTimes(model, now, providerId, autoScope ?? this.getExplicitAccessScope(model, providerId));
     if (retryTimes.length === 0) return 0;
     return Math.max(1000, Math.min(...retryTimes) - now);
   }

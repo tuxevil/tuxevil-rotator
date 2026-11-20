@@ -1316,7 +1316,7 @@ export async function withRotation<T>(
     context?: RotationAttemptContext,
   ): RotationOutcome<T> => {
     log(`[${model}] No healthy account available: ${reason}`, rotator, "warn");
-    const retryAfterMs = rotator.getRetryAfterMs(model, providerId);
+    const retryAfterMs = rotator.getRetryAfterMs(model, providerId, autoScope);
     const contextFields = context
       ? { context, totalMs: Date.now() - context.requestStartMs }
       : {};
@@ -1789,7 +1789,7 @@ async function handleProxyRequest(
   const sendNoAccountsAvailable = (reason: string): void => {
     if (clientController.signal.aborted || res.destroyed) return;
     proxyLog(`[${body.model}] No healthy account available: ${reason}`, "warn");
-    const retryAfterMs = rotator.getRetryAfterMs(body.model, providerId);
+    const retryAfterMs = rotator.getRetryAfterMs(body.model, providerId, accessScope);
     if (retryAfterMs > 0) {
       const retrySec = Math.ceil(retryAfterMs / 1000);
       res.writeHead(429, {
