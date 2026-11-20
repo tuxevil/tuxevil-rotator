@@ -60,8 +60,27 @@ it("applies the dated Antigravity Free legacy-model window", () => {
   const account = { email: "google@test", credentials: [{ provider: "google-antigravity", refreshToken: "google" }] };
   const store = new AccessEvidenceStore();
   store.declarePlan(account, "google-antigravity", "free", now);
-  assert.equal(evaluateAutoModelAccess(account, "google-antigravity", "claude-opus-4-6-thinking", store, Date.parse("2026-11-01T23:59:59Z")).eligible, true);
-  assert.equal(evaluateAutoModelAccess(account, "google-antigravity", "claude-opus-4-6-thinking", store, Date.parse("2026-11-02T00:00:00Z")).eligible, false);
+  assert.equal(evaluateAutoModelAccess(account, "google-antigravity", "claude-opus-4-6-thinking", store, Date.parse("2026-11-17T23:59:59Z")).eligible, true);
+  assert.equal(evaluateAutoModelAccess(account, "google-antigravity", "claude-opus-4-6-thinking", store, Date.parse("2026-11-18T00:00:00Z")).eligible, false);
+});
+
+it("applies the documented Gemini 4 plan distinctions", () => {
+  const store = new AccessEvidenceStore();
+  for (const [plan, expected] of [["free", [false, false, false]], ["pro-paid", [true, false, true]], ["ultra", [true, true, true]]] as const) {
+    const account = { email: `${plan}@test`, credentials: [{ provider: "google-antigravity", refreshToken: plan }] };
+    store.declarePlan(account, "google-antigravity", plan, now);
+    for (const [i, model] of ["gemini-4-argon-high", "gemini-4-carbon-high", "gemini-4-hydrogen-high"].entries()) {
+      assert.equal(evaluateAutoModelAccess(account, "google-antigravity", model, store, now).eligible, expected[i], `${plan} ${model}`);
+    }
+  }
+});
+
+it("does not permit a documented denial when the policy review becomes overdue", () => {
+  const account = { email: "trial@test", credentials: [{ provider: "google-antigravity", refreshToken: "trial" }] };
+  const store = new AccessEvidenceStore();
+  const later = Date.parse("2026-12-21T00:00:00Z");
+  store.declarePlan(account, "google-antigravity", "pro-trial", later);
+  assert.equal(evaluateAutoModelAccess(account, "google-antigravity", "claude-opus-5-5-high", store, later).eligible, false);
 });
 
 it("keeps Antigravity Free and Plus auto candidates within their confirmed model list", () => {

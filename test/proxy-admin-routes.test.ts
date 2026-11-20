@@ -75,7 +75,7 @@ describe("proxy admin routes", () => {
     assert.equal((await fetch(base + "/probe", { method: "POST", body: "{}" })).status, 401);
     assert.equal((await fetch(base + "/plan", { method: "PUT", headers: { "Content-Type": "application/json" }, body: "{}" })).status, 401);
     const headers = { "x-rotator-admin-token": "secret" };
-    const response = await fetch(base + "?provider=google-antigravity&model=claude-sonnet-4-6&plan=free&at=2026-11-02", { headers });
+    const response = await fetch(base + "?provider=google-antigravity&model=claude-sonnet-4-6&plan=free&at=2026-11-18", { headers });
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("cache-control"), "no-store");
     const body = await response.json() as { decision: { state: string } };

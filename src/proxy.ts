@@ -1,4 +1,5 @@
 import { serveAccessProbe } from "./access-probe.js";
+import { requiresAntigravityAccessPolicy } from "./auto-model-access.js";
 import { observeAccessAttempt, logAccessPolicyShadow } from "./access-evidence.js";
 import { serveModelAccessApi, serveProviderPlanApi } from "./model-access-api.js";
 import { createUsageLimitsHandler, USAGE_LIMITS_PATH } from "./usage-limits.js";
@@ -1278,8 +1279,12 @@ export async function withRotation<T>(
     ollamaModels: new Set(rotator.getOllamaModels?.() ?? []),
     codexModels: new Set(rotator.getCodexModels?.() ?? []),
   })?.id;
-  const autoScope = body.displayModel?.toLowerCase() === "auto" && providerId
-    ? { providerId, modelId: model }
+  const policyModel = requiresAntigravityAccessPolicy(model) || body.displayModel?.toLowerCase() === "auto"
+    ? model
+    : body.catalogModel ?? model;
+  const autoScope = providerId && (body.displayModel?.toLowerCase() === "auto" ||
+    (providerId === DEFAULT_PROVIDER && requiresAntigravityAccessPolicy(policyModel)))
+    ? { providerId, modelId: policyModel }
     : undefined;
   const modelQuotaFamily = resolveQuotaModelKey(model) ??
     resolveQuotaModelKey(applyModelAlias(model));
@@ -1877,6 +1882,10 @@ async function handleProxyRequest(
     res.end(decision.errorText || JSON.stringify({ error: "Upstream error" }));
   };
 
+  const policyModel = requiresAntigravityAccessPolicy(body.model) ? body.model : body.catalogModel ?? body.model;
+  const accessScope = providerId === DEFAULT_PROVIDER && requiresAntigravityAccessPolicy(policyModel)
+    ? { providerId, modelId: policyModel }
+    : undefined;
   const maxRetries = getStreamRecoveryMaxRetries(rotator);
   const maxAttempts = maxRetries + 1;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -1889,6 +1898,7 @@ async function handleProxyRequest(
       body.model,
       clientController.signal,
       providerId,
+      accessScope,
     );
     if (!account) {
       if (clientController.signal.aborted || res.destroyed) return;
@@ -1913,7 +1923,7 @@ async function handleProxyRequest(
     };
     const rotateAndRelease = async (): Promise<AccountRuntime | null> => {
       releaseCurrentAccount();
-      const nextAccount = await rotator.rotateToNext(body.model, account, providerId);
+      const nextAccount = await rotator.rotateToNext(body.model, account, providerId, accessScope);
       return nextAccount;
     };
     proxyLog(
@@ -2138,7 +2148,7 @@ async function handleProxyRequest(
       res.end();
 
       if (shouldRotate) {
-        await rotator.rotateToNext(body.model, account, providerId);
+        await rotator.rotateToNext(body.model, account, providerId, accessScope);
       }
       return;
     } catch (err) {

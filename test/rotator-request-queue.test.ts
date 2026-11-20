@@ -24,7 +24,7 @@ type AccountRuntime = import("../src/types.js").AccountRuntime;
 type Config = import("../src/types.js").Config;
 
 const GEMINI_MODEL = "gemini-3-flash";
-const CLAUDE_MODEL = "claude-opus-4-6-thinking";
+const CLAUDE_MODEL = "claude-opus-4-5-thinking";
 const UNKNOWN_MODEL = "custom-antigravity-model";
 
 before(async () => {

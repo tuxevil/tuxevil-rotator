@@ -18,6 +18,10 @@ export interface AutoAccountScope {
   modelId: string;
 }
 
+export function requiresAntigravityAccessPolicy(model: string): boolean {
+  return /^(?:claude-(?:opus|sonnet)-(?:5-5|4-6)(?:-|$)|gemini-4(?:-|$)|gemini-3\.(?:7-flash|6-flash|1-pro)(?:-|$))/i.test(model);
+}
+
 function matchesRule(rule: (typeof MODEL_ACCESS_RULES)[number], model: string): boolean {
   if (rule.modelPrefix === "*-free") return model.endsWith("-free");
   return rule.exact
@@ -142,6 +146,19 @@ export function evaluateAutoModelAccess(
     plan,
     at: new Date(now).toISOString(),
   });
+
+  // An overdue review must not turn a documented denial into permission.
+  if (provider === "google-antigravity" && matchingRules.some((rule) =>
+    (rule.state === "blocked" || rule.state === "conditional" ||
+      (rule.validUntil !== undefined && now >= Date.parse(`${rule.validUntil}T00:00:00Z`))) &&
+    now >= Date.parse(`${rule.validFrom}T00:00:00Z`),
+  )) {
+    return { eligible: false, plan, planSource, reason: decision.reason };
+  }
+
+  if (provider === "google-antigravity" && model.startsWith("gemini-4-") && decision.state === "unknown") {
+    return { eligible: false, plan, planSource, reason: decision.reason };
+  }
 
   // Free accounts have a complete, operator-confirmed catalog for these
   // providers. Unknown or stale entries must not silently inherit free access.

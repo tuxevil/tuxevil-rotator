@@ -1,5 +1,5 @@
 import { summarizeAutoAccess } from "./auto-access-shadow.js";
-import { evaluateAutoModelAccess, type AutoAccountScope } from "./auto-model-access.js";
+import { evaluateAutoModelAccess, requiresAntigravityAccessPolicy, type AutoAccountScope } from "./auto-model-access.js";
 import { primeOllamaContextWindows } from "./providers/ollama/context-window.js";
 import {
   type AccountConfig,
@@ -1740,7 +1740,7 @@ export class AccountRotator {
       if (!access.eligible) {
         return {
           reason: "provider-ineligible",
-          detail: `auto access policy: ${access.reason}`,
+          detail: `model access policy: ${access.reason}`,
         };
       }
     }
@@ -2117,6 +2117,7 @@ export class AccountRotator {
     autoScope?: AutoAccountScope,
   ): Promise<AccountRuntime | null> {
     if (signal?.aborted) return null;
+    autoScope ??= this.getExplicitAntigravityAccessScope(model, providerId);
     const queueKey = this.getRequestQueueKey(model, providerId);
     if (
       this.hasQueuedRequest(queueKey) ||
@@ -2793,6 +2794,7 @@ export class AccountRotator {
     autoScope?: AutoAccountScope,
   ): Promise<AccountRuntime | null> {
     if (this.isProtectivePauseActive(Date.now())) return null;
+    autoScope ??= this.getExplicitAntigravityAccessScope(model, providerId);
     const modelKey = model ? this.resolveRequestPoolKey(model, providerId) : null;
     let excludeIdx: number;
     if (typeof failedAccount === "number") {
@@ -2813,6 +2815,12 @@ export class AccountRotator {
     return modelKey
       ? this.rotateModel(modelKey, Date.now(), excludeIdx, false, autoScope)
       : this.rotateDefault(Date.now(), false, excludeIdx);
+  }
+
+  private getExplicitAntigravityAccessScope(model?: string, providerId?: string): AutoAccountScope | undefined {
+    if (!model || !requiresAntigravityAccessPolicy(model)) return undefined;
+    const provider = providerId ?? getProviderIdForPoolKey(this.resolveRequestPoolKey(model, providerId));
+    return provider === DEFAULT_PROVIDER ? { providerId: provider, modelId: model } : undefined;
   }
 
   // Record a successful request. Returns true if rotation is needed.

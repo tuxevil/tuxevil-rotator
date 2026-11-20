@@ -169,7 +169,7 @@ describe("429 RESOURCE_EXHAUSTED resilience and in-flight lifecycle", () => {
     assert.equal(account.cooldownsByModel.__default__, undefined);
     assert.equal(account.providerCooldowns?.["google-antigravity"], undefined);
 
-    const sibling = await rotator.getActiveAccount("gemini-3.1-pro");
+    const sibling = await rotator.getActiveAccount("gemini-3.8-flash-high");
     assert.equal(sibling, account, "Gemini must remain routable while Claude cools down");
     rotator.finishRequest(sibling!, "gemini");
 
@@ -178,7 +178,7 @@ describe("429 RESOURCE_EXHAUSTED resilience and in-flight lifecycle", () => {
       .accounts.find((candidate) => candidate.email === account.config.email);
     assert.notEqual(uiAccount?.status, "cooldown", "one cooled pool is not a global account cooldown");
 
-    rotator.markExhausted(account, "gemini-3.1-pro", 4_815_000, "RESOURCE_EXHAUSTED");
+    rotator.markExhausted(account, "gemini-3.8-flash-high", 4_815_000, "RESOURCE_EXHAUSTED");
     const fullyCooling = rotator
       .getStatus()
       .accounts.find((candidate) => candidate.email === account.config.email);
@@ -966,7 +966,7 @@ describe("429 RESOURCE_EXHAUSTED resilience and in-flight lifecycle", () => {
       requestsOnActiveAccount: 0,
     });
 
-    const account = await rotator.getActiveAccount("claude-opus-4-6-thinking");
+    const account = await rotator.getActiveAccount("claude-opus-4-5-thinking");
     assert.ok(account);
     assert.equal(account.inFlightRequests, 1, "inFlightRequests must be 1 while request is active");
     assert.equal(account.inFlightByModel["claude"], 1, "inFlightByModel['claude'] must be 1");
@@ -1000,7 +1000,7 @@ describe("429 RESOURCE_EXHAUSTED resilience and in-flight lifecycle", () => {
     });
 
     // Simulate start of request on acc1
-    const initial = await rotator.getActiveAccount("claude-opus-4-6-thinking");
+    const initial = await rotator.getActiveAccount("claude-opus-4-5-thinking");
     assert.equal(initial?.config.email, "acc1@example.com");
     assert.equal(acc1.inFlightRequests, 1);
 
@@ -1010,12 +1010,12 @@ describe("429 RESOURCE_EXHAUSTED resilience and in-flight lifecycle", () => {
     rotator.finishRequest(acc1, "claude");
 
     // Project concurrency is now clear (0 in-flight for shared-project), so acc2 is eligible
-    const nextAccount = await rotator.rotateToNext("claude-opus-4-6-thinking", acc1);
+    const nextAccount = await rotator.rotateToNext("claude-opus-4-5-thinking", acc1);
     assert.ok(nextAccount, "rotateToNext must find available sibling account in same project");
     assert.equal(nextAccount.config.email, "acc2@example.com");
 
     // Next loop attempt leases acc2
-    const retryAccount = await rotator.getActiveAccount("claude-opus-4-6-thinking");
+    const retryAccount = await rotator.getActiveAccount("claude-opus-4-5-thinking");
     assert.equal(retryAccount?.config.email, "acc2@example.com");
     assert.equal(acc2.inFlightRequests, 1);
 
@@ -1047,7 +1047,7 @@ describe("429 RESOURCE_EXHAUSTED resilience and in-flight lifecycle", () => {
     });
 
     // Request leases accA
-    const active = await rotator.getActiveAccount("claude-opus-4-6-thinking");
+    const active = await rotator.getActiveAccount("claude-opus-4-5-thinking");
     assert.equal(active, accA, "Leased runtime must be accA");
 
     // Replace configuration with updated labels/settings
@@ -1095,7 +1095,7 @@ describe("429 RESOURCE_EXHAUSTED resilience and in-flight lifecycle", () => {
     });
 
     // 1. Start request on accA
-    const active = await rotator.getActiveAccount("claude-opus-4-6-thinking");
+    const active = await rotator.getActiveAccount("claude-opus-4-5-thinking");
     assert.equal(active, accA);
 
     // 2. Run replaceConfig while accA is active
@@ -1113,7 +1113,7 @@ describe("429 RESOURCE_EXHAUSTED resilience and in-flight lifecycle", () => {
     assert.equal(accA.cooldownsByModel["claude"] ?? 0, 0, "No cooldown applied on accA");
 
     // 4. Rotate to next specifying failedAccount = accA
-    const nextAccount = await rotator.rotateToNext("claude-opus-4-6-thinking", active!);
+    const nextAccount = await rotator.rotateToNext("claude-opus-4-5-thinking", active!);
     assert.ok(nextAccount);
     assert.equal(
       nextAccount.config.email,
@@ -1168,7 +1168,7 @@ describe("429 RESOURCE_EXHAUSTED resilience and in-flight lifecycle", () => {
     };
 
     // 1. Launch Request 1
-    const req1Promise = rotator.getActiveAccount("claude-opus-4-6-thinking");
+    const req1Promise = rotator.getActiveAccount("claude-opus-4-5-thinking");
 
     // 2. Wait until Request 1 has entered activation and is paused inside saveState()
     await reachedPromise;
@@ -1179,7 +1179,7 @@ describe("429 RESOURCE_EXHAUSTED resilience and in-flight lifecycle", () => {
     assert.equal(acc2.inFlightRequests, 1, "acc2 must be reserved with inFlight=1 before saveState resolves");
 
     // 3. Launch Request 2 while Request 1 is still paused at saveState barrier
-    const req2 = await rotator.getActiveAccount("claude-opus-4-6-thinking");
+    const req2 = await rotator.getActiveAccount("claude-opus-4-5-thinking");
     assert.ok(req2, "Request 2 must obtain an account");
     assert.equal(
       req2.config.email,
@@ -1240,7 +1240,7 @@ describe("429 RESOURCE_EXHAUSTED resilience and in-flight lifecycle", () => {
 
     await assert.rejects(
       async () => {
-        await rotator.getActiveAccount("claude-opus-4-6-thinking");
+        await rotator.getActiveAccount("claude-opus-4-5-thinking");
       },
       /Simulated model refresh failure/,
     );
@@ -1536,11 +1536,11 @@ describe("429 RESOURCE_EXHAUSTED resilience and in-flight lifecycle", () => {
     };
 
     // 1. Launch Request 1 (reserves acc2, pauses in saveState)
-    const req1Promise = rotator.getActiveAccount("claude-opus-4-6-thinking");
+    const req1Promise = rotator.getActiveAccount("claude-opus-4-5-thinking");
     await reachedPromise;
 
     // 2. Launch Request 2 (sees acc2 busy with inFlight=1, reserves acc3 and completes)
-    const req2 = await rotator.getActiveAccount("claude-opus-4-6-thinking");
+    const req2 = await rotator.getActiveAccount("claude-opus-4-5-thinking");
     assert.equal(req2?.config.email, "acc3@example.com");
 
     const stateWhileReq1Paused = (rotator as any).modelState.get("claude");
@@ -1588,7 +1588,7 @@ describe("429 RESOURCE_EXHAUSTED resilience and in-flight lifecycle", () => {
     });
 
     // 1. Start request on accA
-    const activeA = await rotator.getActiveAccount("claude-opus-4-6-thinking");
+    const activeA = await rotator.getActiveAccount("claude-opus-4-5-thinking");
     assert.equal(activeA, accA);
 
     // 2. Replace config while active
@@ -1614,7 +1614,7 @@ describe("429 RESOURCE_EXHAUSTED resilience and in-flight lifecycle", () => {
     assert.equal(accA.cooldownsByModel["claude"] ?? 0, 0, "No cooldown on accA");
 
     // 5. Call rotateToNext with failedAccount = activeA
-    const nextAccount = await rotator.rotateToNext("claude-opus-4-6-thinking", activeA!);
+    const nextAccount = await rotator.rotateToNext("claude-opus-4-5-thinking", activeA!);
     assert.ok(nextAccount);
     assert.notEqual(
       nextAccount.config.email,
@@ -1896,7 +1896,7 @@ describe("429 RESOURCE_EXHAUSTED resilience and in-flight lifecycle", () => {
     (rotator as any).accounts = [newHealthyRuntime];
 
     // Failed old runtime was removed / replaced. Now proxy calls rotateToNext with oldFailedRuntime.
-    const result = await rotator.rotateToNext("claude-opus-4-6-thinking", oldFailedRuntime);
+    const result = await rotator.rotateToNext("claude-opus-4-5-thinking", oldFailedRuntime);
     assert.ok(result, "rotateToNext must return the healthy replacement runtime, not exclude it with false 503");
     assert.equal(result, newHealthyRuntime, "Must return the healthy new incarnation");
   });

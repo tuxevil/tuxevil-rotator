@@ -60,13 +60,13 @@ function makeConfig(): Config {
   };
 }
 
-function advertiseGoogleModelForRotator(rotator: any): void {
+function advertiseGoogleModelForRotator(rotator: any, model = "gemini-3.1-pro"): void {
   const accountIds = rotator.accounts
     .filter((account: any) => account.config.credentials?.some(
       (credential: any) => credential.provider === "google-antigravity",
     ))
     .map((account: any) => getAccountIdentity(account));
-  setAntigravityModelsForTest(["gemini-3.1-pro"], accountIds);
+  setAntigravityModelsForTest([model], accountIds);
 }
 
 describe("v2 routing and status", () => {
@@ -83,6 +83,23 @@ describe("v2 routing and status", () => {
     const accountIds = makeConfig().accounts!.map((account) => getAccountIdentity(account));
     for (const accountId of accountIds) {
       dynamicCatalog.updateFromEndpointResponse(snapshot, accountId);
+    }
+  });
+
+  it("enforces Antigravity paid model access for direct admission and rotation", async () => {
+    const config = makeConfig();
+    config.accounts![1].tier = "pro";
+    const ids = config.accounts!.map(getAccountIdentity);
+    const models = ["claude-sonnet-5-5-medium", "claude-opus-5-5-high", "gemini-4-argon-high"];
+    setAntigravityModelsForTest(models, ids);
+    const rotator = new AccountRotator(config) as any;
+    rotator.stopQuotaPolling();
+    rotator.ensureValidTokenForProvider = async () => {};
+    for (const model of models) {
+      const account = await rotator.getActiveAccount(model, undefined, "google-antigravity");
+      assert.equal(account?.config.email, "b@example.com", model);
+      rotator.finishRequest(account, model, "google-antigravity");
+      assert.equal(await rotator.rotateToNext(model, account, "google-antigravity"), null, model);
     }
   });
 
@@ -1484,7 +1501,7 @@ describe("v2 routing and status", () => {
     ];
     const rotator = new AccountRotator(config) as any;
     rotator.stopQuotaPolling();
-    advertiseGoogleModelForRotator(rotator);
+    advertiseGoogleModelForRotator(rotator, "gemini-3.8-flash-high");
     rotator.ensureValidTokenForModel = async () => {};
     rotator.modelState.delete("gemini");
     rotator.defaultIndex = 0;
@@ -1500,17 +1517,17 @@ describe("v2 routing and status", () => {
       ];
     }
 
-    const first = await rotator.getActiveAccount("gemini-3.1-pro");
+    const first = await rotator.getActiveAccount("gemini-3.8-flash-high");
     assert.equal(first?.config.email, "plus@example.com");
-    const second = await rotator.getActiveAccount("gemini-3.1-pro");
+    const second = await rotator.getActiveAccount("gemini-3.8-flash-high");
     assert.equal(
       second?.config.email,
       "plus@example.com",
       "an eligible Plus account must remain preferred over a less-loaded Free account",
     );
 
-    rotator.finishRequest(first, "gemini-3.1-pro");
-    rotator.finishRequest(second, "gemini-3.1-pro");
+    rotator.finishRequest(first, "gemini-3.8-flash-high");
+    rotator.finishRequest(second, "gemini-3.8-flash-high");
   });
 
   it("re-evaluates a persisted lower-tier assignment when tier-first is idle", async () => {
@@ -1534,7 +1551,7 @@ describe("v2 routing and status", () => {
     ];
     const rotator = new AccountRotator(config) as any;
     rotator.stopQuotaPolling();
-    advertiseGoogleModelForRotator(rotator);
+    advertiseGoogleModelForRotator(rotator, "gemini-3.8-flash-high");
     rotator.ensureValidTokenForModel = async () => {};
     rotator.defaultIndex = 0;
     rotator.modelState.set("gemini", {
@@ -1554,14 +1571,14 @@ describe("v2 routing and status", () => {
       ];
     }
 
-    const selected = await rotator.getActiveAccount("gemini-3.1-pro");
+    const selected = await rotator.getActiveAccount("gemini-3.8-flash-high");
     assert.equal(
       selected?.config.email,
       "plus@example.com",
       "an idle tier-first request must replace a persisted Free assignment when Plus is eligible",
     );
 
-    rotator.finishRequest(selected, "gemini-3.1-pro");
+    rotator.finishRequest(selected, "gemini-3.8-flash-high");
   });
 
   it("debounces model assignment state writes on the request path", async () => {
@@ -1624,6 +1641,7 @@ describe("v2 routing and status", () => {
 
     const best = rotator.pickBestModelAccount("gemini-3.1-pro", Date.now(), -1);
     assert.equal(best, null);
+    rotator.modelState.set("gemini-3.1-pro", { activeAccountIndex: 0, quotaAtRotationStart: 44, requestsOnActiveAccount: 0 });
 
     const status = rotator.getStatus();
     assert.equal(status.accounts[0].status, "exhausted");
