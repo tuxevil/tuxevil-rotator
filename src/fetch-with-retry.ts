@@ -15,7 +15,9 @@ export interface FetchWithRetryOptions extends RequestInit {
 export type RequestInitWithDispatcher = RequestInit & { dispatcher?: Dispatcher };
 
 export const DEFAULT_RETRY_STATUSES = [408, 429, 500, 502, 503, 504] as const;
-export const DEFAULT_HEADERS_TIMEOUT_MS = 30_000;
+// Match STREAM_IDLE_TIMEOUT_MS (120s): thinking/large-context models can hold
+// upstream HTTP response headers until prefill and initial generation begin.
+export const DEFAULT_HEADERS_TIMEOUT_MS = 120_000;
 
 /** Raised when an upstream accepts a request but never sends response headers. */
 export class UpstreamHeadersTimeoutError extends Error {
