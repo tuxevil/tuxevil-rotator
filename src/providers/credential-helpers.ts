@@ -169,3 +169,25 @@ export function sortAccountCredentials<T extends { provider: string }>(credentia
     return 0;
   });
 }
+
+/**
+ * Format remaining time until an ISO reset timestamp for RAW POLL logs using
+ * days, hours, and minutes depending on magnitude (e.g. "45m", "2h 8m", "6d 21h 8m").
+ */
+export function formatQuotaResetRemaining(
+  resetTime: string,
+  now = Date.now(),
+): string {
+  const resetMs = Date.parse(resetTime);
+  if (!Number.isFinite(resetMs)) return "unknown";
+  const totalMinutes = Math.max(0, Math.round((resetMs - now) / 60_000));
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  return parts.join(" ");
+}

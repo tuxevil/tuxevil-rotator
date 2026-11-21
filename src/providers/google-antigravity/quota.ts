@@ -28,6 +28,7 @@ import {
 import type { QuotaFetchContext } from "../adapter.js";
 import {
   DEFAULT_PROVIDER,
+  formatQuotaResetRemaining,
   getProviderProjectId,
   isOllamaQuotaPoolKey,
   isSafePoolKey,
@@ -497,6 +498,7 @@ function buildWindowsFromSummaryGroup(
       id: bucket.bucketId || windowKey,
       window: windowKey,
       label: formatWindowLabel(windowKey, bucket.displayName),
+      hasFraction,
       fraction,
       resetTime,
       durationMs,
@@ -505,10 +507,11 @@ function buildWindowsFromSummaryGroup(
     };
   });
 
-  // Reconcile per-model quotaInfo from fetchAvailableModels against summary buckets.
-  // Google can lag or leave a summary bucket at 1.0 while model-level quotaInfo already
-  // reports consumption (e.g. Claude/3p weekly at ~0.50 while 3p-weekly reports 1).
-  if (matchedModels.length > 0 && rawWindows.length > 0) {
+  // Only fill summary buckets that omitted remainingFraction using
+  // fetchAvailableModels. When retrieveUserQuotaSummary explicitly reports
+  // remainingFraction (e.g. 1.0 after a weekly reset), treat the summary as
+  // authoritative instead of letting stale legacy quotaInfo override it.
+  if (matchedModels.length > 0 && rawWindows.some((w) => !w.hasFraction)) {
     const modelMin = [...matchedModels].sort(
       (a, b) =>
         getRemainingFraction(a) - getRemainingFraction(b) ||
@@ -522,36 +525,32 @@ function buildWindowsFromSummaryGroup(
         ? (mResetMs - now < SIX_HOURS_MS ? "5h" : "weekly")
         : undefined;
 
-      let targetWin =
+      const missingWindows = rawWindows.filter((w) => !w.hasFraction);
+      const targetWin =
         (mResetTime
-          ? rawWindows.find(
+          ? missingWindows.find(
               (w) =>
                 w.resetTime &&
                 Math.abs(Date.parse(w.resetTime) - mResetMs) <= 120_000,
             )
           : undefined) ??
         (mClass
-          ? rawWindows.find(
+          ? missingWindows.find(
               (w) =>
                 w.window === mClass ||
                 (mClass === "weekly" && (w.window === "weekly" || w.window === "7d")),
             )
-          : undefined);
+          : undefined) ??
+        missingWindows[missingWindows.length - 1];
 
-      const minSummaryFraction = Math.min(...rawWindows.map((w) => w.fraction));
-      if (!targetWin && mFraction < minSummaryFraction) {
-        targetWin = rawWindows[rawWindows.length - 1];
-      }
-
-      if (targetWin && mFraction < targetWin.fraction) {
+      if (targetWin && typeof modelMin.quotaInfo.remainingFraction === "number") {
         targetWin.fraction = mFraction;
+        targetWin.hasFraction = true;
         if (!targetWin.resetTime && mResetTime) {
           targetWin.resetTime = mResetTime;
           hasReportedReset = true;
         }
-        if (modelMin.quotaInfo.remainingFraction === undefined) {
-          hasUnknownFraction = true;
-        }
+        hasUnknownFraction = rawWindows.some((w) => !w.hasFraction && Boolean(w.resetTime));
       }
     }
   }
@@ -1017,19 +1016,18 @@ export async function fetchProviderQuota(
           (q as { providerId?: string }).providerId === "google-antigravity",
       )
       .map((q) => {
+        const logNow = Date.now();
         if (q.windows?.length) {
           const parts = q.windows.map((w) => {
             const rem = w.resetTime
-              ? `${Math.round((new Date(w.resetTime).getTime() - Date.now()) / 60000)}m`
+              ? formatQuotaResetRemaining(w.resetTime, logNow)
               : "fresh";
             return `${w.window}:${w.percentRemaining}%/${rem}`;
           });
           return `[${q.modelKey}: ${parts.join(", ")}]`;
         }
         const remain = q.resetTime
-          ? Math.round(
-              (new Date(q.resetTime).getTime() - Date.now()) / 60000,
-            ) + "m"
+          ? formatQuotaResetRemaining(q.resetTime, logNow)
           : "no_reset";
         return `[${q.modelKey}: ${q.timerType} ${q.percentRemaining}% in ${remain}]`;
       })
