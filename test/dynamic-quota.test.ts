@@ -540,4 +540,224 @@ describe("dynamic Google quota groups and windows", () => {
     assert.equal(parseGoogleQuotaSummaryResponse({ groups: [] }), null);
     assert.equal(parseGoogleQuotaSummaryResponse({ groups: [{ displayName: "Bad", buckets: [{ remainingFraction: 2 }] }] }), null);
   });
+
+  it("does not fold custom dynamic pool cooldowns (gemini-4-argon) into parent gemini across polls and restart", async () => {
+    const now = Date.now();
+    const reset5h = new Date(now + 2.5 * H).toISOString();
+    const resetWeekly = new Date(now + 6 * D).toISOString();
+    const resetArgon = new Date(now + 4 * D).toISOString();
+    const resetArgonMs = Date.parse(resetArgon);
+
+    const proAccount = makeAccount("pro-argon-cd@example.com", "proj-pro", "pro");
+    const siblingAccount = makeAccount("sibling-poll@example.com", "proj-sib", "pro");
+    const config: Config = {
+      proxyPort: 0,
+      requestsPerRotation: 5,
+      rotateOnQuotaDrop: 20,
+      quotaPollIntervalMs: 300_000,
+      accounts: [proAccount.config, siblingAccount.config],
+    };
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      const auth = new Headers(init?.headers).get("authorization") ?? "";
+      const isPro = auth.includes("access-pro");
+      if (url.includes("retrieveUserQuotaSummary")) {
+        const body: GoogleQuotaSummaryResponse = isPro
+          ? {
+              groups: [
+                {
+                  displayName: "Gemini Models",
+                  description: "Models within this group: Gemini 4 Neon, Gemini 4 Hydrogen, Gemini 3.8 Flash",
+                  buckets: [
+                    { bucketId: "gemini-5h", window: "5h", remainingFraction: 0.72, resetTime: reset5h },
+                    { bucketId: "gemini-weekly", window: "weekly", remainingFraction: 0.91, resetTime: resetWeekly },
+                  ],
+                },
+                {
+                  displayName: "Gemini 4 Argon",
+                  description: "For paid Pro plans, Argon quota is separate.",
+                  buckets: [
+                    { bucketId: "gemini-argon-wtu-weekly", window: "weekly", remainingFraction: 0, resetTime: resetArgon },
+                  ],
+                },
+              ],
+            }
+          : {
+              groups: [
+                {
+                  displayName: "Gemini Models",
+                  description: "Models within this group: Gemini 3.8 Flash",
+                  buckets: [
+                    { bucketId: "gemini-5h", window: "5h", remainingFraction: 1 },
+                  ],
+                },
+              ],
+            };
+        return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      const modelsBody: GoogleQuotaResponse = isPro
+        ? {
+            models: {
+              "gemini-4-hydrogen-xhigh": { displayName: "Gemini 4 Hydrogen (XHigh)", quotaInfo: { remainingFraction: 0.72, resetTime: reset5h } },
+              "gemini-4-hydrogen-high": { displayName: "Gemini 4 Hydrogen (High)", quotaInfo: { remainingFraction: 0.72, resetTime: reset5h } },
+              "gemini-4-argon-high": { displayName: "Gemini 4 Argon (High)", quotaInfo: { remainingFraction: 0, resetTime: resetArgon } },
+            },
+          }
+        : {
+            models: {
+              "gemini-3.8-flash-high": { displayName: "Gemini 3.8 Flash (High)", quotaInfo: { remainingFraction: 1 } },
+              "gemini-4-hydrogen-disabled": { displayName: "Gemini 4 Hydrogen", quotaInfo: { remainingFraction: 1 } },
+            },
+          };
+      return new Response(JSON.stringify(modelsBody), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+
+    let rotator: InstanceType<typeof AccountRotator> | undefined;
+    let reloaded: InstanceType<typeof AccountRotator> | undefined;
+    try {
+      rotator = new AccountRotator(config);
+      rotator.stopQuotaPolling();
+      const internal = rotator as unknown as {
+        accounts: AccountRuntime[];
+        getModelQuota: (acc: AccountRuntime, model: string) => number;
+      };
+      internal.accounts[0].accessToken = "access-pro";
+      internal.accounts[0].tokenExpires = now + H;
+      internal.accounts[1].accessToken = "access-sib";
+      internal.accounts[1].tokenExpires = now + H;
+
+      // Poll Pro (exhausted gemini-4-argon, healthy gemini), then poll sibling
+      // (which runs migratePersistedQuotaStateKeys() across all accounts).
+      await rotator.pollAccountQuota(internal.accounts[0]);
+      await rotator.pollAccountQuota(internal.accounts[1]);
+
+      assert.equal(internal.accounts[0].cooldownsByModel["gemini-4-argon"], resetArgonMs);
+      assert.equal(internal.accounts[0].cooldownsByModel.gemini, undefined);
+      assert.equal(internal.getModelQuota(internal.accounts[0], "gemini-4-argon"), 0);
+      assert.equal(internal.getModelQuota(internal.accounts[0], "gemini"), 72);
+
+      // Hydrogen (in gemini pool) must stay routable; Argon must stay blocked.
+      const pickedHydrogen = await rotator.rotateModel("gemini-4-hydrogen-xhigh", now, -1, false);
+      assert.equal(pickedHydrogen?.config.email, "pro-argon-cd@example.com");
+      const pickedArgon = await rotator.rotateModel("gemini-4-argon-high", now, -1, false);
+      assert.equal(pickedArgon, null);
+
+      // Persist & restart: gemini-4-argon cooldown must remain isolated after loadState().
+      await rotator.saveState();
+      dynamicCatalog.reset();
+      reloaded = new AccountRotator(config);
+      reloaded.stopQuotaPolling();
+      const reloadedAccounts = (reloaded as unknown as { accounts: AccountRuntime[] }).accounts;
+      assert.equal(reloadedAccounts[0].cooldownsByModel["gemini-4-argon"], resetArgonMs);
+      assert.equal(reloadedAccounts[0].cooldownsByModel.gemini, undefined);
+    } finally {
+      rotator?.stopQuotaPolling();
+      reloaded?.stopQuotaPolling();
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("self-heals stale/collapsed multi-day gemini cooldown when authoritative summary shows healthy rollover or sibling exhaustion", async () => {
+    const now = Date.now();
+    const staleDeadlineMs = now + 4 * D;
+    const staleDeadlineIso = new Date(staleDeadlineMs).toISOString();
+    const reset5h = new Date(now + 2.5 * H).toISOString();
+    const newWeeklyReset = new Date(now + 6.9 * D).toISOString();
+
+    const account = makeAccount("self-heal@example.com", "proj-heal", "pro");
+    const config: Config = {
+      proxyPort: 0,
+      requestsPerRotation: 5,
+      rotateOnQuotaDrop: 20,
+      quotaPollIntervalMs: 300_000,
+      accounts: [account.config],
+    };
+
+    let argonRemaining = 1;
+    let argonReset: string | undefined;
+    let geminiWeeklyReset = newWeeklyReset;
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input) => {
+      const url = String(input);
+      if (url.includes("retrieveUserQuotaSummary")) {
+        const body: GoogleQuotaSummaryResponse = {
+          groups: [
+            {
+              displayName: "Gemini Models",
+              description: "Models within this group: Gemini 4 Neon, Gemini 4 Hydrogen, Gemini 3.8 Flash",
+              buckets: [
+                { bucketId: "gemini-5h", window: "5h", remainingFraction: 0.72, resetTime: reset5h },
+                { bucketId: "gemini-weekly", window: "weekly", remainingFraction: 0.91, resetTime: geminiWeeklyReset },
+              ],
+            },
+            {
+              displayName: "Gemini 4 Argon",
+              description: "For paid Pro plans, Argon quota is separate.",
+              buckets: [
+                {
+                  bucketId: "gemini-argon-wtu-weekly",
+                  window: "weekly",
+                  remainingFraction: argonRemaining,
+                  ...(argonReset ? { resetTime: argonReset } : {}),
+                },
+              ],
+            },
+          ],
+        };
+        return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      const modelsBody: GoogleQuotaResponse = {
+        models: {
+          "gemini-4-hydrogen-high": { displayName: "Gemini 4 Hydrogen (High)", quotaInfo: { remainingFraction: 0.72, resetTime: reset5h } },
+          "gemini-4-argon-high": { displayName: "Gemini 4 Argon (High)", quotaInfo: { remainingFraction: argonRemaining, ...(argonReset ? { resetTime: argonReset } : {}) } },
+        },
+      };
+      return new Response(JSON.stringify(modelsBody), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+
+    let rotator: InstanceType<typeof AccountRotator> | undefined;
+    try {
+      rotator = new AccountRotator(config);
+      rotator.stopQuotaPolling();
+      const runtime = (rotator as unknown as { accounts: AccountRuntime[] }).accounts[0];
+      runtime.accessToken = "access-heal";
+      runtime.tokenExpires = now + H;
+
+      // Scenario A: gemini has rolled over to a brand-new weekly cycle (91%, 6d 21h)
+      // while stale cooldown from 4d ago still sits on gemini, and Argon is already 100% fresh.
+      runtime.cooldownsByModel.gemini = staleDeadlineMs;
+      await rotator.pollAccountQuota(runtime);
+
+      assert.equal(runtime.cooldownsByModel.gemini, undefined);
+      const geminiRow = runtime.quota.find((q) => q.modelKey === "gemini")!;
+      assert.equal(geminiRow.percentRemaining, 72);
+      assert.equal(geminiRow.windows?.find((w) => w.window === "weekly")?.percentRemaining, 91);
+      const picked = await rotator.rotateModel("gemini-4-hydrogen-high", now, -1, false);
+      assert.equal(picked?.config.email, "self-heal@example.com");
+
+      // Scenario B: gemini weekly matches a valid 429 cooldown (same resetTime within 5m) -> MUST preserve cooldown.
+      geminiWeeklyReset = staleDeadlineIso;
+      runtime.cooldownsByModel.gemini = staleDeadlineMs;
+      await rotator.pollAccountQuota(runtime);
+      assert.equal(runtime.cooldownsByModel.gemini, staleDeadlineMs);
+      assert.equal(runtime.quota.find((q) => q.modelKey === "gemini")?.percentRemaining, 0);
+
+      // Scenario C: Argon is exhausted at staleDeadlineIso while gemini is healthy with an earlier reset -> migrate off gemini to gemini-4-argon.
+      argonRemaining = 0;
+      argonReset = staleDeadlineIso;
+      geminiWeeklyReset = new Date(now + 3 * D).toISOString();
+      runtime.cooldownsByModel.gemini = staleDeadlineMs;
+      await rotator.pollAccountQuota(runtime);
+      assert.equal(runtime.cooldownsByModel.gemini, undefined);
+      assert.equal(runtime.cooldownsByModel["gemini-4-argon"], staleDeadlineMs);
+      assert.equal(runtime.quota.find((q) => q.modelKey === "gemini")?.percentRemaining, 72);
+      assert.equal(runtime.quota.find((q) => q.modelKey === "gemini-4-argon")?.percentRemaining, 0);
+    } finally {
+      rotator?.stopQuotaPolling();
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
