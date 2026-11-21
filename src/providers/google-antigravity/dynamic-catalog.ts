@@ -751,11 +751,12 @@ export class DynamicModelRegistry {
 
   getModelsForQuotaPool(quotaPool: string, accountId?: string): DynamicModelEntry[] {
     const targetPool = quotaPool.trim().toLowerCase();
-    const scoped = accountId ? this.accountModels.get(accountKey(accountId)) : undefined;
-    const poolModels = scoped
-      ? Array.from(scoped.values()).filter((entry) => entry.quotaPool === targetPool)
-      : [];
-    if (poolModels.length > 0) return poolModels;
+    if (accountId) {
+      const scoped = this.accountModels.get(accountKey(accountId));
+      return scoped
+        ? Array.from(scoped.values()).filter((entry) => entry.quotaPool === targetPool)
+        : [];
+    }
     return this.getAllModels().filter((entry) => entry.quotaPool === targetPool);
   }
 

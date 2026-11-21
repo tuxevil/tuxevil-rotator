@@ -222,6 +222,8 @@ interface AccountRequestWaiter {
 // Reverse map: upstream model → the quota pool key it primarily represents (for deduplication).
 const QUOTA_POOL_FOR_KICKSTART_MODEL: Record<string, string> = {
   "gpt-oss-120b-medium": "claude",
+  "gemini-3.8-flash-tiered": "gemini",
+  "gemini-3.8-flash": "gemini",
   "gemini-3-flash": "gemini",
   "gpt-5.6-luna": CODEX_QUOTA_MODEL_KEY,
   // Legacy manual kickstart compatibility. New Ollama quota polling/routes
@@ -1374,20 +1376,30 @@ export class AccountRotator {
     if (!hasCredential(account.config, providerId)) return null;
 
     const adapter = getProviderAdapter(providerId);
-    let upstreamModel: string | undefined;
-    if (providerId === DEFAULT_PROVIDER && !QUOTA_MODEL_KEYS[poolKey]) {
+    const defaultKickstartModel = adapter.getKickstartModelForPool(poolKey);
+    if (!defaultKickstartModel) return null;
+    const providerOff = isProviderTurnedOff(this.getConfig(), providerId);
+    let upstreamModel = defaultKickstartModel;
+
+    if (providerId === DEFAULT_PROVIDER) {
+      const defaultOff = !providerOff && isProviderModelOff(this, providerId, defaultKickstartModel);
       const accountCandidates = dynamicCatalog
         .getModelsForQuotaPool(poolKey, getAccountIdentity(account))
         .filter((entry) => !entry.id.toLowerCase().endsWith("-disabled"));
-      if (accountCandidates.length > 0) {
-        const preferred = accountCandidates.find((entry) =>
+      if (accountCandidates.length > 0 && (defaultOff || !QUOTA_MODEL_KEYS[poolKey])) {
+        const activeCandidates = providerOff || !defaultOff
+          ? accountCandidates
+          : accountCandidates.filter(
+              (entry) => !isProviderModelOff(this, providerId, entry.id),
+            );
+        if (activeCandidates.length === 0) return null;
+        const preferred = activeCandidates.find((entry) =>
           /(?:^|-)(?:low|lite|flash|medium)$/i.test(entry.id),
         );
-        upstreamModel = (preferred ?? accountCandidates[0]).id;
+        upstreamModel = (preferred ?? activeCandidates[0]).id;
       }
     }
-    upstreamModel ??= adapter.getKickstartModelForPool(poolKey);
-    if (!upstreamModel) return null;
+
     return { poolKey, providerId, adapter, upstreamModel };
   }
 
@@ -5364,11 +5376,11 @@ export class AccountRotator {
     if (response.status === 429 || response.status === 401 || response.status === 403) {
       errorText = await response.text().catch(() => "");
     } else {
-      // Consume and discard the response body to free the connection.
+      // Consume successful responses so the provider receives a complete request.
       try {
-        await response.body?.cancel();
+        await response.arrayBuffer();
       } catch {
-        // ignore
+        // The status is still handled below; body-drain failures are non-fatal.
       }
     }
 
