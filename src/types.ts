@@ -1204,7 +1204,7 @@ export const ANTIGRAVITY_ENDPOINTS = [
 // from QUOTA_MODEL_KEYS (i.e. "claude" or "gemini"), not an altKey/request model name.
 export const KICKSTART_MODEL_FOR_QUOTA_POOL: Record<string, string> = {
   "claude": "gpt-oss-120b-medium",
-  "gemini": "gemini-3-flash",
+  "gemini": "gemini-3.8-flash-tiered",
 };
 
 export const QUOTA_API_URL =

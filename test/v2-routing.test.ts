@@ -395,8 +395,8 @@ describe("v2 routing and status", () => {
         "gemini",
       );
       assert.equal(result.ok, true);
-      assert.equal(result.upstreamModel, "gemini-3-flash");
-      assert.equal(requestBody?.model, "gemini-3-flash");
+      assert.equal(result.upstreamModel, "gemini-3.8-flash-tiered");
+      assert.equal(requestBody?.model, "gemini-3.8-flash-tiered");
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -452,7 +452,7 @@ describe("v2 routing and status", () => {
 
       const resGemini = await rotator.kickstartTimerForAccount("a@example.com", "gemini");
       assert.equal(resGemini.ok, true);
-      assert.equal(resGemini.upstreamModel, "gemini-3-flash");
+      assert.equal(resGemini.upstreamModel, "gemini-3.8-flash-tiered");
       assert.equal(quotaPolls, 1, "a direct kickstart must refresh quota immediately");
 
       quotaPolls = 0;
@@ -468,9 +468,9 @@ describe("v2 routing and status", () => {
       assert.equal(allRes.results.length, 2);
       assert.deepEqual(
         allRes.results.map((r: any) => r.upstreamModel).sort(),
-        ["gemini-3-flash", "gpt-oss-120b-medium"].sort(),
+        ["gemini-3.8-flash-tiered", "gpt-oss-120b-medium"].sort(),
       );
-      assert.deepEqual(requestedModels.sort(), ["gemini-3-flash", "gpt-oss-120b-medium"].sort());
+      assert.deepEqual(requestedModels.sort(), ["gemini-3.8-flash-tiered", "gpt-oss-120b-medium"].sort());
       assert.equal(quotaPolls, 1, "bulk kickstart must perform one account repoll");
     } finally {
       globalThis.fetch = originalFetch;
@@ -668,7 +668,7 @@ describe("v2 routing and status", () => {
 
       assert.deepEqual(
         requestedModels.sort(),
-        ["gemini-3-flash", "gpt-oss-120b-medium"].sort(),
+        ["gemini-3.8-flash-tiered", "gpt-oss-120b-medium"].sort(),
         "each upstream should be warmed exactly once",
       );
       assert.equal(pollCalls, 2, "one initial poll plus one post-warmup repoll");
