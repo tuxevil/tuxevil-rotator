@@ -55,6 +55,7 @@ Originally built as a multi-account rotator for Google Antigravity. It now gener
 
 ## Current Model Update
 
+- **v4.4.4: Gemini image output**: Deliver generated images through OpenAI Chat, OpenAI Responses, and Anthropic Messages, with support for editing an image on a follow-up turn. Native Gemini responses return structured image parts. ([Release notes](https://github.com/tuxevil/tuxevil-rotator/releases/tag/v4.4.4))
 - **v4.4.3: Account model access and routing visibility**: Enforce provider plan eligibility for direct requests, selection, and retries across Antigravity and Codex. Admission rejections now appear in request history, and cooldown estimates use accounts eligible for the requested model. ([Release notes](https://github.com/tuxevil/tuxevil-rotator/releases/tag/v4.4.3))
 
 - **v4.4.2: Model access dashboard**: A redesigned Model access panel with live checks, account evidence, clearer rules and safer plan saving. Thanks to [@CyR1en](https://github.com/CyR1en) for [PR #49](https://github.com/tuxevil/tuxevil-rotator/pull/49). ([Release notes](https://github.com/tuxevil/tuxevil-rotator/releases/tag/v4.4.2))
