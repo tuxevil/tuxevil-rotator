@@ -21,6 +21,7 @@ delete process.env.TUXEVIL_ROTATOR_DATABASE_URL;
 delete process.env.PI_ROTATOR_DATABASE_URL;
 
 const { getAccountIdentity, getCredentialGeneration } = await import("../src/account-identity.js");
+const { formatQuotaResetRemaining } = await import("../src/providers/credential-helpers.js");
 const { initDb, closeDb, setCachedState } = await import("../src/db-store.js");
 const { dynamicCatalog } = await import("../src/providers/google-antigravity/dynamic-catalog.js");
 const {
@@ -86,7 +87,7 @@ describe("dynamic Google quota groups and windows", () => {
     }
   });
 
-  it("separates Argon, Gemini Models, and Claude/GPT groups with multi-window tracking and reconciles summary lag", () => {
+  it("separates Argon, Gemini Models, and Claude/GPT groups with multi-window tracking and trusts authoritative summary", () => {
     const now = Date.parse("2026-11-20T20:00:00Z");
     const reset5h = "2026-11-21T00:15:00Z";
     const resetWeekly = "2026-11-25T12:00:00Z";
@@ -136,7 +137,7 @@ describe("dynamic Google quota groups and windows", () => {
           displayName: "Claude and GPT models",
           description: "Models within this group: Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B",
           buckets: [
-            // Simulate summary backend reporting 1.0 while fetchAvailableModels already reports 0.4977
+            // Authoritative summary reports 1.0 even while legacy fetchAvailableModels still carries stale 0.4977
             { bucketId: "3p-weekly", displayName: "Weekly Limit Remaining", window: "weekly", remainingFraction: 1 },
             { bucketId: "3p-5h", displayName: "Five Hour Limit Remaining", window: "5h", remainingFraction: 1 },
           ],
@@ -171,14 +172,33 @@ describe("dynamic Google quota groups and windows", () => {
       ["weekly", 39, true],
     ]);
 
+    // Authoritative 1.0 from retrieveUserQuotaSummary must NOT be overwritten by stale fetchAvailableModels 0.4977
     const claude = quotas.find((q) => q.modelKey === "claude")!;
-    assert.equal(claude.percentRemaining, 50);
-    assert.equal(claude.timerType, "7d");
-    assert.equal(claude.resetTime, resetClaude);
+    assert.equal(claude.percentRemaining, 100);
+    assert.equal(claude.timerType, "fresh");
+    assert.equal(claude.resetTime, null);
     assert.deepEqual(claude.windows?.map((w) => [w.window, w.percentRemaining, w.active]), [
       ["5h", 100, false],
-      ["weekly", 50, true],
+      ["weekly", 100, false],
     ]);
+
+    // When a summary bucket omits remainingFraction, fall back to fetchAvailableModels
+    const partialSummary: GoogleQuotaSummaryResponse = {
+      groups: [
+        {
+          displayName: "Claude and GPT models",
+          description: "Models within this group: Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B",
+          buckets: [
+            { bucketId: "3p-weekly", displayName: "Weekly Limit Remaining", window: "weekly" },
+            { bucketId: "3p-5h", displayName: "Five Hour Limit Remaining", window: "5h", remainingFraction: 1 },
+          ],
+        },
+      ],
+    };
+    const partialClaude = extractQuotas(availableModels, [], partialSummary, now).find((q) => q.modelKey === "claude")!;
+    assert.equal(partialClaude.percentRemaining, 50);
+    assert.equal(partialClaude.timerType, "7d");
+    assert.equal(partialClaude.resetTime, resetClaude);
 
     const argon = quotas.find((q) => q.modelKey === "gemini-4-argon")!;
     assert.equal(argon.displayName, "Gemini 4 Argon");
@@ -757,6 +777,70 @@ describe("dynamic Google quota groups and windows", () => {
       assert.equal(runtime.quota.find((q) => q.modelKey === "gemini-4-argon")?.percentRemaining, 0);
     } finally {
       rotator?.stopQuotaPolling();
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("formats RAW POLL reset remaining durations in days, hours, and minutes depending on magnitude", async () => {
+    const base = Date.parse("2026-11-21T18:00:00Z");
+    const min = 60_000;
+    assert.equal(formatQuotaResetRemaining(new Date(base - 5 * min).toISOString(), base), "0m");
+    assert.equal(formatQuotaResetRemaining(new Date(base + 45 * min).toISOString(), base), "45m");
+    assert.equal(formatQuotaResetRemaining(new Date(base + 60 * min).toISOString(), base), "1h");
+    assert.equal(formatQuotaResetRemaining(new Date(base + 128 * min).toISOString(), base), "2h 8m");
+    assert.equal(formatQuotaResetRemaining(new Date(base + 1440 * min).toISOString(), base), "1d");
+    assert.equal(formatQuotaResetRemaining(new Date(base + 1445 * min).toISOString(), base), "1d 5m");
+    assert.equal(formatQuotaResetRemaining(new Date(base + 1500 * min).toISOString(), base), "1d 1h");
+    assert.equal(formatQuotaResetRemaining(new Date(base + 6176 * min).toISOString(), base), "4d 6h 56m");
+    assert.equal(formatQuotaResetRemaining(new Date(base + 9908 * min).toISOString(), base), "6d 21h 8m");
+    assert.equal(formatQuotaResetRemaining("not-a-date", base), "unknown");
+
+    const now = Date.now();
+    const account = makeAccount("raw-poll-fmt@example.com");
+    const accountId = getAccountIdentity(account);
+    const generation = getCredentialGeneration(account, "google-antigravity");
+    dynamicCatalog.retainAccounts([{ id: accountId, generation }]);
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input) => {
+      const url = String(input);
+      if (url.includes("retrieveUserQuotaSummary")) {
+        const body: GoogleQuotaSummaryResponse = {
+          groups: [
+            {
+              displayName: "Gemini Models",
+              description: "Models within this group: Gemini 4 Hydrogen",
+              buckets: [
+                { bucketId: "gemini-5h", window: "5h", remainingFraction: 0.45, resetTime: new Date(now + 128 * min).toISOString() },
+                { bucketId: "gemini-weekly", window: "weekly", remainingFraction: 0.82, resetTime: new Date(now + 9908 * min).toISOString() },
+              ],
+            },
+            {
+              displayName: "Claude and GPT models",
+              description: "Models within this group: Claude Opus 5.5",
+              buckets: [
+                { bucketId: "3p-5h", window: "5h", remainingFraction: 1 },
+                { bucketId: "3p-weekly", window: "weekly", remainingFraction: 1 },
+              ],
+            },
+          ],
+        };
+        return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        models: {
+          "gemini-4-hydrogen-high": { displayName: "Gemini 4 Hydrogen (High)", quotaInfo: { remainingFraction: 0.45 } },
+          "claude-opus-5-5-high": { displayName: "Claude Opus 5.5 (High)", quotaInfo: { remainingFraction: 0.4977, resetTime: new Date(now + 6176 * min).toISOString() } },
+        },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      await fetchProviderQuota(account, { log: () => {}, markFlagged: () => {}, reportQuotaPollFlag: () => {} });
+      const rawLine = account.lastPollByProvider?.["google-antigravity"] ?? "";
+      assert.match(rawLine, /\[gemini: 5h:45%\/2h [78]m, weekly:82%\/6d 21h [78]m\]/);
+      assert.match(rawLine, /\[claude: 5h:100%\/fresh, weekly:100%\/fresh\]/);
+    } finally {
       globalThis.fetch = originalFetch;
     }
   });
