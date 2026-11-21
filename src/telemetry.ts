@@ -245,7 +245,7 @@ export interface FlagEventData {
 
 	// What was happening
 	model: string;                           // model key being requested
-	timerType: "fresh" | "5h" | "7d" | "monthly" | "unknown";  // quota window state
+	timerType: "fresh" | "5h" | "7d" | "monthly" | "unknown" | (string & {});  // quota window state
 	accountQuotaPercent: number;             // quota % at time of flag (-1 if unknown)
 
 	// Account state (anonymous — no email)

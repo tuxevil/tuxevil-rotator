@@ -169,10 +169,18 @@ export const googleAntigravityAdapter: ProviderAdapter = {
   createStreamAccumulator: createGoogleStreamAccumulator,
 
   getKickstartModelForPool(quotaModelKey: string): string | undefined {
-    return (
-      KICKSTART_MODEL_FOR_QUOTA_POOL[quotaModelKey] ??
-      KICKSTART_MODEL_FOR_QUOTA_POOL[resolveQuotaModelKey(quotaModelKey) ?? ""]
-    );
+    const known = KICKSTART_MODEL_FOR_QUOTA_POOL[quotaModelKey];
+    if (known) return known;
+    const dynamicCandidates = dynamicCatalog
+      .getModelsForQuotaPool(quotaModelKey)
+      .filter((entry) => !entry.id.toLowerCase().endsWith("-disabled"));
+    if (dynamicCandidates.length > 0) {
+      const preferred = dynamicCandidates.find((entry) =>
+        /(?:^|-)(?:low|lite|flash|medium)$/i.test(entry.id),
+      );
+      return (preferred ?? dynamicCandidates[0]).id;
+    }
+    return KICKSTART_MODEL_FOR_QUOTA_POOL[resolveQuotaModelKey(quotaModelKey) ?? ""];
   },
 
   listModels(): ProviderModel[] {

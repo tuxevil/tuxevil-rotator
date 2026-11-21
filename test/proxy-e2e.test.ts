@@ -899,10 +899,20 @@ describe("native Code Assist passthrough", () => {
 		};
 		let forwardedProject: unknown;
 		let fetchCount = 0;
+		let summaryCount = 0;
 		const originalFetch = globalThis.fetch;
-		globalThis.fetch = (async (_input, init) => {
-			fetchCount++;
+		globalThis.fetch = (async (input, init) => {
+			const url = String(input);
 			forwardedProject = JSON.parse(String(init?.body)).project;
+			assert.equal(forwardedProject, "legacy-quota-project");
+			if (url.includes("retrieveUserQuotaSummary")) {
+				summaryCount++;
+				return new Response(JSON.stringify({ groups: [] }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			fetchCount++;
 			return new Response(JSON.stringify({
 				models: {
 					"gemini-quota-discovered": { quotaInfo: { remainingFraction: 0.5 } },
@@ -921,6 +931,7 @@ describe("native Code Assist passthrough", () => {
 			});
 			assert.equal(forwardedProject, "legacy-quota-project");
 			assert.equal(fetchCount, 1);
+			assert.equal(summaryCount, 1);
 			assert.ok(dynamicCatalog.getModel("gemini-quota-discovered"));
 			assert.equal(
 				dynamicCatalog.hasModelForAccount(

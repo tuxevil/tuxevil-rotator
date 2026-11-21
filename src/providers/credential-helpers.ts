@@ -115,6 +115,18 @@ export function isOllamaQuotaPoolKey(poolKey: string): boolean {
     poolKey === "weekly";
 }
 
+export function isSafePoolKey(poolKey: unknown): poolKey is string {
+  return (
+    typeof poolKey === "string" &&
+    poolKey.length > 0 &&
+    poolKey.length <= 64 &&
+    /^[a-z0-9][a-z0-9._:-]*$/.test(poolKey) &&
+    poolKey !== "__proto__" &&
+    poolKey !== "constructor" &&
+    poolKey !== "prototype"
+  );
+}
+
 export function getProviderIdForPoolKey(poolKey: string): string {
   if (poolKey.startsWith("codex:") || poolKey.startsWith("openai-codex")) return "openai-codex";
   if (poolKey.startsWith("opencode-zen:") || poolKey === "opencode-zen") return "opencode-zen";

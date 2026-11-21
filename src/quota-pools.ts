@@ -34,6 +34,15 @@ export interface PoolMember {
   diagnostic: DashboardRoutingAccount | null;
 }
 
+export interface PoolWindowSummary {
+  window: string;
+  label: string;
+  remainingPercent: number;
+  nextResetAt: number | null;
+  accountsReporting: number;
+  durationMs?: number;
+}
+
 export interface ModelPool {
   key: string;
   /** Collision-safe observability identity; key remains the router's model key. */
@@ -55,6 +64,7 @@ export interface ModelPool {
   capacityBasis: "tier-estimate" | "included-credits" | "unknown";
   resetBasis: "reported" | "estimated" | "unknown";
   observedNextResetAt: number | null;
+  windows?: PoolWindowSummary[];
   name: string;
   provider: string;
   /** In-service accounts that carry this pool. */
@@ -145,9 +155,16 @@ export function buildPools(overview: DashboardOverview, now: number): ModelPool[
     }
   }
 
+  const dynamicCustomKeys = [...byKey.keys()]
+    .map((identity) => (JSON.parse(identity) as [string, string])[1])
+    .filter((poolKey) => !["claude", "gemini", "monthly", "weekly", "session", "openai-codex", "opencode-zen"].includes(poolKey))
+    .sort((a, b) => b.length - a.length);
+
   const burnByPool: Record<string, number> = {};
   for (const [model, requests] of Object.entries(overview.recentRequestsByModel || {})) {
-    const key = poolKeyForModel(model);
+    const lowerModel = model.toLowerCase();
+    const matchedCustom = dynamicCustomKeys.find((poolKey) => lowerModel.startsWith(poolKey));
+    const key = matchedCustom ?? poolKeyForModel(model);
     burnByPool[key] = (burnByPool[key] || 0) + requests;
   }
 
@@ -246,6 +263,63 @@ export function buildPools(overview: DashboardOverview, now: number): ModelPool[
     const observedNextResetAt = resetMembers.length ? Math.min(...resetMembers.map(({ quota }) =>
       Date.parse(quota.observation!.resetAt!))) : null;
     const selectedResets = resetMembers.filter(({ quota }) => Date.parse(quota.observation!.resetAt!) === observedNextResetAt);
+    const windowBuckets = new Map<
+      string,
+      {
+        label: string;
+        weighted: number;
+        weightTotal: number;
+        nextResetAt: number | null;
+        accountsReporting: number;
+        durationMs?: number;
+      }
+    >();
+    for (const member of pool.members) {
+      if (!member.quota.windows?.length) continue;
+      const weight = member.quota.credits?.allowanceUsd ?? tierWeight(member.account.tier);
+      const seenInMember = new Set<string>();
+      for (const win of member.quota.windows) {
+        if (win.disabled || seenInMember.has(win.window)) continue;
+        seenInMember.add(win.window);
+        let agg = windowBuckets.get(win.window);
+        if (!agg) {
+          agg = {
+            label: win.label,
+            weighted: 0,
+            weightTotal: 0,
+            nextResetAt: null,
+            accountsReporting: 0,
+            durationMs: win.durationMs,
+          };
+          windowBuckets.set(win.window, agg);
+        }
+        agg.weighted += Math.max(0, Math.min(100, win.percentRemaining)) * weight;
+        agg.weightTotal += weight;
+        agg.accountsReporting += 1;
+        if (agg.durationMs === undefined && win.durationMs !== undefined) {
+          agg.durationMs = win.durationMs;
+        }
+        if (win.active && win.resetTime) {
+          const rMs = Date.parse(win.resetTime);
+          if (Number.isFinite(rMs) && rMs > now && (agg.nextResetAt === null || rMs < agg.nextResetAt)) {
+            agg.nextResetAt = rMs;
+          }
+        }
+      }
+    }
+    const aggregatedWindows: PoolWindowSummary[] | undefined =
+      windowBuckets.size > 0
+        ? Array.from(windowBuckets.entries())
+            .sort((a, b) => (a[1].durationMs ?? Infinity) - (b[1].durationMs ?? Infinity))
+            .map(([winKey, agg]) => ({
+              window: winKey,
+              label: agg.label,
+              remainingPercent: agg.weightTotal > 0 ? Math.round(agg.weighted / agg.weightTotal) : 0,
+              nextResetAt: agg.nextResetAt,
+              accountsReporting: agg.accountsReporting,
+              ...(agg.durationMs !== undefined ? { durationMs: agg.durationMs } : {}),
+            }))
+        : undefined;
     const collision = [...byKey.keys()].filter((identity) => (JSON.parse(identity) as string[])[1] === key).length > 1;
     const eligibleNow = !diagnostics || collision || pool.members.some(member => !member.diagnostic) ? null : pool.members.filter(({ diagnostic }) =>
       diagnostic && !diagnostic.rejectedReason).length;
@@ -263,6 +337,7 @@ export function buildPools(overview: DashboardOverview, now: number): ModelPool[
       capacityBasis: !known ? "unknown" : credits ? "included-credits" : "tier-estimate",
       resetBasis: selectedResets.length === 0 ? "unknown" : selectedResets.some(({ quota }) => quota.observation!.resetSource === "estimated") ? "estimated" : selectedResets.every(({ quota }) => quota.observation!.resetSource === "reported") ? "reported" : "unknown",
       observedNextResetAt,
+      ...(aggregatedWindows ? { windows: aggregatedWindows } : {}),
       name: pool.name,
       provider: pool.provider,
       members: pool.members,
