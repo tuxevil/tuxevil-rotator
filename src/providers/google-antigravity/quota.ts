@@ -18,6 +18,7 @@ import {
   QUOTA_MODEL_KEYS,
   REQUEST_CLIENT_METADATA,
   REQUEST_GOOG_API_CLIENT,
+  resolveQuotaModelKey,
 } from "../../types.js";
 import { fetchWithRetry } from "../../fetch-with-retry.js";
 import {
@@ -913,6 +914,77 @@ export async function fetchProviderQuota(
           (q) => (q as { providerId?: string }).providerId === DEFAULT_PROVIDER &&
             !freshKeys.has(q.modelKey),
         );
+    const now = Date.now();
+    if (hasAuthoritativeSummary) {
+      // 1) Self-heal legacy/collapsed cooldowns: before dynamic pool separation,
+      // an exhausted custom group (e.g. "gemini-4-argon") could store its reset
+      // deadline under its parent family pool ("gemini"). When Google's summary
+      // separates that exhausted group while reporting the parent pool healthy,
+      // migrate that matching deadline off the parent pool so healthy sibling
+      // models (e.g. Hydrogen/Neon) are not locked out.
+      for (const customQuota of fresh) {
+        if (customQuota.percentRemaining !== 0 || !customQuota.resetTime) continue;
+        const parentPool = resolveQuotaModelKey(customQuota.modelKey);
+        if (!parentPool || parentPool === customQuota.modelKey) continue;
+        const customResetAt = Date.parse(customQuota.resetTime);
+        if (!Number.isFinite(customResetAt) || customResetAt <= now) continue;
+        const parentQuota = fresh.find((q) => q.modelKey === parentPool);
+        if (!parentQuota || parentQuota.percentRemaining <= 0) continue;
+        const parentCooldown = account.cooldownsByModel[parentPool];
+        if (
+          typeof parentCooldown === "number" &&
+          Math.abs(parentCooldown - customResetAt) <= 1000
+        ) {
+          delete account.cooldownsByModel[parentPool];
+          account.cooldownsByModel[customQuota.modelKey] = Math.max(
+            account.cooldownsByModel[customQuota.modelKey] ?? 0,
+            customResetAt,
+          );
+        }
+      }
+
+      // 2) Clear superseded multi-day (>= 6h) cooldowns when Google's
+      // authoritative summary reports the pool healthy (> 0%) with an active
+      // long window (e.g. weekly) whose reset time no longer matches the stored
+      // cooldown (e.g. quota rolled over to a new weekly cycle or was reset early).
+      for (const quota of fresh) {
+        if (quota.percentRemaining <= 0) continue;
+        const cooldownUntil = account.cooldownsByModel[quota.modelKey];
+        if (
+          typeof cooldownUntil !== "number" ||
+          !Number.isFinite(cooldownUntil) ||
+          cooldownUntil - now < SIX_HOURS_MS
+        ) {
+          continue;
+        }
+        const longWindow = quota.windows?.find(
+          (w) =>
+            !w.disabled &&
+            (w.window === "weekly" ||
+              w.window === "7d" ||
+              (w.durationMs !== undefined && w.durationMs >= SIX_HOURS_MS)),
+        );
+        if (!longWindow || longWindow.percentRemaining <= 0 || !longWindow.resetTime) {
+          continue;
+        }
+        const longResetAt = Date.parse(longWindow.resetTime);
+        if (
+          Number.isFinite(longResetAt) &&
+          longResetAt > now &&
+          Math.abs(longResetAt - cooldownUntil) > 5 * 60_000
+        ) {
+          delete account.cooldownsByModel[quota.modelKey];
+          for (const [modelKey, deadline] of Object.entries(account.cooldownsByModel)) {
+            if (
+              Math.abs(deadline - cooldownUntil) <= 1000 &&
+              dynamicCatalog.resolveQuotaPoolForAccount(accountId, modelKey) === quota.modelKey
+            ) {
+              delete account.cooldownsByModel[modelKey];
+            }
+          }
+        }
+      }
+    }
     for (const quota of [...previousGooglePools, ...fresh]) {
       if (
         freshKeys.has(quota.modelKey) &&
@@ -926,7 +998,7 @@ export async function fetchProviderQuota(
       applyActiveCooldown(
         quota,
         getActiveCooldownForPool(account, quota.modelKey),
-        Date.now(),
+        now,
       );
     }
     account.quota = sortQuotaPools([

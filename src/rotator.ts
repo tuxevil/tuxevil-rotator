@@ -798,10 +798,13 @@ export class AccountRotator {
   }
 
   private migratePersistedQuotaStateKeys(): void {
-    const foldDeadlines = (deadlines: Record<string, number>) => {
+    const foldDeadlines = (
+      deadlines: Record<string, number>,
+      resolveKey: (key: string) => string = (key) => this.resolveQuotaStateKey(key),
+    ) => {
       const folded: Record<string, number> = {};
       for (const [key, deadline] of Object.entries(deadlines)) {
-        const canonical = this.resolveQuotaStateKey(key);
+        const canonical = resolveKey(key);
         folded[canonical] = Math.max(folded[canonical] ?? 0, deadline);
       }
       return folded;
@@ -828,7 +831,9 @@ export class AccountRotator {
       modelKey: this.resolveQuotaStateKey(event.modelKey),
     }));
     for (const account of this.accounts) {
-      account.cooldownsByModel = foldDeadlines(account.cooldownsByModel);
+      account.cooldownsByModel = foldDeadlines(account.cooldownsByModel, (key) =>
+        this.resolveAccountQuotaStateKey(account, key),
+      );
     }
   }
 
@@ -1078,6 +1083,7 @@ export class AccountRotator {
   private async pollAccountQuotaOnce(account: AccountRuntime): Promise<boolean> {
     let quotaPublished = false;
     const snapshotRevision = dynamicCatalog.snapshotRevision;
+    const cooldownsBefore = JSON.stringify(account.cooldownsByModel);
     try {
       const quotaCtx: QuotaFetchContext = {
         log: (message) => this.log(message),
@@ -1134,6 +1140,9 @@ export class AccountRotator {
         account.cooldownsByModel[quota.modelKey] = resetAt;
         cooldownChanged = true;
       }
+    }
+    if (!cooldownChanged && JSON.stringify(account.cooldownsByModel) !== cooldownsBefore) {
+      cooldownChanged = true;
     }
     if (cooldownChanged || snapshotRevision !== dynamicCatalog.snapshotRevision) {
       this.scheduleStateSave();
@@ -1272,6 +1281,12 @@ export class AccountRotator {
         getProviderIdForPoolKey(dynamicForAccount) !== DEFAULT_PROVIDER)
     ) {
       return this.resolvePoolKey(account, dynamicForAccount);
+    }
+    if (
+      account.quota.some((q) => q.modelKey === modelKey) ||
+      this.isKnownDynamicPoolKey(modelKey, account)
+    ) {
+      return this.resolvePoolKey(account, modelKey);
     }
     const resolved =
       dynamicForAccount ??
@@ -1715,7 +1730,7 @@ export class AccountRotator {
     ignoreConcurrency = false,
   ): string | null {
     const projectId = this.getProjectIdForModel(account, modelKey);
-    const quotaStateKey = this.resolveQuotaStateKey(modelKey);
+    const quotaStateKey = this.resolveAccountQuotaStateKey(account, modelKey);
     if (this.isModelBreakerActive(quotaStateKey, now))
       return "model circuit breaker active";
     if (this.isProjectModelBreakerActive(projectId, quotaStateKey, now))
@@ -1805,12 +1820,7 @@ export class AccountRotator {
     const defaultCooldown = account.cooldownsByModel["__default__"] ?? 0;
     if (defaultCooldown > now)
       return { reason: "cooldown", detail: "default cooldown active" };
-    const accountCooldownKey = this.resolveAccountPoolKey(account, modelKey);
-    const stateCooldownKey = this.resolveQuotaStateKey(modelKey);
-    const modelCooldown = Math.max(
-      account.cooldownsByModel[accountCooldownKey] ?? 0,
-      account.cooldownsByModel[stateCooldownKey] ?? 0,
-    );
+    const modelCooldown = this.getAccountModelCooldown(account, modelKey);
     if (modelCooldown > now)
       return { reason: "cooldown", detail: "model cooldown active" };
     // Ollama Cloud quota pools impose no per-account
@@ -4084,8 +4094,7 @@ export class AccountRotator {
     if (account.invalidProviders?.[providerId]) return false;
     if (this.isProviderOffForAccount(account, providerId)) return false;
     if ((account.providerCooldowns?.[providerId] ?? 0) > now) return false;
-    const modelCooldown =
-      account.cooldownsByModel[this.resolveQuotaStateKey(modelKey)] ?? 0;
+    const modelCooldown = this.getAccountModelCooldown(account, modelKey);
     if (modelCooldown > now) return false;
     // Ollama Cloud quota pools impose no per-account concurrency
     // limit. Antigravity keeps it so long streams don't pile up on a
@@ -4283,10 +4292,50 @@ export class AccountRotator {
     );
   }
 
+  private isKnownDynamicPoolKey(modelKey: string, account?: AccountRuntime): boolean {
+    const normalized = modelKey.trim().toLowerCase();
+    if (!normalized) return false;
+    if (account && account.quota.some((q) => q.modelKey.toLowerCase() === normalized)) {
+      return true;
+    }
+    if (this.accounts.some((a) => a.quota.some((q) => q.modelKey.toLowerCase() === normalized))) {
+      return true;
+    }
+    return dynamicCatalog.hasQuotaPool(normalized, account ? getAccountIdentity(account) : undefined);
+  }
+
   private resolveQuotaStateKey(modelKey: string): string {
-    return dynamicCatalog.resolveQuotaPool(modelKey) ??
-      resolveQuotaModelKey(modelKey) ??
-      modelKey;
+    const normalized = modelKey.trim().toLowerCase();
+    const dynamicPool = dynamicCatalog.resolveQuotaPool(modelKey);
+    if (dynamicPool) return dynamicPool;
+    if (this.isKnownDynamicPoolKey(normalized)) return normalized;
+    return resolveQuotaModelKey(modelKey) ?? modelKey;
+  }
+
+  private resolveAccountQuotaStateKey(account: AccountRuntime, modelKey: string): string {
+    const normalized = modelKey.trim().toLowerCase();
+    const accountId = getAccountIdentity(account);
+    const accountPool = dynamicCatalog.resolveQuotaPoolForAccount(accountId, modelKey);
+    if (
+      accountPool &&
+      (account.quota.length === 0 ||
+        account.quota.some((q) => q.modelKey === accountPool) ||
+        getProviderIdForPoolKey(accountPool) !== DEFAULT_PROVIDER)
+    ) {
+      return accountPool;
+    }
+    if (this.isKnownDynamicPoolKey(normalized, account)) return normalized;
+    return this.resolveQuotaStateKey(modelKey);
+  }
+
+  private getAccountModelCooldown(account: AccountRuntime, modelKey: string): number {
+    const accountPoolKey = this.resolveAccountPoolKey(account, modelKey);
+    const accountStateKey = this.resolveAccountQuotaStateKey(account, modelKey);
+    return Math.max(
+      account.cooldownsByModel[accountPoolKey] ?? 0,
+      account.cooldownsByModel[accountStateKey] ?? 0,
+      account.cooldownsByModel[modelKey] ?? 0,
+    );
   }
 
   /** Map a candidate key (model name or pool key) to the account's pool key. */
@@ -4326,6 +4375,7 @@ export class AccountRotator {
     if (
       Object.values(QUOTA_POOL_FOR_KICKSTART_MODEL).includes(key) ||
       account.quota.some((quota) => quota.modelKey === key) ||
+      this.isKnownDynamicPoolKey(key, account) ||
       getProviderIdForPoolKey(key) !== DEFAULT_PROVIDER
     ) {
       return this.resolvePoolKey(account, key);
@@ -4393,17 +4443,18 @@ export class AccountRotator {
       if (providerCooldown > now) retryTimes.push(providerCooldown);
       if (this.isDailySafetyStopped(account, now))
         retryTimes.push(dailyResetAt);
-      const accountPoolKey = this.resolveAccountPoolKey(account, modelKey);
+      const accountQuotaStateKey = this.resolveAccountQuotaStateKey(account, modelKey);
+      const accountModelBreaker = this.modelBreakers[accountQuotaStateKey] ?? 0;
+      if (accountModelBreaker > now) retryTimes.push(accountModelBreaker);
       const cooldown = Math.max(
-        account.cooldownsByModel[accountPoolKey] ?? 0,
-        account.cooldownsByModel[quotaStateKey] ?? 0,
+        this.getAccountModelCooldown(account, modelKey),
         account.cooldownsByModel.__default__ ?? 0,
       );
       if (cooldown > now) retryTimes.push(cooldown);
       const projectId = this.getProjectIdForModel(account, modelKey);
       if (projectId) {
         const projectBreaker =
-          this.projectModelBreakers[projectModelKey(projectId, quotaStateKey)] ?? 0;
+          this.projectModelBreakers[projectModelKey(projectId, accountQuotaStateKey)] ?? 0;
         if (projectBreaker > now) retryTimes.push(projectBreaker);
       }
       if ((this.config.routingPolicy || "timer-first") === "hybrid") {

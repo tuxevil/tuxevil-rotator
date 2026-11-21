@@ -727,6 +727,28 @@ export class DynamicModelRegistry {
       this.resolveQuotaPool(lowerId);
   }
 
+  hasQuotaPool(poolKey: string, accountId?: string): boolean {
+    const targetPool = poolKey.trim().toLowerCase();
+    if (!targetPool) return false;
+    if (accountId) {
+      const scoped = this.accountModels.get(accountKey(accountId));
+      if (scoped) {
+        for (const entry of scoped.values()) {
+          if (entry.quotaPool === targetPool) return true;
+        }
+      }
+    }
+    for (const accountCatalog of this.accountModels.values()) {
+      for (const entry of accountCatalog.values()) {
+        if (entry.quotaPool === targetPool) return true;
+      }
+    }
+    for (const entry of this.discoveredModels.values()) {
+      if (entry.quotaPool === targetPool) return true;
+    }
+    return false;
+  }
+
   getModelsForQuotaPool(quotaPool: string, accountId?: string): DynamicModelEntry[] {
     const targetPool = quotaPool.trim().toLowerCase();
     const scoped = accountId ? this.accountModels.get(accountKey(accountId)) : undefined;
