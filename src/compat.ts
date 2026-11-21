@@ -83,7 +83,6 @@ import {
   saveResponsesEntry,
   toolArgumentsToObject,
   geminiResponsePartToCompat,
-  modelTextToGeminiParts,
 } from "./providers/google-antigravity/translators.js";
 import {
   openAIToOllamaBody,
@@ -531,6 +530,7 @@ export function parseOpenAiJson(raw: string): CompatCompletion {
 }
 
 export function parseAntigravitySse(raw: string): CompatCompletion {
+  const geminiParts: Record<string, unknown>[] = [];
   let text = "";
   let thinkingText = "";
   let inputTokens = 0;
@@ -570,6 +570,9 @@ export function parseAntigravitySse(raw: string): CompatCompletion {
         for (const rawPart of candidate.content.parts) {
           const part = geminiResponsePartToCompat(rawPart);
           if (!part) continue;
+          if (isRecord(rawPart) && rawPart.thought !== true && typeof part.text === "string") {
+            geminiParts.push(rawPart);
+          }
           if (typeof part.text === "string") {
             // Route thought blocks separately from normal text
             if (part.thought === true) {
@@ -659,6 +662,7 @@ export function parseAntigravitySse(raw: string): CompatCompletion {
     toolCallsMap.size > 0 ? [...toolCallsMap.values()] : undefined;
   return {
     text: parsedText,
+    ...(geminiParts.length ? { geminiParts } : {}),
     thinkingText: thinkingText || undefined,
     inputTokens,
     outputTokens,
@@ -2985,7 +2989,7 @@ export async function handleGeminiGenerateContent(
       {
         content: {
           role: "model",
-          parts: modelTextToGeminiParts(result.completion.text, true),
+          parts: result.completion.geminiParts ?? [{ text: result.completion.text }],
         },
         finishReason: "STOP",
       },

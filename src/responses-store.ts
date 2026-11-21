@@ -31,7 +31,7 @@ export interface PersistedResponsesStore {
 
 const FLUSH_DEBOUNCE_MS = 1_500;
 const MAX_ENTRIES = 500;
-const ENTRY_TTL_MS = 6 * 60 * 60 * 1000;
+const MAX_STORE_BYTES = 32 * 1024 * 1024;
 
 function now(): number {
   return Date.now();
@@ -43,11 +43,12 @@ function now(): number {
  * Maps `response_id` to the conversation state needed to continue a previous
  * turn via `previous_response_id`. Persisted via the settings repository.
  * Writes are debounced to 1.5s and coalesced if a flush is already in flight.
- * Stale entries (older than the 6h TTL) and entries over the 500-entry cap
- * are pruned automatically.
+ * Entries expire after 6h. Oldest entries are evicted above 500 entries
+ * or 32 MiB of serialized entries, including response and history payloads.
  */
 export class ResponsesStore {
-  private cache = new Map<string, StoredResponseEntry>();
+  private cache = new Map<string, { entry: StoredResponseEntry; bytes: number }>();
+  private bytes = 0;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private flushing: Promise<void> | null = null;
   private pendingFlush = false;
@@ -62,20 +63,21 @@ export class ResponsesStore {
     if (!dbStore || dbStore.version !== 1 || !Array.isArray(dbStore.entries)) {
       return;
     }
-    const cutoff = now() - ENTRY_TTL_MS;
+    const cutoff = now();
     for (const [id, entry] of dbStore.entries) {
       if (!entry || typeof entry !== "object") continue;
       if (typeof entry.expiresAt !== "number" || entry.expiresAt < cutoff)
         continue;
-      this.cache.set(id, entry);
+      this.insert(id, entry);
     }
+    if (this.cache.size < dbStore.entries.length) this.scheduleFlush();
   }
 
   get(id: string): StoredResponseEntry | null {
-    const entry = this.cache.get(id);
+    const entry = this.cache.get(id)?.entry;
     if (!entry) return null;
     if (entry.expiresAt <= now()) {
-      this.cache.delete(id);
+      this.remove(id);
       this.scheduleFlush();
       return null;
     }
@@ -83,19 +85,19 @@ export class ResponsesStore {
   }
 
   set(id: string, entry: StoredResponseEntry): void {
-    this.cache.set(id, entry);
-    this.pruneIfNeeded();
+    this.insert(id, entry);
     this.scheduleFlush();
   }
 
   delete(id: string): boolean {
-    const existed = this.cache.delete(id);
+    const existed = this.remove(id);
     if (existed) this.scheduleFlush();
     return existed;
   }
 
   clear(): void {
     this.cache.clear();
+    this.bytes = 0;
     this.scheduleFlush();
   }
 
@@ -103,16 +105,28 @@ export class ResponsesStore {
     return this.cache.size;
   }
 
-  private pruneIfNeeded(): void {
-    const cutoff = now() - ENTRY_TTL_MS;
-    for (const [id, entry] of this.cache.entries()) {
-      if (entry.expiresAt <= cutoff) this.cache.delete(id);
+  private insert(id: string, entry: StoredResponseEntry): void {
+    const bytes = Buffer.byteLength(JSON.stringify([id, entry])) + 1;
+    this.remove(id);
+    const cutoff = now();
+    if (bytes > MAX_STORE_BYTES || entry.expiresAt <= cutoff) return;
+    for (const [key, cached] of this.cache) {
+      if (cached.entry.expiresAt <= cutoff) this.remove(key);
     }
-    while (this.cache.size > MAX_ENTRIES) {
+    while (this.cache.size >= MAX_ENTRIES || this.bytes + bytes > MAX_STORE_BYTES) {
       const oldest = this.cache.keys().next();
       if (oldest.done) break;
-      this.cache.delete(oldest.value);
+      this.remove(oldest.value);
     }
+    this.cache.set(id, { entry, bytes });
+    this.bytes += bytes;
+  }
+
+  private remove(id: string): boolean {
+    const cached = this.cache.get(id);
+    if (!cached) return false;
+    this.bytes -= cached.bytes;
+    return this.cache.delete(id);
   }
 
   private scheduleFlush(): void {
@@ -139,11 +153,12 @@ export class ResponsesStore {
         if (!this.dirty) return;
         const data: PersistedResponsesStore = {
           version: 1,
-          entries: Array.from(this.cache.entries()),
+          entries: Array.from(this.cache, ([id, { entry }]) => [id, entry]),
         };
-        await setCachedResponsesStore(data);
         this.dirty = false;
+        await setCachedResponsesStore(data);
       } catch {
+        this.dirty = true;
         // Best effort — will retry on next schedule.
       } finally {
         this.flushing = null;

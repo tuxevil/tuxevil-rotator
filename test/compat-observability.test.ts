@@ -663,13 +663,22 @@ describe("compat observability", () => {
     }
   });
 
-  it("preserves cached token counts in native Gemini responses", async () => {
+  it("preserves literal Markdown, structured images and cached token counts in native Gemini responses", async () => {
+    const parts = [
+      { text: '```md\n![demo](data:image/png;base64,ZGVtbw==)\n```' },
+      { inlineData: { mimeType: "image/png", data: "aW1hZ2U=" }, thoughtSignature: "image-signature" },
+    ];
     const upstream = await listenServer((req, res) => {
       req.resume();
       req.on("end", () => {
         res.writeHead(200, { "Content-Type": "text/event-stream" });
         res.end(
-          'data: {"response":{"candidates":[{"content":{"parts":[{"text":"pong"}]}}],"usageMetadata":{"promptTokenCount":1200,"candidatesTokenCount":50,"cachedContentTokenCount":1000}}}\n\n',
+          `data: ${JSON.stringify({
+            response: {
+              candidates: [{ content: { parts } }],
+              usageMetadata: { promptTokenCount: 1200, candidatesTokenCount: 50, cachedContentTokenCount: 1000 },
+            },
+          })}\n\n`,
         );
       });
     });
@@ -687,8 +696,10 @@ describe("compat observability", () => {
 
       assert.equal(res.statusCodeCaptured, 200);
       const payload = JSON.parse(res.body) as {
+        candidates: Array<{ content: { parts: unknown[] } }>;
         usageMetadata?: { cachedContentTokenCount?: number };
       };
+      assert.deepEqual(payload.candidates[0].content.parts, parts);
       assert.equal(payload.usageMetadata?.cachedContentTokenCount, 1000);
     } finally {
       await closeServer(upstream.server);

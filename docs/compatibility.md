@@ -159,7 +159,13 @@ the model's context, and the image can be edited in the next turn ("now make it
 blue"). Claude models do not accept images in assistant turns, so for them the
 image is replaced with an `[image]` placeholder.
 
-The native `generateContent` routes return the image as an `inlineData` part.
+The native `generateContent` routes return the image as an `inlineData` part
+and preserve literal Markdown in text parts.
+
+The Responses API retains up to 32 MiB of serialized response and conversation
+entries. Older entries are evicted as needed. If one entry exceeds the budget,
+its response is still returned, but its ID cannot be used to continue the
+conversation with `previous_response_id`.
 
 ---
 

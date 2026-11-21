@@ -181,6 +181,7 @@ export interface AnthropicMessagesRequest {
 
 export interface CompatCompletion {
   text: string;
+  geminiParts?: Record<string, unknown>[];
   thinkingText?: string; // Gemini thought blocks (thought: true), emitted as reasoning_content
   inputTokens: number;
   outputTokens: number;
