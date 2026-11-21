@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
 	calculateBackoffMs,
+	DEFAULT_HEADERS_TIMEOUT_MS,
 	fetchWithHeadersTimeout,
 	fetchWithRetry,
 	isRetryableFetchError,
@@ -21,6 +22,10 @@ describe("fetchWithRetry", () => {
 		assert.equal(isRetryableFetchError(new TypeError("fetch failed")), true);
 		assert.equal(isRetryableFetchError(new UpstreamHeadersTimeoutError(30_000)), true);
 		assert.equal(isRetryableFetchError(new Error("bad input")), false);
+	});
+
+	it("defaults upstream headers timeout to 120s for slow prefill and thinking responses", () => {
+		assert.equal(DEFAULT_HEADERS_TIMEOUT_MS, 120_000);
 	});
 
 	it("bounds time waiting for response headers without timing out the body", async () => {

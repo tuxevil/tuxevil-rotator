@@ -285,9 +285,17 @@ describe("proxy compat integration", () => {
 				selectionMode: "typesafe",
 				selectionConfidence: 0.9,
 				selectionReason: "typesafe-selected",
-			}, { "user-agent": "OpenAI/1.0.0" });
+			}, {
+				"user-agent": "OpenAI/1.0.0",
+				"content-type": "application/json",
+				accept: "application/json",
+				expect: "100-continue",
+			});
 			assert.equal(forwarded.endpoint, daily.url);
 			assert.doesNotMatch(capturesDaily[0].body, /selectionReason/);
+			assert.equal(capturesDaily[0].headers["content-type"], "application/json");
+			assert.equal(capturesDaily[0].headers["accept"], "text/event-stream");
+			assert.equal(capturesDaily[0].headers["expect"], undefined);
 
 			const outcome = await withRotation(
 				createRotatorStub(account),

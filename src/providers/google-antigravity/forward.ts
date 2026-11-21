@@ -344,17 +344,9 @@ export async function forwardRequest(
   } = body;
   const requestBody = JSON.stringify(bodyToForward);
 
-  // Build headers: keep originals but swap Authorization
-  const forwardHeaders: Record<string, string> = {
-    ...originalHeaders,
-    "Content-Type": "application/json",
-    Accept: "text/event-stream",
-  };
-  // Remove original authorization (any case), provider-set headers, and
-  // hop-by-hop headers per RFC 7230 §6.1. The hop-by-hop list prevents
-  // leaking client IP (X-Forwarded-For) and prevents IP spoofing in
-  // upstream logs (Via).
-  const HOP_BY_HOP = new Set([
+  // Build headers: keep safe originals while replacing hop-by-hop, framing,
+  // and provider-managed headers (case-insensitively to prevent duplicates).
+  const STRIPPED_HEADERS = new Set([
     "connection",
     "keep-alive",
     "proxy-authenticate",
@@ -363,6 +355,15 @@ export async function forwardRequest(
     "trailers",
     "transfer-encoding",
     "upgrade",
+    "expect",
+    "host",
+    "content-length",
+    "content-type",
+    "accept",
+    "authorization",
+    "user-agent",
+    "x-goog-api-client",
+    "client-metadata",
     // Forwarding / proxying artefacts that should never reach the upstream
     "x-forwarded-for",
     "x-forwarded-host",
@@ -372,18 +373,14 @@ export async function forwardRequest(
     "forwarded",
     "via",
   ]);
-  for (const key of Object.keys(forwardHeaders)) {
-    const lowerKey = key.toLowerCase();
-    if (
-      HOP_BY_HOP.has(lowerKey) ||
-      lowerKey === "authorization" ||
-      lowerKey === "user-agent" ||
-      lowerKey === "x-goog-api-client" ||
-      lowerKey === "client-metadata"
-    ) {
-      delete forwardHeaders[key];
+  const forwardHeaders: Record<string, string> = {};
+  for (const [key, value] of Object.entries(originalHeaders)) {
+    if (!STRIPPED_HEADERS.has(key.toLowerCase())) {
+      forwardHeaders[key] = value;
     }
   }
+  forwardHeaders["Content-Type"] = "application/json";
+  forwardHeaders["Accept"] = "text/event-stream";
   forwardHeaders["Authorization"] = `Bearer ${account.accessToken}`;
   forwardHeaders["User-Agent"] = REQUEST_USER_AGENT;
   forwardHeaders["X-Goog-Api-Client"] = REQUEST_GOOG_API_CLIENT;
@@ -393,10 +390,6 @@ export async function forwardRequest(
   if (/^claude-/i.test(body.model)) {
     forwardHeaders["anthropic-beta"] = "interleaved-thinking-2025-05-14";
   }
-  delete forwardHeaders["host"];
-  delete forwardHeaders["connection"];
-  delete forwardHeaders["transfer-encoding"];
-  delete forwardHeaders["content-length"];
 
   // Try endpoints with cascade on 401/403/404
   for (
