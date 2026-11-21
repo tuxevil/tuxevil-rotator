@@ -280,5 +280,10 @@ const POOL_NAMES: Record<string, string> = {
 };
 
 export function quotaPoolLabel(key: string): string {
-  return POOL_NAMES[key] ?? key;
+  if (POOL_NAMES[key]) return POOL_NAMES[key];
+  return key
+    .split("-")
+    .filter(Boolean)
+    .map((part) => (/^\d+(?:\.\d+)?$/.test(part) ? part : part.charAt(0).toUpperCase() + part.slice(1)))
+    .join(" ") || key;
 }

@@ -17,7 +17,11 @@ import {
 } from "./usage-windows.js";
 import { getAccountProxyDispatcher } from "../proxy-dispatcher.js";
 import { sortQuotaPools } from "../registry.js";
-import { getQuotaItemProviderId, OLLAMA_QUOTA_POOL_KEY } from "../credential-helpers.js";
+import {
+  formatQuotaResetRemaining,
+  getQuotaItemProviderId,
+  OLLAMA_QUOTA_POOL_KEY,
+} from "../credential-helpers.js";
 
 /**
  * Poll balance for actual remaining quota; the usage endpoint now reports
@@ -99,9 +103,7 @@ export async function fetchProviderUsage(
       )
       .map((q) => {
         const remain = q.resetTime
-          ? Math.round(
-              (new Date(q.resetTime).getTime() - Date.now()) / 60000,
-            ) + "m"
+          ? formatQuotaResetRemaining(q.resetTime)
           : "no_reset";
         const fraction =
           typeof q.usageRaw === "number" ? `@${q.usageRaw.toFixed(3)}` : "";

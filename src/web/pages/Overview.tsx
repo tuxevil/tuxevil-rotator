@@ -431,6 +431,20 @@ function PoolRow({ pool, expanded, onToggle }: { pool: ModelPool; expanded: bool
             {" · "}{pool.eligibleNow ?? "Unknown"} eligible
           </div>
           {freshness === "stale" && <div class="cell-sub tone-text-warn">Stale observation</div>}
+          {pool.windows && pool.windows.length > 0 && (
+            <div class="cell-sub pool-windows">
+              {pool.windows.map((w, i) => (
+                <span key={w.window} class="pool-window-chip" title={w.nextResetAt ? `${w.label}: ${w.remainingPercent}% left` : w.label}>
+                  {i > 0 && " · "}
+                  <span>{w.window === "weekly" ? "Weekly" : w.window === "daily" ? "Daily" : w.window}</span>{" "}
+                  <span class="num">{w.remainingPercent}%</span>
+                  {w.accountsReporting < pool.members.length && (
+                    <span class="muted"> ({w.accountsReporting}/{pool.members.length})</span>
+                  )}
+                </span>
+              ))}
+            </div>
+          )}
         </td>
         <td data-label="Serving">
           {pool.serving ? (
@@ -609,7 +623,7 @@ function ControlsPanel({ data }: { data: DashboardOverview }): JSX.Element {
           description={
             controls.allowFreshWindowStarts
               ? "The rotator may start an idle account's quota window when it is the best option."
-              : "Idle windows are held back: running 5-hour and 7-day windows are used first and no new window starts."
+              : "Idle windows are held back: already-running quota windows are used first and no new window starts."
           }
         />
         <Switch

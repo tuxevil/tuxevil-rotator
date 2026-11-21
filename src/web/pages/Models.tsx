@@ -803,13 +803,14 @@ function ProviderDetail({
                             <span class="muted">—</span>
                           ) : (
                             <div class="quota-mini">
-                              {quotas.slice(0, 2).map((quota) => (
+                              {quotas.slice(0, 4).map((quota) => (
                                 <div class="quota-mini-row" key={quota.modelKey}>
                                   <span class="truncate">{quota.displayName || quotaPoolLabel(quota.modelKey)}</span>
                                   <Meter value={quota.percentRemaining} label={`${quota.displayName} quota remaining`} size="sm" />
                                   <span class="num">{Math.round(quota.percentRemaining)}%</span>
                                 </div>
                               ))}
+                              {quotas.length > 4 && <div class="cell-sub">+{quotas.length - 4} more</div>}
                             </div>
                           )}
                         </td>

@@ -26,7 +26,8 @@ import {
   providerRank,
   quotaProvider,
   tierLabel,
-  TIMER_LABELS,
+  timerLabel,
+  windowShortLabel,
 } from "../lib/status.js";
 import { actions } from "../state/actions.js";
 import { accounts, masked, masker, now, overview } from "../state/store.js";
@@ -60,7 +61,7 @@ const COLUMNS: Array<{ key: AccountSortKey; label: string; class?: string; defau
 
 type AccountsView = "cards" | "list";
 
-const CARD_QUOTAS = 4;
+const CARD_QUOTAS = 5;
 
 export function AccountsPage(): JSX.Element {
   const all = accounts.value;
@@ -547,12 +548,35 @@ function CardQuota({ account, quota, inactive }: { account: DashboardAccount; qu
   } else {
     when = <span>—</span>;
   }
+  const windowTitle = quota.windows?.length
+    ? quota.windows
+        .map((w) => `${windowShortLabel(w)}: ${w.percentRemaining}%${w.active && w.resetTime ? ` (active)` : ""}`)
+        .join(" · ")
+    : timerLabel(quota.timerType);
   return (
-    <li class="card-quota" title={`${quota.displayName}: ${quota.percentRemaining}% left · ${TIMER_LABELS[quota.timerType] ?? quota.timerType}`}>
+    <li class="card-quota" title={`${quota.displayName}: ${quota.percentRemaining}% left · ${windowTitle}`}>
       <span class="card-quota-name">{quota.displayName}</span>
       <Meter value={quota.percentRemaining} label={`${quota.displayName} quota`} />
       <span class="card-quota-pct num">{quota.percentRemaining}%</span>
       <span class="card-quota-when">{when}</span>
+      {quota.windows && quota.windows.length > 0 && (
+        <div class="card-quota-windows">
+          {quota.windows.map((w) => {
+            const winReset = w.resetTime ? Date.parse(w.resetTime) : null;
+            return (
+              <span key={w.id} class={`card-quota-window${w.percentRemaining === 0 ? " is-empty" : ""}`}>
+                <span>{windowShortLabel(w)}</span>
+                <span class="num">{w.percentRemaining}%</span>
+                {w.active && winReset && winReset > now.value && (
+                  <span class="muted">
+                    · <Countdown until={winReset} />
+                  </span>
+                )}
+              </span>
+            );
+          })}
+        </div>
+      )}
     </li>
   );
 }

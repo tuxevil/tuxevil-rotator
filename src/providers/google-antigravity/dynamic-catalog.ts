@@ -268,6 +268,7 @@ export class DynamicModelRegistry {
     accountId = DEFAULT_ACCOUNT_KEY,
     credentialGeneration?: string,
     accountEpoch?: number,
+    poolOverrides?: ReadonlyMap<string, string>,
   ): number {
     const data = parseGoogleQuotaResponse(value);
     if (!data) return 0;
@@ -293,7 +294,16 @@ export class DynamicModelRegistry {
       const lowerId = normalizedId.toLowerCase();
       if (!isDiscoverableModelId(normalizedId)) continue;
 
-      const { family, quotaPool } = DynamicModelRegistry.inferFamilyAndPool(normalizedId);
+      const { family, quotaPool: inferredPool } = DynamicModelRegistry.inferFamilyAndPool(normalizedId);
+      const overridePool = poolOverrides?.get(lowerId);
+      const quotaPool =
+        overridePool &&
+        overridePool !== "__proto__" &&
+        overridePool !== "constructor" &&
+        overridePool !== "prototype" &&
+        /^[a-z0-9][a-z0-9._:-]{0,63}$/.test(overridePool)
+          ? overridePool
+          : inferredPool;
       const familySpec = familyDefaults(family);
       const staticSpec = getStaticModelSpec(normalizedId);
       const defaults = previous?.get(lowerId) ?? {
@@ -543,9 +553,17 @@ export class DynamicModelRegistry {
       const models = new Map<string, DynamicModelEntry>();
       let valid = true;
       for (const raw of snapshot.models) {
+        const validPool =
+          typeof raw.quotaPool === "string" &&
+          raw.quotaPool.length > 0 &&
+          raw.quotaPool.length <= 64 &&
+          /^[a-z0-9][a-z0-9._:-]*$/.test(raw.quotaPool) &&
+          raw.quotaPool !== "__proto__" &&
+          raw.quotaPool !== "constructor" &&
+          raw.quotaPool !== "prototype";
         if (!isRecord(raw) || typeof raw.id !== "string" || !isDiscoverableModelId(raw.id) ||
           typeof raw.family !== "string" || !isSafeModelId(raw.family) ||
-          typeof raw.quotaPool !== "string" || !["gemini", "claude"].includes(raw.quotaPool) ||
+          !validPool ||
           !["ctx", "maxOutputTokens"].every((key) => typeof raw[key] === "number" && Number.isFinite(raw[key]) && raw[key] > 0) ||
           typeof raw.thinkingBudget !== "number" || !Number.isFinite(raw.thinkingBudget) || raw.thinkingBudget < -1 ||
           (raw.thinkingBudget < 0 && raw.thinkingBudget !== -1) ||
@@ -662,10 +680,14 @@ export class DynamicModelRegistry {
       const quotaPool = typeof rawPool === "string"
         ? rawPool.trim().toLowerCase()
         : "";
-      if (
-        !isDiscoverableModelId(id) ||
-        (quotaPool !== "gemini" && quotaPool !== "claude")
-      ) continue;
+      const validPool =
+        quotaPool.length > 0 &&
+        quotaPool.length <= 64 &&
+        /^[a-z0-9][a-z0-9._:-]*$/.test(quotaPool) &&
+        quotaPool !== "__proto__" &&
+        quotaPool !== "constructor" &&
+        quotaPool !== "prototype";
+      if (!isDiscoverableModelId(id) || !validPool) continue;
       this.discoveredModels.set(id.toLowerCase(), { id, quotaPool });
     }
   }
@@ -697,6 +719,45 @@ export class DynamicModelRegistry {
     const lowerId = id.trim().toLowerCase();
     return this.getModel(lowerId)?.quotaPool ??
       this.discoveredModels.get(lowerId)?.quotaPool;
+  }
+
+  resolveQuotaPoolForAccount(accountId: string, id: string): string | undefined {
+    const lowerId = id.trim().toLowerCase();
+    return this.accountModels.get(accountKey(accountId))?.get(lowerId)?.quotaPool ??
+      this.resolveQuotaPool(lowerId);
+  }
+
+  hasQuotaPool(poolKey: string, accountId?: string): boolean {
+    const targetPool = poolKey.trim().toLowerCase();
+    if (!targetPool) return false;
+    if (accountId) {
+      const scoped = this.accountModels.get(accountKey(accountId));
+      if (scoped) {
+        for (const entry of scoped.values()) {
+          if (entry.quotaPool === targetPool) return true;
+        }
+      }
+    }
+    for (const accountCatalog of this.accountModels.values()) {
+      for (const entry of accountCatalog.values()) {
+        if (entry.quotaPool === targetPool) return true;
+      }
+    }
+    for (const entry of this.discoveredModels.values()) {
+      if (entry.quotaPool === targetPool) return true;
+    }
+    return false;
+  }
+
+  getModelsForQuotaPool(quotaPool: string, accountId?: string): DynamicModelEntry[] {
+    const targetPool = quotaPool.trim().toLowerCase();
+    if (accountId) {
+      const scoped = this.accountModels.get(accountKey(accountId));
+      return scoped
+        ? Array.from(scoped.values()).filter((entry) => entry.quotaPool === targetPool)
+        : [];
+    }
+    return this.getAllModels().filter((entry) => entry.quotaPool === targetPool);
   }
 
   getDefaultAgentModelId(): string | null {

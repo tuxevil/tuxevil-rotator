@@ -367,20 +367,64 @@ export interface QuotaObservation {
   catalogAccessible?: boolean;
 }
 
+export interface QuotaWindow {
+  /** Upstream bucket id (e.g. "gemini-weekly", "gemini-5h", "gemini-argon-wtu-weekly"). */
+  id: string;
+  /** Upstream window identifier (e.g. "weekly", "5h", "daily", "2h", "monthly"). */
+  window: string;
+  /** Human-readable window label from upstream or normalized dynamically. */
+  label: string;
+  percentRemaining: number;
+  resetTime: string | null;
+  /** Nominal duration in milliseconds used for ordering and timer priority. */
+  durationMs?: number;
+  /** True when the window has started / is actively consuming or exhausted. */
+  active: boolean;
+  description?: string;
+  disabled?: boolean;
+}
+
+export interface GoogleQuotaSummaryBucket {
+  bucketId?: string;
+  displayName?: string;
+  description?: string;
+  window?: string;
+  remainingFraction?: number;
+  remainingAmount?: string | number;
+  disabled?: boolean;
+  resetTime?: string;
+}
+
+export interface GoogleQuotaSummaryGroup {
+  displayName?: string;
+  description?: string;
+  buckets?: GoogleQuotaSummaryBucket[];
+}
+
+export interface GoogleQuotaSummaryResponse {
+  buckets?: GoogleQuotaSummaryBucket[];
+  groups?: GoogleQuotaSummaryGroup[];
+  description?: string;
+}
+
 export interface ModelQuota {
   observation?: QuotaObservation;
   modelKey: string;
   displayName: string;
   /** Owner of this quota pool when the account has several providers. */
   providerId?: string;
+  /** Individual active/reported time windows for this quota group (e.g. weekly, 5h, daily). */
+  windows?: QuotaWindow[];
+  /** Group description reported by upstream (e.g. models in this group or plan note). */
+  groupDescription?: string;
   percentRemaining: number;
   /** Raw usage fraction (0..1) when the provider reports one (Ollama). */
   usageRaw?: number;
   /** Included monthly credits and optional prepaid credits reported by Ollama. */
   credits?: { balanceUsd: number; allowanceUsd: number; purchasedUsd: number };
   resetTime: string | null;
-  // Timer classification based on the provider window.
-  timerType: "fresh" | "5h" | "7d" | "monthly";
+  // Timer classification based on the provider window (supports dynamic windows).
+  timerType: "fresh" | "5h" | "7d" | "monthly" | (string & {});
 }
 
 // Model key mapping for the quota API. One entry per family: all Claude
@@ -1160,11 +1204,13 @@ export const ANTIGRAVITY_ENDPOINTS = [
 // from QUOTA_MODEL_KEYS (i.e. "claude" or "gemini"), not an altKey/request model name.
 export const KICKSTART_MODEL_FOR_QUOTA_POOL: Record<string, string> = {
   "claude": "gpt-oss-120b-medium",
-  "gemini": "gemini-3-flash",
+  "gemini": "gemini-3.8-flash-tiered",
 };
 
 export const QUOTA_API_URL =
   "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
+export const QUOTA_SUMMARY_API_URL =
+  "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
 
 // ── Ollama Cloud endpoints ──────────────────────────────────────────
 export const OLLAMA_API_BASE = "https://ollama.com/api";

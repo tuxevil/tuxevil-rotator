@@ -30,6 +30,7 @@ import {
   DEFAULT_QUOTA_POLL_INTERVAL_MS,
   MAX_QUOTA_POLL_INTERVAL_MS,
   MIN_QUOTA_POLL_INTERVAL_MS,
+  QUOTA_MODEL_KEYS,
   resolveQuotaModelKey,
   resolveDisplayModelKey,
 } from "./types.js";
@@ -221,6 +222,8 @@ interface AccountRequestWaiter {
 // Reverse map: upstream model → the quota pool key it primarily represents (for deduplication).
 const QUOTA_POOL_FOR_KICKSTART_MODEL: Record<string, string> = {
   "gpt-oss-120b-medium": "claude",
+  "gemini-3.8-flash-tiered": "gemini",
+  "gemini-3.8-flash": "gemini",
   "gemini-3-flash": "gemini",
   "gpt-5.6-luna": CODEX_QUOTA_MODEL_KEY,
   // Legacy manual kickstart compatibility. New Ollama quota polling/routes
@@ -781,8 +784,6 @@ export class AccountRotator {
           account.cooldownsByModel,
         )) {
           if (
-            model !== "claude" &&
-            model !== "gemini" &&
             (model === "__default__" ||
               getProviderIdForPoolKey(model) !== DEFAULT_PROVIDER) &&
             cooldown > now + maxCooldown
@@ -799,10 +800,13 @@ export class AccountRotator {
   }
 
   private migratePersistedQuotaStateKeys(): void {
-    const foldDeadlines = (deadlines: Record<string, number>) => {
+    const foldDeadlines = (
+      deadlines: Record<string, number>,
+      resolveKey: (key: string) => string = (key) => this.resolveQuotaStateKey(key),
+    ) => {
       const folded: Record<string, number> = {};
       for (const [key, deadline] of Object.entries(deadlines)) {
-        const canonical = this.resolveQuotaStateKey(key);
+        const canonical = resolveKey(key);
         folded[canonical] = Math.max(folded[canonical] ?? 0, deadline);
       }
       return folded;
@@ -829,7 +833,9 @@ export class AccountRotator {
       modelKey: this.resolveQuotaStateKey(event.modelKey),
     }));
     for (const account of this.accounts) {
-      account.cooldownsByModel = foldDeadlines(account.cooldownsByModel);
+      account.cooldownsByModel = foldDeadlines(account.cooldownsByModel, (key) =>
+        this.resolveAccountQuotaStateKey(account, key),
+      );
     }
   }
 
@@ -1079,6 +1085,7 @@ export class AccountRotator {
   private async pollAccountQuotaOnce(account: AccountRuntime): Promise<boolean> {
     let quotaPublished = false;
     const snapshotRevision = dynamicCatalog.snapshotRevision;
+    const cooldownsBefore = JSON.stringify(account.cooldownsByModel);
     try {
       const quotaCtx: QuotaFetchContext = {
         log: (message) => this.log(message),
@@ -1135,6 +1142,9 @@ export class AccountRotator {
         account.cooldownsByModel[quota.modelKey] = resetAt;
         cooldownChanged = true;
       }
+    }
+    if (!cooldownChanged && JSON.stringify(account.cooldownsByModel) !== cooldownsBefore) {
+      cooldownChanged = true;
     }
     if (cooldownChanged || snapshotRevision !== dynamicCatalog.snapshotRevision) {
       this.scheduleStateSave();
@@ -1257,16 +1267,54 @@ export class AccountRotator {
     });
   }
 
-  // Get quota % for a specific model on an account. Returns -1 if no data.
-  private getModelQuota(account: AccountRuntime, modelKey: string): number {
-    const quotaKey = dynamicCatalog.resolveQuotaPool(modelKey) ??
-      resolveQuotaModelKey(modelKey) ?? modelKey;
-    const q = account.quota.find((q) => q.modelKey === quotaKey) ??
+  private resolveQuotaLookupKey(
+    account: AccountRuntime,
+    modelKey: string,
+  ): string {
+    const accountId = getAccountIdentity(account);
+    const dynamicForAccount = dynamicCatalog.resolveQuotaPoolForAccount(
+      accountId,
+      modelKey,
+    );
+    if (
+      dynamicForAccount &&
+      (account.quota.length === 0 ||
+        account.quota.some((q) => q.modelKey === dynamicForAccount) ||
+        getProviderIdForPoolKey(dynamicForAccount) !== DEFAULT_PROVIDER)
+    ) {
+      return this.resolvePoolKey(account, dynamicForAccount);
+    }
+    if (
+      account.quota.some((q) => q.modelKey === modelKey) ||
+      this.isKnownDynamicPoolKey(modelKey, account)
+    ) {
+      return this.resolvePoolKey(account, modelKey);
+    }
+    const resolved =
+      dynamicForAccount ??
+      resolveQuotaModelKey(modelKey) ??
+      modelKey;
+    return this.resolvePoolKey(account, resolved);
+  }
+
+  private findAccountQuotaRow(
+    account: AccountRuntime,
+    quotaKey: string,
+  ): ModelQuota | undefined {
+    return (
+      account.quota.find((q) => q.modelKey === quotaKey) ??
       (quotaKey.startsWith(`${CODEX_QUOTA_MODEL_KEY}:`)
         ? account.quota.find((candidate) => candidate.modelKey === CODEX_QUOTA_MODEL_KEY)
         : quotaKey.startsWith(`${OPENCODE_ZEN_PROVIDER_ID}:`)
           ? account.quota.find((candidate) => candidate.providerId === OPENCODE_ZEN_PROVIDER_ID)
-          : undefined);
+          : undefined)
+    );
+  }
+
+  // Get quota % for a specific model on an account. Returns -1 if no data.
+  private getModelQuota(account: AccountRuntime, modelKey: string): number {
+    const quotaKey = this.resolveQuotaLookupKey(account, modelKey);
+    const q = this.findAccountQuotaRow(account, quotaKey);
     if (!q && quotaKey === "monthly") {
       // Legacy subscriptions still report explicit session/weekly windows on
       // /api/balance; both windows constrain the same Ollama account.
@@ -1295,14 +1343,8 @@ export class AccountRotator {
     account: AccountRuntime,
     modelKey: string,
   ): ModelQuota["timerType"] {
-    const quotaKey = dynamicCatalog.resolveQuotaPool(modelKey) ??
-      resolveQuotaModelKey(modelKey) ?? modelKey;
-    const q = account.quota.find((q) => q.modelKey === quotaKey) ??
-      (quotaKey.startsWith(`${CODEX_QUOTA_MODEL_KEY}:`)
-        ? account.quota.find((candidate) => candidate.modelKey === CODEX_QUOTA_MODEL_KEY)
-        : quotaKey.startsWith(`${OPENCODE_ZEN_PROVIDER_ID}:`)
-          ? account.quota.find((candidate) => candidate.providerId === OPENCODE_ZEN_PROVIDER_ID)
-          : undefined);
+    const quotaKey = this.resolveQuotaLookupKey(account, modelKey);
+    const q = this.findAccountQuotaRow(account, quotaKey);
     return q?.timerType ?? "fresh";
   }
 
@@ -1334,23 +1376,60 @@ export class AccountRotator {
     if (!hasCredential(account.config, providerId)) return null;
 
     const adapter = getProviderAdapter(providerId);
-    const upstreamModel = adapter.getKickstartModelForPool(poolKey);
-    if (!upstreamModel) return null;
+    const defaultKickstartModel = adapter.getKickstartModelForPool(poolKey);
+    if (!defaultKickstartModel) return null;
+    const providerOff = isProviderTurnedOff(this.getConfig(), providerId);
+    let upstreamModel = defaultKickstartModel;
+
+    if (providerId === DEFAULT_PROVIDER) {
+      const defaultOff = !providerOff && isProviderModelOff(this, providerId, defaultKickstartModel);
+      const accountCandidates = dynamicCatalog
+        .getModelsForQuotaPool(poolKey, getAccountIdentity(account))
+        .filter((entry) => !entry.id.toLowerCase().endsWith("-disabled"));
+      if (accountCandidates.length > 0 && (defaultOff || !QUOTA_MODEL_KEYS[poolKey])) {
+        const activeCandidates = providerOff || !defaultOff
+          ? accountCandidates
+          : accountCandidates.filter(
+              (entry) => !isProviderModelOff(this, providerId, entry.id),
+            );
+        if (activeCandidates.length === 0) return null;
+        const preferred = activeCandidates.find((entry) =>
+          /(?:^|-)(?:low|lite|flash|medium)$/i.test(entry.id),
+        );
+        upstreamModel = (preferred ?? activeCandidates[0]).id;
+      }
+    }
+
     return { poolKey, providerId, adapter, upstreamModel };
   }
 
   // Timer priority for a specific model:
-  //   1 (highest) = 5h timer -> only class with hard quota loss if underused before reset
-  //   2           = 7d timer -> already ticking, keep those long windows moving
-  //   3 (lowest)  = fresh -> no visible timer is running yet
+  //   1 (highest) = short rolling window (e.g. <= 6h such as 5h) -> expires soonest
+  //   1.5         = medium window (e.g. daily / 12h)
+  //   2           = weekly / 7d timer -> already ticking, keep those long windows moving
+  //   3 (lowest)  = fresh / monthly -> no visible short/weekly timer is running yet
   private getModelTimerPriority(
     account: AccountRuntime,
     modelKey: string,
   ): number {
-    const type = this.getModelTimerType(account, modelKey);
+    const quotaKey = this.resolveQuotaLookupKey(account, modelKey);
+    const q = this.findAccountQuotaRow(account, quotaKey);
+    const type = q?.timerType ?? "fresh";
     if (type === "5h") return 1;
     if (type === "7d") return 2;
-    return 3;
+    if (type === "fresh" || type === "monthly") return 3;
+    const activeWindow = q?.windows
+      ?.filter((w) => w.active && w.durationMs !== undefined)
+      .sort((a, b) => (a.durationMs ?? Infinity) - (b.durationMs ?? Infinity))[0];
+    const durationMs = activeWindow?.durationMs;
+    if (durationMs !== undefined) {
+      if (durationMs <= 6 * 60 * 60 * 1000) return 1;
+      if (durationMs <= 24 * 60 * 60 * 1000) return 1.5;
+      if (durationMs <= 8 * 24 * 60 * 60 * 1000) return 2;
+      return 2.5;
+    }
+    if (type === "daily" || type === "1d" || type === "24h") return 1.5;
+    return 2;
   }
 
   private isFreshWindowAllowed(
@@ -1663,7 +1742,7 @@ export class AccountRotator {
     ignoreConcurrency = false,
   ): string | null {
     const projectId = this.getProjectIdForModel(account, modelKey);
-    const quotaStateKey = this.resolveQuotaStateKey(modelKey);
+    const quotaStateKey = this.resolveAccountQuotaStateKey(account, modelKey);
     if (this.isModelBreakerActive(quotaStateKey, now))
       return "model circuit breaker active";
     if (this.isProjectModelBreakerActive(projectId, quotaStateKey, now))
@@ -1753,8 +1832,7 @@ export class AccountRotator {
     const defaultCooldown = account.cooldownsByModel["__default__"] ?? 0;
     if (defaultCooldown > now)
       return { reason: "cooldown", detail: "default cooldown active" };
-    const modelCooldown =
-      account.cooldownsByModel[this.resolveQuotaStateKey(modelKey)] ?? 0;
+    const modelCooldown = this.getAccountModelCooldown(account, modelKey);
     if (modelCooldown > now)
       return { reason: "cooldown", detail: "model cooldown active" };
     // Ollama Cloud quota pools impose no per-account
@@ -3361,13 +3439,26 @@ export class AccountRotator {
             candidate.providerId === undefined),
       );
       if (quota) {
+        const resetIso = new Date(now + cooldownMs).toISOString();
         quota.percentRemaining = 0;
-        quota.resetTime = new Date(now + cooldownMs).toISOString();
+        quota.resetTime = resetIso;
         quota.timerType = quota.modelKey === "monthly"
           ? "monthly"
           : cooldownMs < 6 * 60 * 60 * 1000
             ? "5h"
             : "7d";
+        if (quota.windows?.length) {
+          const targetWin = quota.windows.find(
+            (w) =>
+              (quota.timerType === "5h" && w.window === "5h") ||
+              (quota.timerType === "7d" && (w.window === "weekly" || w.window === "7d")),
+          ) ?? quota.windows[0];
+          if (targetWin) {
+            targetWin.percentRemaining = 0;
+            targetWin.resetTime = resetIso;
+            targetWin.active = true;
+          }
+        }
       }
     }
 
@@ -4015,8 +4106,7 @@ export class AccountRotator {
     if (account.invalidProviders?.[providerId]) return false;
     if (this.isProviderOffForAccount(account, providerId)) return false;
     if ((account.providerCooldowns?.[providerId] ?? 0) > now) return false;
-    const modelCooldown =
-      account.cooldownsByModel[this.resolveQuotaStateKey(modelKey)] ?? 0;
+    const modelCooldown = this.getAccountModelCooldown(account, modelKey);
     if (modelCooldown > now) return false;
     // Ollama Cloud quota pools impose no per-account concurrency
     // limit. Antigravity keeps it so long streams don't pile up on a
@@ -4214,10 +4304,50 @@ export class AccountRotator {
     );
   }
 
+  private isKnownDynamicPoolKey(modelKey: string, account?: AccountRuntime): boolean {
+    const normalized = modelKey.trim().toLowerCase();
+    if (!normalized) return false;
+    if (account && account.quota.some((q) => q.modelKey.toLowerCase() === normalized)) {
+      return true;
+    }
+    if (this.accounts.some((a) => a.quota.some((q) => q.modelKey.toLowerCase() === normalized))) {
+      return true;
+    }
+    return dynamicCatalog.hasQuotaPool(normalized, account ? getAccountIdentity(account) : undefined);
+  }
+
   private resolveQuotaStateKey(modelKey: string): string {
-    return dynamicCatalog.resolveQuotaPool(modelKey) ??
-      resolveQuotaModelKey(modelKey) ??
-      modelKey;
+    const normalized = modelKey.trim().toLowerCase();
+    const dynamicPool = dynamicCatalog.resolveQuotaPool(modelKey);
+    if (dynamicPool) return dynamicPool;
+    if (this.isKnownDynamicPoolKey(normalized)) return normalized;
+    return resolveQuotaModelKey(modelKey) ?? modelKey;
+  }
+
+  private resolveAccountQuotaStateKey(account: AccountRuntime, modelKey: string): string {
+    const normalized = modelKey.trim().toLowerCase();
+    const accountId = getAccountIdentity(account);
+    const accountPool = dynamicCatalog.resolveQuotaPoolForAccount(accountId, modelKey);
+    if (
+      accountPool &&
+      (account.quota.length === 0 ||
+        account.quota.some((q) => q.modelKey === accountPool) ||
+        getProviderIdForPoolKey(accountPool) !== DEFAULT_PROVIDER)
+    ) {
+      return accountPool;
+    }
+    if (this.isKnownDynamicPoolKey(normalized, account)) return normalized;
+    return this.resolveQuotaStateKey(modelKey);
+  }
+
+  private getAccountModelCooldown(account: AccountRuntime, modelKey: string): number {
+    const accountPoolKey = this.resolveAccountPoolKey(account, modelKey);
+    const accountStateKey = this.resolveAccountQuotaStateKey(account, modelKey);
+    return Math.max(
+      account.cooldownsByModel[accountPoolKey] ?? 0,
+      account.cooldownsByModel[accountStateKey] ?? 0,
+      account.cooldownsByModel[modelKey] ?? 0,
+    );
   }
 
   /** Map a candidate key (model name or pool key) to the account's pool key. */
@@ -4236,17 +4366,34 @@ export class AccountRotator {
   private resolveAccountPoolKey(account: AccountRuntime, key: string): string {
     const kickstartPool = QUOTA_POOL_FOR_KICKSTART_MODEL[key];
     if (kickstartPool) return this.resolvePoolKey(account, kickstartPool);
+    const accountId = getAccountIdentity(account);
+    const accountPool = dynamicCatalog.resolveQuotaPoolForAccount(accountId, key);
+    if (
+      accountPool &&
+      (account.quota.length === 0 ||
+        account.quota.some((quota) => quota.modelKey === accountPool) ||
+        getProviderIdForPoolKey(accountPool) !== DEFAULT_PROVIDER)
+    ) {
+      return this.resolvePoolKey(account, accountPool);
+    }
     const dynamicPool = dynamicCatalog.resolveQuotaPool(key);
-    if (dynamicPool) return this.resolvePoolKey(account, dynamicPool);
+    if (
+      dynamicPool &&
+      (account.quota.length === 0 ||
+        account.quota.some((quota) => quota.modelKey === dynamicPool))
+    ) {
+      return this.resolvePoolKey(account, dynamicPool);
+    }
     if (
       Object.values(QUOTA_POOL_FOR_KICKSTART_MODEL).includes(key) ||
       account.quota.some((quota) => quota.modelKey === key) ||
+      this.isKnownDynamicPoolKey(key, account) ||
       getProviderIdForPoolKey(key) !== DEFAULT_PROVIDER
     ) {
       return this.resolvePoolKey(account, key);
     }
     const modelPool = this.resolvePoolKeyForModel(key) ?? resolveQuotaModelKey(key);
-    return this.resolvePoolKey(account, modelPool ?? "__default__");
+    return this.resolvePoolKey(account, modelPool ?? dynamicPool ?? "__default__");
   }
 
   private isRoutableForModel(
@@ -4308,15 +4455,18 @@ export class AccountRotator {
       if (providerCooldown > now) retryTimes.push(providerCooldown);
       if (this.isDailySafetyStopped(account, now))
         retryTimes.push(dailyResetAt);
+      const accountQuotaStateKey = this.resolveAccountQuotaStateKey(account, modelKey);
+      const accountModelBreaker = this.modelBreakers[accountQuotaStateKey] ?? 0;
+      if (accountModelBreaker > now) retryTimes.push(accountModelBreaker);
       const cooldown = Math.max(
-        account.cooldownsByModel[quotaStateKey] ?? 0,
+        this.getAccountModelCooldown(account, modelKey),
         account.cooldownsByModel.__default__ ?? 0,
       );
       if (cooldown > now) retryTimes.push(cooldown);
       const projectId = this.getProjectIdForModel(account, modelKey);
       if (projectId) {
         const projectBreaker =
-          this.projectModelBreakers[projectModelKey(projectId, quotaStateKey)] ?? 0;
+          this.projectModelBreakers[projectModelKey(projectId, accountQuotaStateKey)] ?? 0;
         if (projectBreaker > now) retryTimes.push(projectBreaker);
       }
       if ((this.config.routingPolicy || "timer-first") === "hybrid") {
@@ -5226,11 +5376,11 @@ export class AccountRotator {
     if (response.status === 429 || response.status === 401 || response.status === 403) {
       errorText = await response.text().catch(() => "");
     } else {
-      // Consume and discard the response body to free the connection.
+      // Consume successful responses so the provider receives a complete request.
       try {
-        await response.body?.cancel();
+        await response.arrayBuffer();
       } catch {
-        // ignore
+        // The status is still handled below; body-drain failures are non-fatal.
       }
     }
 
