@@ -9,6 +9,7 @@ import { after, afterEach, before, beforeEach, describe, it, mock } from "node:t
 import type { RequestBody, RotationOutcome } from "../src/proxy.js";
 import type { AccountConfig, AccountRuntime, Config } from "../src/types.js";
 import { getAccountIdentity } from "../src/account-identity.js";
+import { accessEvidenceStore } from "../src/access-evidence.js";
 import { setAntigravityModelsForTest } from "./fixtures/antigravity-catalog.js";
 
 const testDir = mkdtempSync(join(tmpdir(), "proxy-model-switches-"));
@@ -242,6 +243,7 @@ describe("Models switch enforcement at request admission and dispatch", () => {
   ]) {
     it(`rejects a queued request after its ${name} is switched off`, async () => {
       const { rotator, accounts } = makeRotator();
+      if (body.model === "gemini-3.1-pro-high" || body.catalogModel === "gemini-3.1-pro-high") accessEvidenceStore().declarePlan(accounts[0].config, GOOGLE, "enterprise");
       const controller = new AbortController();
       controllers.push(controller);
       const held = await rotator.getActiveAccount(body.model, undefined, GOOGLE);
@@ -345,6 +347,7 @@ describe("Models switch enforcement at request admission and dispatch", () => {
 
   it("continues serving an enabled ordinary model alias", async () => {
     const { rotator, accounts } = makeRotator();
+    accessEvidenceStore().declarePlan(accounts[0].config, GOOGLE, "enterprise");
     const body = openAIToAntigravityBody({
       model: "gemini-3.1-pro-high",
       messages: [{ role: "user", content: "hello" }],
@@ -567,6 +570,7 @@ describe("Models switch enforcement at request admission and dispatch", () => {
 
   it("rechecks native catalog switches after token validation and returns its reservation", async () => {
     const { rotator, accounts } = makeRotator();
+    accessEvidenceStore().declarePlan(accounts[0].config, GOOGLE, "enterprise");
     mock.method(getProviderAdapter(GOOGLE), "ensureValidToken", async (account: AccountRuntime) => {
       if (account === accounts[0]) await rotator.setModelsEnabled([`${GOOGLE}/gemini-3.1-pro-high`], false);
     });

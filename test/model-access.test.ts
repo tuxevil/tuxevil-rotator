@@ -16,10 +16,10 @@ it("distinguishes free, trial and paid Antigravity plans and effort variants", (
 it("handles the announced removal and does not invent historical evidence", () => {
   const query = { provider: "google-antigravity", model: "claude-sonnet-4-6-thinking", plan: "free" };
   assert.equal(evaluateModelAccess({ ...query, at: "2026-11-01T23:59:59Z" }).state, "allowed");
-  assert.equal(evaluateModelAccess({ ...query, at: "2026-11-02T00:00:00Z" }).state, "blocked");
+  assert.equal(evaluateModelAccess({ ...query, at: "2026-11-18T00:00:00Z" }).state, "blocked");
   assert.equal(evaluateModelAccess({ ...query, at: "2026-09-01" }).state, "unknown");
   assert.throws(() => evaluateModelAccess({ ...query, at: "invalid" }));
-  assert.equal(evaluateModelAccess({ provider: "google-antigravity", model: "gemini-3.8-flash", plan: "free", at: "2026-12-01" }).state, "unknown");
+  assert.equal(evaluateModelAccess({ provider: "google-antigravity", model: "gemini-3.8-flash", plan: "free", at: "2026-12-20" }).state, "unknown");
 });
 it("uses confirmed operator claims informationally and keeps client declarations conditional", () => {
   assert.equal(evaluateModelAccess({ provider: "openai-codex", model: "gpt-6-luna", plan: "free", at }).state, "allowed");

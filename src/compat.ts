@@ -784,6 +784,7 @@ function recordCompatFailure(
   rotator: AccountRotator,
   body: RequestBody,
   outcome: RotationOutcome<unknown>,
+  startedAt: number,
   options?: {
     callType?: string;
     apiKeyHash?: string | null;
@@ -792,7 +793,21 @@ function recordCompatFailure(
     rawResponse?: unknown;
   },
 ): void {
-  if (outcome.ok || !outcome.context) return;
+  if (outcome.ok) return;
+  if (!outcome.context) {
+    const model = body.displayModel || body.model;
+    const durationMs = Date.now() - startedAt;
+    rotator.recordRequestLog({ model, account: "No account", statusCode: outcome.status, ttfbMs: durationMs, totalMs: durationMs, inputTokens: 0, outputTokens: 0 });
+    logSpend({
+      apiKeyHash: options?.apiKeyHash || null, model, accountEmail: null,
+      callType: options?.callType || "compat", status: "failure", promptTokens: 0, completionTokens: 0,
+      startTime: new Date(startedAt).toISOString(), endTime: new Date().toISOString(),
+      ttfbMs: durationMs, durationMs, requestMessages: options?.rawRequest || body.request || body,
+      responseContent: null, requesterIp: options?.requesterIp || null,
+      metadata: { statusCode: outcome.status, stage: "admission" },
+    });
+    return;
+  }
   recordCompatOutcome(
     rotator,
     body,
@@ -2310,6 +2325,7 @@ async function completeResponsesViaRotator(
   context?: RotationAttemptContext;
   compressionStats?: CompressionStats | null;
 }> {
+  const startedAt = Date.now();
   const createdAt = Math.floor(Date.now() / 1000);
   const controller = new AbortController();
   const abort = (): void => controller.abort();
@@ -2355,7 +2371,7 @@ async function completeResponsesViaRotator(
     controller.signal,
   );
   if (!outcome.ok) {
-    recordCompatFailure(rotator, body, outcome, options);
+    recordCompatFailure(rotator, body, outcome, startedAt, options);
     return {
       completion: { text: "", inputTokens: 0, outputTokens: 0 },
       status: outcome.status,
@@ -2405,6 +2421,7 @@ async function completeViaRotator(
   isDeduplicated?: boolean;
   compressionStats?: CompressionStats | null;
 }> {
+  const startedAt = Date.now();
   const cfg = typeof rotator?.getConfig === "function" ? rotator.getConfig() : undefined;
   const enabled = cfg?.idempotencyEnabled === true;
   const windowMs = cfg?.idempotencyWindowMs ?? 2000;
@@ -2540,7 +2557,7 @@ async function completeViaRotator(
   }
 
   if (!outcome.ok) {
-    recordCompatFailure(rotator, body, outcome, options);
+    recordCompatFailure(rotator, body, outcome, startedAt, options);
     if (outcome.status === 404) {
       compatLogger.warn(
         `Compat upstream 404 endpoint=${outcome.endpoint || "unknown"} ${summarizeCompatRequest(body)} error=${(outcome.errorText || "").slice(0, 300)}`,

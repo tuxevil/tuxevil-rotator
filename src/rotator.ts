@@ -1,5 +1,5 @@
 import { summarizeAutoAccess } from "./auto-access-shadow.js";
-import { evaluateAutoModelAccess, type AutoAccountScope } from "./auto-model-access.js";
+import { evaluateAutoModelAccess, requiresAntigravityAccessPolicy, type AutoAccountScope } from "./auto-model-access.js";
 import { primeOllamaContextWindows } from "./providers/ollama/context-window.js";
 import {
   type AccountConfig,
@@ -1740,7 +1740,7 @@ export class AccountRotator {
       if (!access.eligible) {
         return {
           reason: "provider-ineligible",
-          detail: `auto access policy: ${access.reason}`,
+          detail: `model access policy: ${access.reason}`,
         };
       }
     }
@@ -2117,6 +2117,7 @@ export class AccountRotator {
     autoScope?: AutoAccountScope,
   ): Promise<AccountRuntime | null> {
     if (signal?.aborted) return null;
+    autoScope ??= this.getExplicitAccessScope(model, providerId);
     const queueKey = this.getRequestQueueKey(model, providerId);
     if (
       this.hasQueuedRequest(queueKey) ||
@@ -2793,6 +2794,7 @@ export class AccountRotator {
     autoScope?: AutoAccountScope,
   ): Promise<AccountRuntime | null> {
     if (this.isProtectivePauseActive(Date.now())) return null;
+    autoScope ??= this.getExplicitAccessScope(model, providerId);
     const modelKey = model ? this.resolveRequestPoolKey(model, providerId) : null;
     let excludeIdx: number;
     if (typeof failedAccount === "number") {
@@ -2813,6 +2815,13 @@ export class AccountRotator {
     return modelKey
       ? this.rotateModel(modelKey, Date.now(), excludeIdx, false, autoScope)
       : this.rotateDefault(Date.now(), false, excludeIdx);
+  }
+
+  private getExplicitAccessScope(model?: string, providerId?: string): AutoAccountScope | undefined {
+    if (!model) return undefined;
+    const provider = providerId ?? getProviderIdForPoolKey(this.resolveRequestPoolKey(model, providerId));
+    return provider === "openai-codex" || (provider === DEFAULT_PROVIDER && requiresAntigravityAccessPolicy(model))
+      ? { providerId: provider, modelId: model } : undefined;
   }
 
   // Record a successful request. Returns true if rotation is needed.
@@ -4277,6 +4286,7 @@ export class AccountRotator {
     for (const account of this.accounts) {
       if (account.disabled || account.flagged) continue;
       const candidateProviderId = providerId ?? getProviderIdForPoolKey(modelKey);
+      if (this.getProviderEligibilityRejection(account, modelKey, now)?.reason === "provider-ineligible") continue;
       if (
         autoScope &&
         !evaluateAutoModelAccess(
@@ -4333,9 +4343,9 @@ export class AccountRotator {
     return retryTimes.length > 0 ? Math.min(...retryTimes) : null;
   }
 
-  getRetryAfterMs(model?: string, providerId?: string): number {
+  getRetryAfterMs(model?: string, providerId?: string, autoScope?: AutoAccountScope): number {
     const now = Date.now();
-    const retryTimes = this.getRequestAvailabilityTimes(model, now, providerId);
+    const retryTimes = this.getRequestAvailabilityTimes(model, now, providerId, autoScope ?? this.getExplicitAccessScope(model, providerId));
     if (retryTimes.length === 0) return 0;
     return Math.max(1000, Math.min(...retryTimes) - now);
   }

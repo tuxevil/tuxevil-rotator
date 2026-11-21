@@ -1,4 +1,4 @@
-/** Policy data for access explanations and auto eligibility; it never authorizes explicit requests. */
+/** Policy data for access explanations and account eligibility. */
 export type AccessState = "allowed" | "blocked" | "conditional" | "unknown";
 export interface AccessRule {
   id: string;
@@ -17,15 +17,24 @@ export interface AccessRule {
   note: string;
 }
 const google = "https://antigravity.google/docs/models";
-const rule = (id: string, provider: string, plans: string[], modelPrefix: string, state: AccessState, evidence: AccessRule["evidence"], source: string, note: string, extra: Partial<AccessRule> = {}): AccessRule => ({ id, provider, plans, modelPrefix, state, evidence, source, verifiedAt: "2026-10-30", validFrom: "2026-10-30", reviewAfter: "2026-11-29", note, ...extra });
+const rule = (id: string, provider: string, plans: string[], modelPrefix: string, state: AccessState, evidence: AccessRule["evidence"], source: string, note: string, extra: Partial<AccessRule> = {}): AccessRule => ({ id, provider, plans, modelPrefix, state, evidence, source, verifiedAt: provider === "google-antigravity" ? "2026-11-20" : "2026-10-30", validFrom: "2026-10-30", reviewAfter: provider === "google-antigravity" ? "2026-12-20" : "2026-11-29", note, ...extra });
 export const MODEL_ACCESS_RULES: readonly AccessRule[] = [
   rule("ag-flash-free", "google-antigravity", ["free", "plus", "pro-trial", "pro-paid", "ultra", "enterprise"], "gemini-3.8-flash", "allowed", "documented", google, "Gemini 3.8 Flash is listed for Free/Plus."),
-  ...["claude-sonnet-4-6", "claude-opus-4-6"].map(model => rule(`ag-legacy-${model}`, "google-antigravity", ["free", "plus"], model, "allowed", "documented", google, "Removal announced for November 2; diagnostic cutoff uses UTC, exact upstream rollout may differ.", { validUntil: "2026-11-02" })),
-  ...["gemini-4-argon", "claude-sonnet-5-5", "claude-opus-5-5"].map(model => rule(`ag-paid-${model}`, "google-antigravity", ["free", "plus"], model, "blocked", "documented", google, "Not included in Free/Plus.")),
+  ...["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-pro"].flatMap(model => [
+    rule(`ag-enterprise-only-${model}`, "google-antigravity", ["free", "plus", "pro-trial", "pro-paid", "ultra"], model, "blocked", "documented", google, "Listed only for Enterprise."),
+    rule(`ag-enterprise-${model}`, "google-antigravity", ["enterprise"], model, "allowed", "documented", google, "Listed for Enterprise."),
+  ]),
+  ...["claude-sonnet-4-6", "claude-opus-4-6"].map(model => rule(`ag-legacy-${model}`, "google-antigravity", ["free", "plus", "pro-paid", "pro-trial"], model, "allowed", "documented", google, "Removal announced for November 18; exact upstream rollout may differ.", { validUntil: "2026-11-18" })),
+  ...["claude-sonnet-4-6", "claude-opus-4-6"].map(model => rule(`ag-legacy-unavailable-${model}`, "google-antigravity", ["ultra", "enterprise"], model, "blocked", "documented", google, "Not listed for Ultra or Enterprise.")),
+  ...["gemini-4", "claude-sonnet-5-5", "claude-opus-5-5"].map(model => rule(`ag-paid-${model}`, "google-antigravity", ["free", "plus"], model, "blocked", "documented", google, "Not included in Free/Plus.")),
   ...["claude-sonnet-5-5", "claude-opus-5-5"].map(model => rule(`ag-trial-${model}`, "google-antigravity", ["pro-trial"], model, "blocked", "documented", google, "Claude 5.5 requires a non-trial Pro subscription or higher eligible plan.")),
-  ...["gemini-4-argon", "claude-sonnet-5-5", "claude-opus-5-5"].map(model => rule(`ag-entitled-${model}`, "google-antigravity", ["pro-paid", "ultra", "enterprise"], model, "allowed", "documented", google, "Listed for paid Pro/Ultra; account entitlement and quota still apply.")),
+  ...["gemini-4-argon", "gemini-4-neon", "gemini-4-hydrogen", "claude-sonnet-5-5", "claude-opus-5-5"].map(model => rule(`ag-entitled-${model}`, "google-antigravity", ["pro-paid", "ultra", "enterprise"], model, "allowed", "documented", google, "Listed for paid Pro/Ultra; account entitlement and quota still apply.")),
+  rule("ag-carbon-paid", "google-antigravity", ["pro-paid", "pro-trial"], "gemini-4-carbon", "blocked", "documented", google, "Gemini 4 Carbon requires Ultra or Enterprise."),
+  rule("ag-carbon-ultra", "google-antigravity", ["ultra", "enterprise"], "gemini-4-carbon", "allowed", "documented", google, "Gemini 4 Carbon is listed for Ultra and Enterprise."),
+  rule("ag-hydrogen-trial", "google-antigravity", ["pro-trial"], "gemini-4-hydrogen", "blocked", "documented", google, "Gemini 4 Hydrogen requires a non-trial Pro plan or higher."),
+  rule("ag-neon-trial", "google-antigravity", ["pro-trial"], "gemini-4-neon", "conditional", "documented", google, "Only eligible premium-device trials."),
   rule("ag-argon-trial", "google-antigravity", ["pro-trial"], "gemini-4-argon", "conditional", "documented", google, "Only eligible premium-device trials; generic trial status is insufficient."),
-  ...["gpt-6-luna", "gpt-5.6-terra", "gpt-5.6-luna"].map(model => rule(`codex-free-${model}`, "openai-codex", ["free"], model, "allowed", "operator-confirmed", "Operator account-access report, 2026-10-30", "Confirmed as available on Codex Free accounts; live quota and account entitlement still apply.")),
+  ...["gpt-6-luna", "gpt-5.6-terra"].map(model => rule(`codex-free-${model}`, "openai-codex", ["free"], model, "allowed", "documented", "https://help.openai.com/en/articles/20001354-gpt-6-and-other-models-in-chatgpt", "Listed for Free; live account entitlement and quota still apply.", { exact: true, verifiedAt: "2026-11-20", reviewAfter: "2026-12-20" })),
   rule("codex-terra61-free", "openai-codex", ["free"], "gpt-6.1-terra", "blocked", "documented", "https://learn.chatgpt.com/docs/pricing", "Official ChatGPT Work/Codex availability lists paid plans for Terra 6.1. Free is not included; account-specific provider rejections are separate evidence.", { exact: true, verifiedAt: "2026-10-31", validFrom: "2026-10-26", reviewAfter: "2026-11-30" }),
   rule("codex-terra61-plus", "openai-codex", ["plus"], "gpt-6.1-terra", "allowed", "documented", "https://learn.chatgpt.com/docs/pricing", "Terra 6.1 is listed for Plus in Work/Codex; rollout, surface access, quota and account restrictions still apply.", { exact: true, verifiedAt: "2026-10-31", validFrom: "2026-10-26", reviewAfter: "2026-11-30" }),
   ...["beam", "gemma4:31b", "gpt-oss:120b", "gpt-oss:20b", "nemotron-3-nano:30b", "nemotron-3-super", "nemotron-3-ultra"].map(model => rule(`ollama-free-${model}`, "ollama", ["free"], model, "allowed", "operator-confirmed", "Operator-provided Ollama free-credit list, 2026-10-30", "Included in the supplied free-credit list; quota and live entitlement are separate.")),

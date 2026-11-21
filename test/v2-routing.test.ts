@@ -60,13 +60,13 @@ function makeConfig(): Config {
   };
 }
 
-function advertiseGoogleModelForRotator(rotator: any): void {
+function advertiseGoogleModelForRotator(rotator: any, model = "gemini-3.1-pro"): void {
   const accountIds = rotator.accounts
     .filter((account: any) => account.config.credentials?.some(
       (credential: any) => credential.provider === "google-antigravity",
     ))
     .map((account: any) => getAccountIdentity(account));
-  setAntigravityModelsForTest(["gemini-3.1-pro"], accountIds);
+  setAntigravityModelsForTest([model], accountIds);
 }
 
 describe("v2 routing and status", () => {
@@ -84,6 +84,60 @@ describe("v2 routing and status", () => {
     for (const accountId of accountIds) {
       dynamicCatalog.updateFromEndpointResponse(snapshot, accountId);
     }
+  });
+
+  it("enforces Antigravity paid model access for direct admission and rotation", async () => {
+    const config = makeConfig();
+    config.accounts![1].tier = "pro";
+    const ids = config.accounts!.map(getAccountIdentity);
+    const models = ["claude-sonnet-5-5-medium", "claude-opus-5-5-high", "gemini-4-argon-high"];
+    setAntigravityModelsForTest(models, ids);
+    const rotator = new AccountRotator(config) as any;
+    rotator.stopQuotaPolling();
+    rotator.ensureValidTokenForProvider = async () => {};
+    for (const model of models) {
+      const account = await rotator.getActiveAccount(model, undefined, "google-antigravity");
+      assert.equal(account?.config.email, "b@example.com", model);
+      rotator.finishRequest(account, model, "google-antigravity");
+      assert.equal(await rotator.rotateToNext(model, account, "google-antigravity"), null, model);
+    }
+  });
+
+  it("calculates retry time using only accounts eligible for the selected model", () => {
+    const config = makeConfig();
+    config.accounts![1].tier = "pro";
+    const rotator = new AccountRotator(config) as any;
+    rotator.stopQuotaPolling();
+    const model = "claude-sonnet-5-5-medium";
+    setAntigravityModelsForTest([model], rotator.accounts.map((a: any) => getAccountIdentity(a.config)));
+    const poolKey = rotator.resolveRequestPoolKey(model, "google-antigravity");
+    const key = rotator.resolveQuotaStateKey(poolKey);
+    const now = Date.now();
+    rotator.accounts[0].cooldownsByModel[key] = now + 60_000;
+    rotator.accounts[1].cooldownsByModel[key] = now + 600_000;
+    const delay = rotator.getRetryAfterMs(model, "google-antigravity");
+    assert.ok(delay > 590_000 && delay <= 600_000, `expected Pro cooldown, got ${delay}`);
+  });
+
+  it("enforces Codex plan eligibility for direct admission and retry rotation", async () => {
+    const { accessEvidenceStore } = await import("../src/access-evidence.js");
+    const config = makeConfig();
+    config.accounts = ["free", "paid"].map((name) => ({
+      email: `${name}-codex@example.com`,
+      credentials: [{ provider: "openai-codex", refreshToken: name, providerAccountId: name }],
+    }));
+    const rotator = new AccountRotator(config) as any;
+    rotator.stopQuotaPolling();
+    rotator.setCodexModels(["gpt-6.1-terra", "gpt-6-luna"]);
+    rotator.ensureValidTokenForProvider = async () => {};
+    accessEvidenceStore().declarePlan(rotator.accounts[0].config, "openai-codex", "free");
+    accessEvidenceStore().declarePlan(rotator.accounts[1].config, "openai-codex", "plus");
+    const paid = await rotator.getActiveAccount("gpt-6.1-terra", undefined, "openai-codex");
+    assert.equal(paid?.config.email, "paid-codex@example.com");
+    rotator.finishRequest(paid, "gpt-6.1-terra", "openai-codex");
+    assert.equal(await rotator.rotateToNext("gpt-6.1-terra", paid, "openai-codex"), null);
+    const free = await rotator.rotateToNext("gpt-6-luna", paid, "openai-codex");
+    assert.equal(free?.config.email, "free-codex@example.com");
   });
 
   it("merges different account catalogs without losing models or discovered metadata", async () => {
@@ -1484,7 +1538,7 @@ describe("v2 routing and status", () => {
     ];
     const rotator = new AccountRotator(config) as any;
     rotator.stopQuotaPolling();
-    advertiseGoogleModelForRotator(rotator);
+    advertiseGoogleModelForRotator(rotator, "gemini-3.8-flash-high");
     rotator.ensureValidTokenForModel = async () => {};
     rotator.modelState.delete("gemini");
     rotator.defaultIndex = 0;
@@ -1500,17 +1554,17 @@ describe("v2 routing and status", () => {
       ];
     }
 
-    const first = await rotator.getActiveAccount("gemini-3.1-pro");
+    const first = await rotator.getActiveAccount("gemini-3.8-flash-high");
     assert.equal(first?.config.email, "plus@example.com");
-    const second = await rotator.getActiveAccount("gemini-3.1-pro");
+    const second = await rotator.getActiveAccount("gemini-3.8-flash-high");
     assert.equal(
       second?.config.email,
       "plus@example.com",
       "an eligible Plus account must remain preferred over a less-loaded Free account",
     );
 
-    rotator.finishRequest(first, "gemini-3.1-pro");
-    rotator.finishRequest(second, "gemini-3.1-pro");
+    rotator.finishRequest(first, "gemini-3.8-flash-high");
+    rotator.finishRequest(second, "gemini-3.8-flash-high");
   });
 
   it("re-evaluates a persisted lower-tier assignment when tier-first is idle", async () => {
@@ -1534,7 +1588,7 @@ describe("v2 routing and status", () => {
     ];
     const rotator = new AccountRotator(config) as any;
     rotator.stopQuotaPolling();
-    advertiseGoogleModelForRotator(rotator);
+    advertiseGoogleModelForRotator(rotator, "gemini-3.8-flash-high");
     rotator.ensureValidTokenForModel = async () => {};
     rotator.defaultIndex = 0;
     rotator.modelState.set("gemini", {
@@ -1554,14 +1608,14 @@ describe("v2 routing and status", () => {
       ];
     }
 
-    const selected = await rotator.getActiveAccount("gemini-3.1-pro");
+    const selected = await rotator.getActiveAccount("gemini-3.8-flash-high");
     assert.equal(
       selected?.config.email,
       "plus@example.com",
       "an idle tier-first request must replace a persisted Free assignment when Plus is eligible",
     );
 
-    rotator.finishRequest(selected, "gemini-3.1-pro");
+    rotator.finishRequest(selected, "gemini-3.8-flash-high");
   });
 
   it("debounces model assignment state writes on the request path", async () => {
@@ -1608,7 +1662,7 @@ describe("v2 routing and status", () => {
   it("marks positive-quota accounts as exhausted once local daily safety budget is spent", () => {
     const rotator = new AccountRotator(makeConfig()) as any;
     rotator.stopQuotaPolling();
-    advertiseGoogleModelForRotator(rotator);
+    advertiseGoogleModelForRotator(rotator, "gemini-3.8-flash-high");
     for (const account of rotator.accounts) {
       account.quota = [
         {
@@ -1622,21 +1676,22 @@ describe("v2 routing and status", () => {
       account.dailyRequestCount = 350;
     }
 
-    const best = rotator.pickBestModelAccount("gemini-3.1-pro", Date.now(), -1);
+    const best = rotator.pickBestModelAccount("gemini-3.8-flash-high", Date.now(), -1);
     assert.equal(best, null);
+    rotator.modelState.set("gemini-3.8-flash-high", { activeAccountIndex: 0, quotaAtRotationStart: 44, requestsOnActiveAccount: 0 });
 
     const status = rotator.getStatus();
     assert.equal(status.accounts[0].status, "exhausted");
     assert.equal(status.accounts[0].dailyRequestCount, 350);
     assert.equal(
-      status.routingDiagnostics["gemini-3.1-pro"].accounts[0].rejectedReason,
+      status.routingDiagnostics["gemini-3.8-flash-high"].accounts[0].rejectedReason,
       "daily-account-stop",
     );
     assert.match(
-      status.routingDiagnostics["gemini-3.1-pro"].reason,
+      status.routingDiagnostics["gemini-3.8-flash-high"].reason,
       /daily account budget exhausted/,
     );
-    const retryAfterMs = rotator.getRetryAfterMs("gemini-3.1-pro");
+    const retryAfterMs = rotator.getRetryAfterMs("gemini-3.8-flash-high");
     assert.ok(retryAfterMs > 0);
     assert.ok(retryAfterMs <= 24 * 60 * 60 * 1000);
   });

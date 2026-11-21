@@ -268,6 +268,23 @@ function requestStream(
   return stream;
 }
 
+it("records requests rejected before any account is selected", async () => {
+  const tracking = createTracking();
+  const rotator = createRotatorStub(tracking);
+  rotator.getActiveAccount = async () => null;
+  rotator.getRetryAfterMs = () => 60_000;
+  const req = requestStream("POST", "/v1/chat/completions", {
+    model: "gemini-3.8-flash-high", messages: [{ role: "user", content: "ping" }],
+  });
+  const res = responseStub();
+  await handleOpenAIChatCompletions(req, res, rotator);
+  assert.equal(res.statusCodeCaptured, 429);
+  assert.equal(tracking.requestLogs.length, 1);
+  assert.equal(tracking.requestLogs[0].account, "No account");
+  assert.equal(tracking.requestLogs[0].statusCode, 429);
+  assert.equal(tracking.recordRequests, 0);
+});
+
 function responseStub(): ResponseStub {
   let headersSent = false;
   let writableEnded = false;
