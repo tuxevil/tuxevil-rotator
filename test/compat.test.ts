@@ -467,6 +467,57 @@ describe("compat adapters", () => {
 		assert.equal(parsed.finishReason, "MAX_TOKENS");
 	});
 
+	it("delivers generated images as markdown data URIs and drops thought images", () => {
+		const parsed = parseAntigravitySse([
+			'data: {"response":{"candidates":[{"content":{"parts":[{"thought":true,"inlineData":{"mimeType":"image/png","data":"VGhvdWdodA=="}}]}}]}}',
+			'data: {"response":{"candidates":[{"content":{"parts":[{"text":"Here it is:"},{"inlineData":{"mimeType":"image/jpeg","data":"Q2F0SW1n"}}]}}]}}',
+			'data: {"response":{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"audio/wav","data":"QXVkaW8="}}]}}]}}',
+			"",
+		].join("\n"));
+		assert.equal(parsed.text, "Here it is:\n\n![image](data:image/jpeg;base64,Q2F0SW1n)");
+		assert.doesNotMatch(parsed.text, /VGhvdWdodA|QXVkaW8/);
+	});
+
+	it("sends generated images in assistant history back as inlineData with their signature", () => {
+		parseAntigravitySse(
+			'data: {"response":{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/jpeg","data":"U2lnbmVkSW1n"},"thoughtSignature":"sig-img"}]}}]}}\n',
+		);
+		const body = openAIToAntigravityBody({
+			model: "gemini-3-flash",
+			messages: [
+				{ role: "user", content: "Draw a cat." },
+				{
+					role: "assistant",
+					content: "Here it is:\n\n![image](data:image/jpeg;base64,U2lnbmVkSW1n)\n\nEnjoy.",
+				},
+				{ role: "user", content: "Now make it blue." },
+			],
+		});
+		const contents = (body.request as { contents: Array<{ role: string; parts: unknown[] }> }).contents;
+		assert.deepEqual(contents[1], {
+			role: "model",
+			parts: [
+				{ text: "Here it is:" },
+				{ inlineData: { mimeType: "image/jpeg", data: "U2lnbmVkSW1n" }, thoughtSignature: "sig-img" },
+				{ text: "Enjoy." },
+			],
+		});
+	});
+
+	it("collapses assistant history images to a placeholder for Claude", () => {
+		const body = openAIToAntigravityBody({
+			model: "claude-sonnet-4-6",
+			messages: [
+				{ role: "user", content: "Draw a cat." },
+				{ role: "assistant", content: "Done ![image](data:image/png;base64,QUJDRA==)" },
+				{ role: "user", content: "Describe it." },
+			],
+		});
+		const reqStr = JSON.stringify(body.request);
+		assert.match(reqStr, /Done \[image\]/);
+		assert.doesNotMatch(reqStr, /QUJDRA|inlineData/);
+	});
+
 	it("handles empty SSE payloads without crashing", () => {
 		const parsed = parseAntigravitySse("");
 		assert.equal(parsed.text, "");

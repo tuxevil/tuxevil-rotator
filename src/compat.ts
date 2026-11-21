@@ -82,6 +82,7 @@ import {
   buildResponsesResponse,
   saveResponsesEntry,
   toolArgumentsToObject,
+  geminiResponsePartToCompat,
 } from "./providers/google-antigravity/translators.js";
 import {
   openAIToOllamaBody,
@@ -529,6 +530,7 @@ export function parseOpenAiJson(raw: string): CompatCompletion {
 }
 
 export function parseAntigravitySse(raw: string): CompatCompletion {
+  const geminiParts: Record<string, unknown>[] = [];
   let text = "";
   let thinkingText = "";
   let inputTokens = 0;
@@ -565,8 +567,12 @@ export function parseAntigravitySse(raw: string): CompatCompletion {
           !Array.isArray(candidate.content.parts)
         )
           continue;
-        for (const part of candidate.content.parts) {
-          if (!isRecord(part)) continue;
+        for (const rawPart of candidate.content.parts) {
+          const part = geminiResponsePartToCompat(rawPart);
+          if (!part) continue;
+          if (isRecord(rawPart) && rawPart.thought !== true && typeof part.text === "string") {
+            geminiParts.push(rawPart);
+          }
           if (typeof part.text === "string") {
             // Route thought blocks separately from normal text
             if (part.thought === true) {
@@ -656,6 +662,7 @@ export function parseAntigravitySse(raw: string): CompatCompletion {
     toolCallsMap.size > 0 ? [...toolCallsMap.values()] : undefined;
   return {
     text: parsedText,
+    ...(geminiParts.length ? { geminiParts } : {}),
     thinkingText: thinkingText || undefined,
     inputTokens,
     outputTokens,
@@ -1241,8 +1248,9 @@ export async function streamCompatSse(
               !Array.isArray(candidate.content.parts)
             )
               continue;
-            for (const part of candidate.content.parts) {
-              if (!isRecord(part)) continue;
+            for (const rawPart of candidate.content.parts) {
+              const part = geminiResponsePartToCompat(rawPart);
+              if (!part) continue;
               if (typeof part.text === "string" && part.text) {
                 if (part.thought === true) {
                   // Thought block → reasoning_content (OpenAI) or thinking_delta (Anthropic)
@@ -2015,8 +2023,9 @@ export async function streamResponsesSse(
               !Array.isArray(candidate.content.parts)
             )
               continue;
-            for (const part of candidate.content.parts) {
-              if (!isRecord(part)) continue;
+            for (const rawPart of candidate.content.parts) {
+              const part = geminiResponsePartToCompat(rawPart);
+              if (!part) continue;
               if (typeof part.text === "string" && part.text) {
                 if (part.thought === true) {
                   // Stream reasoning content via Responses API reasoning events.
@@ -2997,7 +3006,7 @@ export async function handleGeminiGenerateContent(
       {
         content: {
           role: "model",
-          parts: [{ text: result.completion.text }],
+          parts: result.completion.geminiParts ?? [{ text: result.completion.text }],
         },
         finishReason: "STOP",
       },

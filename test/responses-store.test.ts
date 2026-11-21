@@ -75,6 +75,29 @@ describe("ResponsesStore", () => {
     assert.equal(store.get(id), null);
   });
 
+  it("evicts old image responses by serialized size and skips oversized entries", () => {
+    store.clear();
+    const image = `![image](data:image/png;base64,${"A".repeat(6 * 1024 * 1024)})`;
+    const expiresAt = Date.now() + 60_000;
+    for (const id of ["first", "second", "third"]) {
+      const [, entry] = makeEntry(id, expiresAt);
+      entry.response.output_text = image;
+      entry.conversationMessages = [{ role: "assistant", content: image }];
+      store.set(id, entry);
+    }
+
+    assert.equal(store.get("first"), null);
+    assert.ok(store.get("second"));
+    assert.ok(store.get("third"));
+
+    const [, oversized] = makeEntry("oversized", expiresAt);
+    oversized.conversationMessages = Array.from({ length: 6 }, () => ({ content: image }));
+    store.set("oversized", oversized);
+    assert.equal(store.get("oversized"), null);
+    assert.equal(store.size(), 2);
+    store.clear();
+  });
+
   it("flush persists to the repository", async () => {
     store.clear();
     store.set("disk-1", makeEntry("disk-1", Date.now() + 60_000)[1]);
