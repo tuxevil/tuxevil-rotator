@@ -1,7 +1,7 @@
 // The dashboard's single status vocabulary. Every label, tone and grouping
 // for accounts, routing health and providers comes from here.
 
-import type { AccountTier, ModelQuota } from "../../types.js";
+import type { AccountTier, ModelQuota, QuotaWindow } from "../../types.js";
 import type {
   DashboardAccount,
   RoutingHealthState,
@@ -168,12 +168,28 @@ export function tierLabel(tier: AccountTier | string | undefined): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
-export const TIMER_LABELS: Record<ModelQuota["timerType"], string> = {
+export const TIMER_LABELS: Record<string, string> = {
   fresh: "Idle — no window running",
   "5h": "5-hour window",
   "7d": "7-day window",
   monthly: "Monthly pool",
+  daily: "Daily window",
 };
+
+export function timerLabel(timerType: string): string {
+  if (TIMER_LABELS[timerType]) return TIMER_LABELS[timerType];
+  if (/^\d+[smhdw]$/i.test(timerType)) return `${timerType} window`;
+  return timerType;
+}
+
+export function windowShortLabel(win: Pick<QuotaWindow, "window" | "label">): string {
+  const w = win.window.trim().toLowerCase();
+  if (w === "weekly" || w === "7d") return "Weekly";
+  if (w === "daily" || w === "1d") return "Daily";
+  if (w === "monthly") return "Monthly";
+  if (/^\d+[smhdw]$/i.test(w)) return w;
+  return win.label || win.window;
+}
 
 /** Idle pools can be started with a minimal request ("kickstart"). */
 export function isKickstartable(quota: ModelQuota): boolean {
