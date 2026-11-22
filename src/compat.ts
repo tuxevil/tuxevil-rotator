@@ -83,6 +83,7 @@ import {
   saveResponsesEntry,
   toolArgumentsToObject,
   geminiResponsePartToCompat,
+  isTieredEffortModel,
 } from "./providers/google-antigravity/translators.js";
 import {
   openAIToOllamaBody,
@@ -2599,20 +2600,53 @@ export interface OpenAIModelCatalogEntry {
   meta: Record<string, unknown>;
 }
 
+const SCALAR_REASONING_EFFORTS = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+
+const TIERED_REASONING_EFFORTS = ["low", "medium", "high"] as const;
+
+function withAdaptiveTieredEfforts(model: CompatModelEntry): CompatModelEntry {
+  if (
+    model.isThinking &&
+    model.thinkingBudget === -1 &&
+    getModelFamily(model.id) !== "claude" &&
+    isTieredEffortModel(model.id)
+  ) {
+    return {
+      ...model,
+      reasoningEfforts: [...TIERED_REASONING_EFFORTS],
+    };
+  }
+  return model;
+}
+
 function getOpenAIAntigravityModels(
   source: ModelCatalogSource,
 ): CompatModelEntry[] {
   // Effort aliases stand in for their targets, so filter before swapping them.
   const all = getEffectiveAntigravityModels();
-  const result = all.filter((model) => isModelServed(source, "google-antigravity", model.id));
+  const result = all
+    .filter((model) => isModelServed(source, "google-antigravity", model.id))
+    .map(withAdaptiveTieredEfforts);
   const rules = getEffortRouting();
   if (!rules || Object.keys(rules).length === 0) {
     return result;
   }
 
+  const servedById = new Map(result.map((model) => [model.id.toLowerCase(), model]));
   const successfulAliases: Array<{
     alias: string;
     representative: CompatModelEntry;
+    isThinking: boolean;
+    reasoningEfforts?: string[];
+    defaultReasoningEffort?: string;
   }> = [];
   const hiddenTargetIds = new Set<string>();
   const successfulAliasNames = new Set<string>();
@@ -2641,9 +2675,7 @@ function getOpenAIAntigravityModels(
       unavailableAliasNames.add(alias.toLowerCase());
       continue;
     }
-    const representative = result.find(
-      (m) => m.id.toLowerCase() === defaultTargetId.toLowerCase(),
-    );
+    const representative = servedById.get(defaultTargetId.toLowerCase());
     if (!representative) {
       // A default target turned off on the Models page hides the alias; only
       // a target missing from the catalog is a configuration problem.
@@ -2654,7 +2686,47 @@ function getOpenAIAntigravityModels(
       }
       continue;
     }
-    successfulAliases.push({ alias, representative });
+
+    const servedTargetModels: CompatModelEntry[] = [];
+    const servedEffortSet = new Set<string>();
+    for (const [effortKey, targetId] of Object.entries(rule.targets)) {
+      const target = servedById.get(targetId.toLowerCase());
+      if (!target) continue;
+      if (
+        isRequestOff(source, {
+          catalogModel: alias,
+          model: targetId,
+          providerId: "google-antigravity",
+        })
+      ) {
+        continue;
+      }
+      servedTargetModels.push(target);
+      servedEffortSet.add(effortKey.trim().toLowerCase());
+    }
+    const aliasEfforts = SCALAR_REASONING_EFFORTS.filter((effort) =>
+      servedEffortSet.has(effort),
+    );
+    const aliasIsThinking =
+      representative.isThinking || servedTargetModels.some((model) => model.isThinking);
+    const hasAliasEffortSelector = aliasEfforts.length >= 2;
+    const normalizedDefaultEffort = defaultEffortKey.trim().toLowerCase();
+
+    successfulAliases.push({
+      alias,
+      representative,
+      isThinking: aliasIsThinking,
+      reasoningEfforts: hasAliasEffortSelector
+        ? aliasEfforts
+        : representative.reasoningEfforts,
+      defaultReasoningEffort: hasAliasEffortSelector
+        ? aliasEfforts.includes(
+            normalizedDefaultEffort as (typeof SCALAR_REASONING_EFFORTS)[number],
+          )
+          ? normalizedDefaultEffort
+          : undefined
+        : representative.defaultReasoningEffort,
+    });
     successfulAliasNames.add(alias.toLowerCase());
     for (const targetId of Object.values(rule.targets)) {
       hiddenTargetIds.add(targetId.toLowerCase());
@@ -2668,10 +2740,19 @@ function getOpenAIAntigravityModels(
       !successfulAliasNames.has(m.id.toLowerCase()),
   );
 
-  for (const { alias, representative } of successfulAliases) {
+  for (const {
+    alias,
+    representative,
+    isThinking,
+    reasoningEfforts,
+    defaultReasoningEffort,
+  } of successfulAliases) {
     filtered.push({
       ...representative,
       id: alias,
+      isThinking,
+      ...(reasoningEfforts ? { reasoningEfforts } : {}),
+      ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
     });
   }
 
@@ -2706,6 +2787,8 @@ export function buildOpenAIModelCatalog(
       thinkingBudget,
       minThinkingBudget,
       isThinking,
+      reasoningEfforts,
+      defaultReasoningEffort,
     }) => ({
       id,
       object: "model",
@@ -2724,6 +2807,16 @@ export function buildOpenAIModelCatalog(
         thinking_budget: thinkingBudget,
         ...(minThinkingBudget !== undefined
           ? { min_thinking_budget: minThinkingBudget }
+          : {}),
+        ...(isThinking && reasoningEfforts && reasoningEfforts.length > 0
+          ? { reasoning_efforts: reasoningEfforts }
+          : {}),
+        ...(isThinking &&
+        reasoningEfforts &&
+        reasoningEfforts.length > 0 &&
+        defaultReasoningEffort &&
+        reasoningEfforts.includes(defaultReasoningEffort)
+          ? { default_reasoning_effort: defaultReasoningEffort }
           : {}),
       },
     }),

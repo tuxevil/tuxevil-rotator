@@ -221,7 +221,7 @@ For earlier Gemini models and Claude, the thinking budget is predetermined by mo
 | `claude-sonnet-4-6` | 1,000,000 | 32,768 tokens (fixed) |
 | `claude-opus-4-6-thinking` | 1,000,000 | 32,768 tokens (fixed) |
 
-## Codex reasoning levels
+## Reasoning effort levels
 
 Both connection commands install the shared capability mapper and refresh static model definitions from the live catalog:
 
@@ -230,7 +230,7 @@ tuxevil-rotator install-opencode --rotator-url http://127.0.0.1:51200/v1
 tuxevil-rotator install-agent --target opencode --rotator-url http://127.0.0.1:51200/v1
 ```
 
-Codex models keep one ID. The discovery plugin maps `meta.reasoning_efforts` to OpenCode 2 `capabilities.reasoning.effort` and variants such as `high` with `settings.reasoningEffort: "high"`. For example, select `tuxevil-rotator/gpt-5.6-sol#high` (use an ID present in your catalog). The legacy `provider.models` fallback uses `variants.high.reasoningEffort`; OpenCode 2 migrates that form.
+Codex models, Antigravity `effortRouting` aliases (with two or more served scalar levels), and adaptive `-tiered` Gemini models keep one ID. The discovery plugin maps `meta.reasoning_efforts` to OpenCode 2 `capabilities.reasoning.effort` and variants such as `high` with `settings.reasoningEffort: "high"`. For example, select `tuxevil-rotator/gpt-5.6-sol#high` or `tuxevil-rotator/gemini-3.8-flash#high` (use an ID present in your catalog). The legacy `provider.models` fallback uses `variants.high.reasoningEffort`; OpenCode 2 migrates that form.
 
 The plugin refreshes when model capabilities change, including when the IDs stay the same. Existing model options, custom/disabled variants and limits remain authoritative. Installation backs up existing JSON and leaves the chosen default model and existing API key unchanged when no new key is supplied. If the rotator is offline, existing model definitions are retained.
 

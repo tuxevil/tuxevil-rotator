@@ -399,3 +399,98 @@ it("reloads the provider when effort metadata changes without changing model IDs
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
+
+it("merges discovered reasoning efforts into existing models that only declared reasoning.supported", async () => {
+  const server = http.createServer((_req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify({
+        data: [
+          {
+            id: "gemini-3.8-flash",
+            meta: {
+              thinking: true,
+              reasoning_efforts: ["low", "medium", "high"],
+              default_reasoning_effort: "medium",
+            },
+          },
+          {
+            id: "gemini-4-argon",
+            meta: {
+              thinking: true,
+              reasoning_efforts: ["low", "medium", "high"],
+            },
+          },
+        ],
+      }),
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as { port: number };
+  const existingProvider = {
+    provider: { name: "Tuxevil Rotator" },
+    models: new Map([
+      [
+        "gemini-3.8-flash",
+        {
+          name: "gemini-3.8-flash",
+          capabilities: { reasoning: { supported: true } },
+        },
+      ],
+      [
+        "gemini-4-argon",
+        {
+          name: "gemini-4-argon",
+          capabilities: { reasoning: { supported: true, effort: ["high"] } },
+        },
+      ],
+    ]),
+  };
+  const added: Array<{ models: Array<Record<string, unknown>> }> = [];
+  try {
+    await discoveryPlugin.setup({
+      options: {
+        baseURL: `http://127.0.0.1:${port}/v1`,
+        providerID: "tuxevil-rotator",
+        refreshMs: 0,
+      },
+      provider: {
+        list: async () => [],
+        transform: async (callback: (editor: FakeEditor) => void) => {
+          callback({
+            get: (id) => (id === "tuxevil-rotator" ? existingProvider : undefined),
+            add: (record) =>
+              added.push(record as { models: Array<Record<string, unknown>> }),
+          });
+          return { dispose: async () => {} };
+        },
+      },
+    });
+    assert.equal(added.length, 1);
+    const flash = added[0].models.find((m) => m.id === "gemini-3.8-flash") as Record<
+      string,
+      any
+    >;
+    assert.deepEqual(flash.capabilities.reasoning, {
+      supported: true,
+      effort: ["low", "medium", "high"],
+    });
+    assert.deepEqual(flash.variants, [
+      { id: "low", settings: { reasoningEffort: "low" } },
+      { id: "medium", settings: { reasoningEffort: "medium" } },
+      { id: "high", settings: { reasoningEffort: "high" } },
+    ]);
+
+    const argon = added[0].models.find((m) => m.id === "gemini-4-argon") as Record<
+      string,
+      any
+    >;
+    assert.deepEqual(argon.capabilities.reasoning, {
+      supported: true,
+      effort: ["high"],
+    });
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});

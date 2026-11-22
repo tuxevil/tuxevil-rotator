@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Publish `meta.reasoning_efforts` and `meta.default_reasoning_effort` on Antigravity `effortRouting` aliases and adaptive `-tiered` Gemini models (`thinking_budget: -1`) in `GET /v1/models`, and merge discovered effort controls into OpenCode models that previously only declared `capabilities.reasoning.supported: true`, so OpenCode displays effort variants for Gemini and Claude models.
+
 ## [4.4.4] - 2026-11-21
 
 ### Fixed

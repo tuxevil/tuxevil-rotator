@@ -291,12 +291,22 @@ export default {
 
     const toModelInfo = (raw, existingModel) => {
       const { id, modelDef } = mapModelToOpenCode(raw)
+      const existingReasoning = existingModel?.capabilities?.reasoning
+      const discoveredReasoning = modelDef.capabilities.reasoning
+      const mergedReasoning =
+        discoveredReasoning || existingReasoning
+          ? { ...(discoveredReasoning ?? {}), ...(existingReasoning ?? {}) }
+          : undefined
       return {
         ...modelInfoDefault(resolved.providerID, id),
         ...(existingModel ?? {}),
         id: makeModelID(id),
         name: existingModel?.name || modelDef.name,
-        capabilities: { ...modelDef.capabilities, ...(existingModel?.capabilities ?? {}) },
+        capabilities: {
+          ...modelDef.capabilities,
+          ...(existingModel?.capabilities ?? {}),
+          ...(mergedReasoning ? { reasoning: mergedReasoning } : {}),
+        },
         limit: { ...modelDef.limit, ...(existingModel?.limit ?? {}) },
         ...(modelDef.variants ? { variants: [...new Map([...modelDef.variants, ...(Array.isArray(existingModel?.variants) ? existingModel.variants : [])].map(v => [v.id, v])).values()] } : {}),
       }
