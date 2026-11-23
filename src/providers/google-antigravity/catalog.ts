@@ -124,6 +124,8 @@ export interface CompatModelEntry {
   thinkingBudget: number;
   minThinkingBudget?: number;
   isThinking: boolean;
+  reasoningEfforts?: string[];
+  defaultReasoningEffort?: string;
 }
 
 export function getEffectiveAntigravityModels(): CompatModelEntry[] {

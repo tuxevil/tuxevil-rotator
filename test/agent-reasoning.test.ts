@@ -28,9 +28,12 @@ import {
   setDiscoveredCodexModels,
 } from "../src/providers/openai-codex/catalog.js";
 import { buildOpenAIModelCatalog } from "../src/compat.js";
+import { setModelSpecsOverride } from "../src/compat/model-specs.js";
 import { chatToCodexResponsesRequest } from "../src/providers/openai-codex/compat.js";
 import { sanitizeCodexResponsesRequest } from "../src/providers/openai-codex/forward.js";
-import type { AccountRuntime } from "../src/types.js";
+import { dynamicCatalog } from "../src/providers/google-antigravity/dynamic-catalog.js";
+import { setEffortRoutingOverride, type AccountRuntime } from "../src/types.js";
+import { setAntigravityModelsForTest } from "./fixtures/antigravity-catalog.js";
 
 const codex = {
   id: "gpt-5.6-sol",
@@ -63,6 +66,9 @@ const originalFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = originalFetch;
   setDiscoveredCodexModels([]);
+  setEffortRoutingOverride(null);
+  setModelSpecsOverride(null);
+  dynamicCatalog.reset();
 });
 
 describe("Codex reasoning capability discovery", () => {
@@ -135,6 +141,160 @@ describe("Codex reasoning capability discovery", () => {
         { effort },
       );
     }
+  });
+});
+
+describe("Antigravity reasoning effort metadata", () => {
+  it("exposes reasoning_efforts and default_reasoning_effort for effort-routed Gemini aliases", () => {
+    setAntigravityModelsForTest([
+      "gemini-3.8-flash-low",
+      "gemini-3.8-flash-medium",
+      "gemini-3.8-flash-high",
+      "gemini-4-hydrogen-sonar",
+    ]);
+    setEffortRoutingOverride({
+      "gemini-3.8-flash": {
+        defaultEffort: "medium",
+        targets: {
+          high: "gemini-3.8-flash-high",
+          low: "gemini-3.8-flash-low",
+          medium: "gemini-3.8-flash-medium",
+          custom: "gemini-3.8-flash-high",
+        },
+      },
+    });
+
+    const catalog = buildOpenAIModelCatalog();
+    const alias = catalog.find((m) => m.id === "gemini-3.8-flash");
+    assert.ok(alias);
+    assert.equal(alias.meta.thinking, true);
+    assert.deepEqual(alias.meta.reasoning_efforts, ["low", "medium", "high"]);
+    assert.equal(alias.meta.default_reasoning_effort, "medium");
+
+    const mapped = mapModelToOpenCode(alias);
+    assert.deepEqual(mapped.modelDef.capabilities.reasoning, {
+      supported: true,
+      effort: ["low", "medium", "high"],
+    });
+    assert.deepEqual(mapped.modelDef.variants, [
+      { id: "low", settings: { reasoningEffort: "low" } },
+      { id: "medium", settings: { reasoningEffort: "medium" } },
+      { id: "high", settings: { reasoningEffort: "high" } },
+    ]);
+
+    const fixed = catalog.find((m) => m.id === "gemini-4-hydrogen-sonar");
+    assert.ok(fixed);
+    assert.equal(fixed.meta.reasoning_efforts, undefined);
+    assert.equal(fixed.meta.default_reasoning_effort, undefined);
+  });
+
+  it("omits disabled effort targets from meta.reasoning_efforts", () => {
+    setAntigravityModelsForTest([
+      "gemini-3.8-flash-low",
+      "gemini-3.8-flash-medium",
+      "gemini-3.8-flash-high",
+    ]);
+    setEffortRoutingOverride({
+      "gemini-3.8-flash": {
+        defaultEffort: "medium",
+        targets: {
+          low: "gemini-3.8-flash-low",
+          medium: "gemini-3.8-flash-medium",
+          high: "gemini-3.8-flash-high",
+        },
+      },
+    });
+
+    const catalog = buildOpenAIModelCatalog({
+      getConfig: () => ({
+        disabledModels: ["google-antigravity/gemini-3.8-flash-high"],
+      }),
+      hasActiveProvider: () => false,
+    } as never);
+    const alias = catalog.find((m) => m.id === "gemini-3.8-flash");
+    assert.ok(alias);
+    assert.deepEqual(alias.meta.reasoning_efforts, ["low", "medium"]);
+    assert.equal(alias.meta.default_reasoning_effort, "medium");
+  });
+
+  it("marks effort aliases with a non-thinking default target as thinking when other targets think", () => {
+    dynamicCatalog.updateFromEndpointResponse({
+      models: {
+        "gemini-4-argon-disabled": {
+          maxTokens: 1_048_576,
+          maxOutputTokens: 65_536,
+          supportsThinking: false,
+          quotaInfo: { remainingFraction: 1 },
+        },
+        "gemini-4-argon-low": {
+          maxTokens: 1_048_576,
+          maxOutputTokens: 65_536,
+          supportsThinking: true,
+          thinkingBudget: 4000,
+          quotaInfo: { remainingFraction: 1 },
+        },
+        "gemini-4-argon-high": {
+          maxTokens: 1_048_576,
+          maxOutputTokens: 65_536,
+          supportsThinking: true,
+          thinkingBudget: 24576,
+          quotaInfo: { remainingFraction: 1 },
+        },
+      },
+    });
+    setEffortRoutingOverride({
+      "gemini-4-argon": {
+        defaultEffort: "none",
+        targets: {
+          none: "gemini-4-argon-disabled",
+          low: "gemini-4-argon-low",
+          high: "gemini-4-argon-high",
+        },
+      },
+    });
+
+    const alias = buildOpenAIModelCatalog().find((m) => m.id === "gemini-4-argon");
+    assert.ok(alias);
+    assert.equal(alias.meta.thinking, true);
+    assert.deepEqual(alias.meta.reasoning_efforts, ["none", "low", "high"]);
+    assert.equal(alias.meta.default_reasoning_effort, "none");
+
+    const mapped = mapModelToOpenCode(alias);
+    assert.deepEqual(mapped.modelDef.capabilities.reasoning, {
+      supported: true,
+      effort: ["low", "high"],
+      toggle: true,
+    });
+  });
+
+  it("publishes low/medium/high for adaptive tiered Gemini models only while thinkingBudget is -1", () => {
+    dynamicCatalog.updateFromEndpointResponse({
+      models: {
+        "gemini-3.8-flash-tiered": {
+          maxTokens: 1_048_576,
+          maxOutputTokens: 65_536,
+          supportsThinking: true,
+          thinkingBudget: -1,
+          quotaInfo: { remainingFraction: 1 },
+        },
+      },
+    });
+
+    const adaptive = buildOpenAIModelCatalog().find(
+      (m) => m.id === "gemini-3.8-flash-tiered",
+    );
+    assert.ok(adaptive);
+    assert.deepEqual(adaptive.meta.reasoning_efforts, ["low", "medium", "high"]);
+    assert.equal(adaptive.meta.default_reasoning_effort, undefined);
+
+    setModelSpecsOverride({
+      "gemini-3.8-flash-tiered": { thinkingBudget: 8192 },
+    });
+    const fixedOverride = buildOpenAIModelCatalog().find(
+      (m) => m.id === "gemini-3.8-flash-tiered",
+    );
+    assert.ok(fixedOverride);
+    assert.equal(fixedOverride.meta.reasoning_efforts, undefined);
   });
 });
 

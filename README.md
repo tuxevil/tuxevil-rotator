@@ -55,6 +55,7 @@ Originally built as a multi-account rotator for Google Antigravity. It now gener
 
 ## Current Model Update
 
+- **v4.4.5: Antigravity reasoning effort metadata**: Publish `meta.reasoning_efforts` and `meta.default_reasoning_effort` for Antigravity `effortRouting` aliases and adaptive `-tiered` Gemini models in `GET /v1/models`, and merge discovered effort controls in the OpenCode discovery plugin so Gemini and Claude models expose effort variants. ([Release notes](https://github.com/tuxevil/tuxevil-rotator/releases/tag/v4.4.5))
 - **v4.4.4: Gemini image output**: Deliver generated images through OpenAI Chat, OpenAI Responses, and Anthropic Messages, with support for editing an image on a follow-up turn. Native Gemini responses return structured image parts. ([Release notes](https://github.com/tuxevil/tuxevil-rotator/releases/tag/v4.4.4))
 - **v4.4.3: Account model access and routing visibility**: Enforce provider plan eligibility for direct requests, selection, and retries across Antigravity and Codex. Admission rejections now appear in request history, and cooldown estimates use accounts eligible for the requested model. ([Release notes](https://github.com/tuxevil/tuxevil-rotator/releases/tag/v4.4.3))
 
