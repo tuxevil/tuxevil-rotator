@@ -63,14 +63,29 @@ test("calculateCost uses Gemini 3.8 Flash rates for every native level", () => {
 
 test("Ollama savings use current official standard input/output rates", () => {
   for (const [model, cost] of [
-    ["glm-5.2", 5.8], ["kimi-k3", 18], ["minimax-m3", 3],
-    ["deepseek-v4.1-flash", 1.5], ["deepseek-v4-pro", 5.28],
-    ["mistral-large-4", 2.77], ["gemma4", 0.54],
-    ["ollama/gpt-oss:120b-cloud", 0.75],
+    ["beam", 0.525], ["glm-5.2", 5.8], ["kimi-k3", 18], ["kimi-k3.1-pro", 12],
+    ["minimax-m3", 3], ["minimax-m3.1-flash", 0.75],
+    ["deepseek-v4.1-flash", 1.5], ["deepseek-v4.1-flash:1017", 1.5],
+    ["deepseek-v4-pro", 5.28], ["mistral-large-4", 2.8], ["gemma4", 0.54],
+    ["muse-spark-open", 5.5], ["ollama/gpt-oss:120b-cloud", 0.75],
   ] as const) {
     assert.equal(calculateCost(model, 1_000_000, 1_000_000), cost, model);
   }
   assert.equal(calculateCost("gpt-oss-120b-medium", 1_000_000, 1_000_000), 12);
+});
+
+test("calculateCost uses official Gemini 4, Claude 5.5, and GPT-6.1/6.2 rates", () => {
+  assert.equal(calculateCost("gemini-4-neon", 1_000_000, 1_000_000), 18);
+  assert.equal(calculateCost("gemini-4-hydrogen", 1_000_000, 1_000_000), 9);
+  assert.equal(calculateCost("gemini-4-hydrogen-tiered", 1_000_000, 1_000_000), 9);
+  assert.equal(calculateCost("gemini-4-argon-disabled", 1_000_000, 1_000_000), 12);
+  assert.equal(calculateCost("gemini-4-carbon", 1_000_000, 1_000_000), 12);
+  assert.equal(calculateCost("claude-opus-5-5", 1_000_000, 1_000_000), 24);
+  assert.equal(calculateCost("claude-sonnet-5-5", 1_000_000, 1_000_000), 12);
+  assert.equal(calculateCost("gpt-6.2-astra", 1_000_000, 1_000_000), 48);
+  assert.equal(calculateCost("gpt-6.2-sol", 1_000_000, 1_000_000), 12);
+  assert.equal(calculateCost("gpt-6.1-sol", 1_000_000, 1_000_000), 12);
+  assert.equal(calculateCost("gpt-6.1-terra", 1_000_000, 1_000_000), 6);
 });
 
 test("generateRequestId produces unique prefixed strings", () => {

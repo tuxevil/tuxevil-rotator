@@ -47,24 +47,112 @@ export interface AARoutingAssessment {
   relativeToBest?: number;
 }
 
-export const AA_ROUTING_SCORE_SNAPSHOT = "2026-10-31";
+export const AA_ROUTING_SCORE_SNAPSHOT = "2026-11-23";
 
 const SCORE_RECORDS: Record<string, AAScoreRecord> = {
   "gemini-3.8-flash-high": {
     name: "Gemini 3.8 Flash", effort: "High", scores: { "v4.3.2": 41, "v5.0": 31 },
-    source: "https://artificialanalysis.ai/models/comparisons/gemini-4-argon-vs-gemini-3-8-flash",
+    source: "https://artificialanalysis.ai/models/gemini-3-8-flash",
+  },
+  "gemini-3.8-flash-medium": {
+    name: "Gemini 3.8 Flash", effort: "Medium", scores: { "v5.0": 30 },
+    source: "https://artificialanalysis.ai/models/gemini-3-8-flash",
+  },
+  "gemini-3.8-flash-low": {
+    name: "Gemini 3.8 Flash", effort: "Low", scores: { "v5.0": 23 },
+    source: "https://artificialanalysis.ai/models/gemini-3-8-flash",
   },
   "gemini-4-argon-high": {
     name: "Gemini 4 Argon", effort: "High", scores: { "v4.3.2": 53, "v5.0": 50 },
-    source: "https://artificialanalysis.ai/models/comparisons/gemini-4-argon-vs-gemini-3-8-flash",
+    source: "https://artificialanalysis.ai/models/gemini-4-argon",
+  },
+  "gemini-4-argon-medium": {
+    name: "Gemini 4 Argon", effort: "Medium", scores: { "v5.0": 48 },
+    source: "https://artificialanalysis.ai/models/gemini-4-argon",
+  },
+  "gemini-4-carbon-high": {
+    name: "Gemini 4 Carbon", effort: "High", scores: { "v5.0": 60 },
+    source: "https://artificialanalysis.ai/models/gemini-4-carbon",
+  },
+  "gemini-4-carbon-medium": {
+    name: "Gemini 4 Carbon", effort: "Medium", scores: { "v5.0": 58 },
+    source: "https://artificialanalysis.ai/models/gemini-4-carbon",
+  },
+  "gemini-4-carbon-low": {
+    name: "Gemini 4 Carbon", effort: "Low", scores: { "v5.0": 54 },
+    source: "https://artificialanalysis.ai/models/gemini-4-carbon",
+  },
+  "gemini-4-neon-xhigh": {
+    name: "Gemini 4 Neon", effort: "Xhigh", scores: { "v5.0": 61 },
+    source: "https://artificialanalysis.ai/models/gemini-4-neon",
+  },
+  "gemini-4-neon-high": {
+    name: "Gemini 4 Neon", effort: "High", scores: { "v5.0": 60 },
+    source: "https://artificialanalysis.ai/models/gemini-4-neon",
+  },
+  "gemini-4-neon-medium": {
+    name: "Gemini 4 Neon", effort: "Medium", scores: { "v5.0": 55 },
+    source: "https://artificialanalysis.ai/models/gemini-4-neon",
+  },
+  "gemini-4-neon-low": {
+    name: "Gemini 4 Neon", effort: "Low", scores: { "v5.0": 44 },
+    source: "https://artificialanalysis.ai/models/gemini-4-neon",
+  },
+  "gemini-4-hydrogen-xhigh": {
+    name: "Gemini 4 Hydrogen", effort: "Xhigh", scores: { "v5.0": 54 },
+    source: "https://artificialanalysis.ai/models/gemini-4-hydrogen",
+  },
+  "gemini-4-hydrogen-high": {
+    name: "Gemini 4 Hydrogen", effort: "High", scores: { "v5.0": 51 },
+    source: "https://artificialanalysis.ai/models/gemini-4-hydrogen",
+  },
+  "gemini-4-hydrogen-medium": {
+    name: "Gemini 4 Hydrogen", effort: "Medium", scores: { "v5.0": 41 },
+    source: "https://artificialanalysis.ai/models/gemini-4-hydrogen",
+  },
+  "gemini-4-hydrogen-low": {
+    name: "Gemini 4 Hydrogen", effort: "Low", scores: { "v5.0": 27 },
+    source: "https://artificialanalysis.ai/models/gemini-4-hydrogen",
   },
   "claude-sonnet-5-5-max": {
-    name: "Claude Sonnet 5.5", effort: "Max", scores: { "v4.3.2": 56, "v5.0": 54 },
-    source: "https://artificialanalysis.ai/models/comparisons/claude-opus-5-5-vs-claude-sonnet-5-5",
+    name: "Claude Sonnet 5.5", effort: "Max", scores: { "v4.3.2": 56, "v5.0": 55 },
+    source: "https://artificialanalysis.ai/models/claude-sonnet-5-5",
+  },
+  "claude-sonnet-5-5-xhigh": {
+    name: "Claude Sonnet 5.5", effort: "Xhigh", scores: { "v5.0": 50 },
+    source: "https://artificialanalysis.ai/models/claude-sonnet-5-5",
+  },
+  "claude-sonnet-5-5-high": {
+    name: "Claude Sonnet 5.5", effort: "High", scores: { "v5.0": 42 },
+    source: "https://artificialanalysis.ai/models/claude-sonnet-5-5",
+  },
+  "claude-sonnet-5-5-medium": {
+    name: "Claude Sonnet 5.5", effort: "Medium", scores: { "v5.0": 31 },
+    source: "https://artificialanalysis.ai/models/claude-sonnet-5-5",
+  },
+  "claude-sonnet-5-5-low": {
+    name: "Claude Sonnet 5.5", effort: "Low", scores: { "v5.0": 26 },
+    source: "https://artificialanalysis.ai/models/claude-sonnet-5-5",
   },
   "claude-opus-5-5-max": {
-    name: "Claude Opus 5.5", effort: "Max", scores: { "v4.3.2": 58, "v5.0": 58 },
-    source: "https://artificialanalysis.ai/models/comparisons/claude-opus-5-5-vs-claude-sonnet-5-5",
+    name: "Claude Opus 5.5", effort: "Max", scores: { "v4.3.2": 58, "v5.0": 59 },
+    source: "https://artificialanalysis.ai/models/claude-opus-5-5",
+  },
+  "claude-opus-5-5-xhigh": {
+    name: "Claude Opus 5.5", effort: "Xhigh", scores: { "v5.0": 57 },
+    source: "https://artificialanalysis.ai/models/claude-opus-5-5",
+  },
+  "claude-opus-5-5-high": {
+    name: "Claude Opus 5.5", effort: "High", scores: { "v5.0": 52 },
+    source: "https://artificialanalysis.ai/models/claude-opus-5-5",
+  },
+  "claude-opus-5-5-medium": {
+    name: "Claude Opus 5.5", effort: "Medium", scores: { "v5.0": 48 },
+    source: "https://artificialanalysis.ai/models/claude-opus-5-5",
+  },
+  "claude-opus-5-5-low": {
+    name: "Claude Opus 5.5", effort: "Low", scores: { "v5.0": 35 },
+    source: "https://artificialanalysis.ai/models/claude-opus-5-5",
   },
   "gpt-6-luna-max": {
     name: "GPT-6 Luna", effort: "Max", scores: { "v4.3.2": 38, "v5.0": 28 },
@@ -73,6 +161,18 @@ const SCORE_RECORDS: Record<string, AAScoreRecord> = {
   beam: {
     name: "Beam", effort: null, scores: { "v4.3.2": 30, "v5.0": 18 },
     source: "https://artificialanalysis.ai/models/comparisons/reflection-beam-vs-step-5",
+  },
+  "gpt-6.2-astra-max": {
+    name: "GPT-6.2 Astra", effort: "Max", scores: { "v5.0": 62 },
+    source: "https://artificialanalysis.ai/models/gpt-6-2-astra",
+  },
+  "gpt-6.2-sol-max": {
+    name: "GPT-6.2 Sol", effort: "Max", scores: { "v5.0": 57 },
+    source: "https://artificialanalysis.ai/models/gpt-6-2-sol",
+  },
+  "gpt-6.1-sol-max": {
+    name: "GPT-6.1 Sol", effort: "Max", scores: { "v5.0": 55 },
+    source: "https://artificialanalysis.ai/models/gpt-6-1-sol",
   },
   "gpt-6-astra-max": {
     name: "GPT-6 Astra", effort: "Max", scores: { "v4.3.2": 53, "v5.0": 57 },
@@ -159,23 +259,49 @@ const SCORE_RECORDS: Record<string, AAScoreRecord> = {
 
 /** Exact provider/model allowlist; unknown dynamic catalog entries remain unscored. */
 const ROUTER_ALIASES: Record<string, AARouterAlias> = {
-  "google-antigravity/gemini-3.8-flash-low": { scoreId: "gemini-3.8-flash-high", alignment: "effort-proxy" },
-  "google-antigravity/gemini-3.8-flash-medium": { scoreId: "gemini-3.8-flash-high", alignment: "effort-proxy" },
+  "google-antigravity/gemini-3.8-flash": { scoreId: "gemini-3.8-flash-medium", alignment: "effort-proxy" },
+  "google-antigravity/gemini-3.8-flash-tiered": { scoreId: "gemini-3.8-flash-medium", alignment: "effort-proxy" },
+  "google-antigravity/gemini-3.8-flash-low": { scoreId: "gemini-3.8-flash-low", alignment: "model-effort-exact" },
+  "google-antigravity/gemini-3.8-flash-medium": { scoreId: "gemini-3.8-flash-medium", alignment: "model-effort-exact" },
   "google-antigravity/gemini-3.8-flash-high": { scoreId: "gemini-3.8-flash-high", alignment: "model-effort-exact" },
-  "google-antigravity/gemini-4-argon-medium": { scoreId: "gemini-4-argon-high", alignment: "effort-proxy" },
+  "google-antigravity/gemini-4-argon-low": { scoreId: "gemini-4-argon-medium", alignment: "effort-proxy" },
+  "google-antigravity/gemini-4-argon-medium": { scoreId: "gemini-4-argon-medium", alignment: "model-effort-exact" },
   "google-antigravity/gemini-4-argon-high": { scoreId: "gemini-4-argon-high", alignment: "model-effort-exact" },
-  "google-antigravity/gemini-4-argon": { scoreId: "gemini-4-argon-high", alignment: "effort-proxy" },
+  "google-antigravity/gemini-4-argon": { scoreId: "gemini-4-argon-medium", alignment: "effort-proxy" },
+  "google-antigravity/gemini-4-carbon": { scoreId: "gemini-4-carbon-medium", alignment: "effort-proxy" },
+  "google-antigravity/gemini-4-carbon-low": { scoreId: "gemini-4-carbon-low", alignment: "model-effort-exact" },
+  "google-antigravity/gemini-4-carbon-medium": { scoreId: "gemini-4-carbon-medium", alignment: "model-effort-exact" },
+  "google-antigravity/gemini-4-carbon-high": { scoreId: "gemini-4-carbon-high", alignment: "model-effort-exact" },
+  "google-antigravity/gemini-4-neon": { scoreId: "gemini-4-neon-high", alignment: "effort-proxy" },
+  "google-antigravity/gemini-4-neon-low": { scoreId: "gemini-4-neon-low", alignment: "model-effort-exact" },
+  "google-antigravity/gemini-4-neon-medium": { scoreId: "gemini-4-neon-medium", alignment: "model-effort-exact" },
+  "google-antigravity/gemini-4-neon-high": { scoreId: "gemini-4-neon-high", alignment: "model-effort-exact" },
+  "google-antigravity/gemini-4-neon-xhigh": { scoreId: "gemini-4-neon-xhigh", alignment: "model-effort-exact" },
+  "google-antigravity/gemini-4-hydrogen": { scoreId: "gemini-4-hydrogen-high", alignment: "effort-proxy" },
+  "google-antigravity/gemini-4-hydrogen-low": { scoreId: "gemini-4-hydrogen-low", alignment: "model-effort-exact" },
+  "google-antigravity/gemini-4-hydrogen-medium": { scoreId: "gemini-4-hydrogen-medium", alignment: "model-effort-exact" },
+  "google-antigravity/gemini-4-hydrogen-high": { scoreId: "gemini-4-hydrogen-high", alignment: "model-effort-exact" },
+  "google-antigravity/gemini-4-hydrogen-xhigh": { scoreId: "gemini-4-hydrogen-xhigh", alignment: "model-effort-exact" },
+  "google-antigravity/gemini-4-hydrogen-tiered": { scoreId: "gemini-4-hydrogen-high", alignment: "effort-proxy" },
+  "google-antigravity/gemini-4-hydrogen-tiered-high": { scoreId: "gemini-4-hydrogen-high", alignment: "effort-proxy" },
+  "google-antigravity/gemini-4-hydrogen-tiered-xhigh": { scoreId: "gemini-4-hydrogen-xhigh", alignment: "effort-proxy" },
   "google-antigravity/claude-sonnet-5-5": { scoreId: "claude-sonnet-5-5-max", alignment: "effort-proxy" },
-  "google-antigravity/claude-sonnet-5-5-medium": { scoreId: "claude-sonnet-5-5-max", alignment: "effort-proxy" },
-  "google-antigravity/claude-sonnet-5-5-high": { scoreId: "claude-sonnet-5-5-max", alignment: "effort-proxy" },
+  "google-antigravity/claude-sonnet-5-5-low": { scoreId: "claude-sonnet-5-5-low", alignment: "model-effort-exact" },
+  "google-antigravity/claude-sonnet-5-5-medium": { scoreId: "claude-sonnet-5-5-medium", alignment: "model-effort-exact" },
+  "google-antigravity/claude-sonnet-5-5-high": { scoreId: "claude-sonnet-5-5-high", alignment: "model-effort-exact" },
   "google-antigravity/claude-opus-5-5": { scoreId: "claude-opus-5-5-max", alignment: "effort-proxy" },
-  "google-antigravity/claude-opus-5-5-high": { scoreId: "claude-opus-5-5-max", alignment: "effort-proxy" },
+  "google-antigravity/claude-opus-5-5-low": { scoreId: "claude-opus-5-5-low", alignment: "model-effort-exact" },
+  "google-antigravity/claude-opus-5-5-medium": { scoreId: "claude-opus-5-5-medium", alignment: "model-effort-exact" },
+  "google-antigravity/claude-opus-5-5-high": { scoreId: "claude-opus-5-5-high", alignment: "model-effort-exact" },
   "google-antigravity/claude-sonnet-4-6": { scoreId: "claude-sonnet-4-6-max", alignment: "effort-proxy" },
   "google-antigravity/claude-sonnet-4-6-thinking": { scoreId: "claude-sonnet-4-6-max", alignment: "effort-proxy" },
   "google-antigravity/claude-opus-4-6": { scoreId: "claude-opus-4-6-max", alignment: "estimated" },
   "google-antigravity/claude-opus-4-6-thinking": { scoreId: "claude-opus-4-6-max", alignment: "estimated" },
   "google-antigravity/claude-sonnet-4-6-high": { scoreId: "claude-sonnet-4-6-max", alignment: "effort-proxy" },
   "google-antigravity/claude-opus-4-6-high": { scoreId: "claude-opus-4-6-max", alignment: "estimated" },
+  "openai-codex/gpt-6.2-astra": { scoreId: "gpt-6.2-astra-max", alignment: "effort-proxy" },
+  "openai-codex/gpt-6.2-sol": { scoreId: "gpt-6.2-sol-max", alignment: "effort-proxy" },
+  "openai-codex/gpt-6.1-sol": { scoreId: "gpt-6.1-sol-max", alignment: "effort-proxy" },
   "openai-codex/gpt-6-astra": { scoreId: "gpt-6-astra-max", alignment: "effort-proxy" },
   "openai-codex/gpt-6-sol": { scoreId: "gpt-6-sol-max", alignment: "effort-proxy" },
   "openai-codex/gpt-6-luna": { scoreId: "gpt-6-luna-max", alignment: "effort-proxy" },
