@@ -1,10 +1,18 @@
 import type { Dispatcher } from "undici";
+import {
+	extractRetryDelayMs,
+	isAntigravityRetryableError,
+	MAX_ANTIGRAVITY_RETRY_DELAY_MS,
+} from "./rate-limit-parser.js";
 
 export interface FetchWithRetryOptions extends RequestInit {
 	retries?: number;
 	timeoutMs?: number;
 	baseDelayMs?: number;
 	maxDelayMs?: number;
+	exponentialMultiplier?: number;
+	jitterRange?: number;
+	maxServerRetryDelayMs?: number;
 	retryStatuses?: number[];
 	fetchImpl?: typeof fetch;
 	sleepImpl?: (ms: number) => Promise<void>;
@@ -14,8 +22,29 @@ export interface FetchWithRetryOptions extends RequestInit {
 
 export type RequestInitWithDispatcher = RequestInit & { dispatcher?: Dispatcher };
 
-export const DEFAULT_RETRY_STATUSES = [408, 429, 500, 502, 503, 504] as const;
-export const DEFAULT_HEADERS_TIMEOUT_MS = 30_000;
+// Twin to Antigravity utils.RetryableFromErrorDetails & classifyGenAIAPIErrorWithMode:
+// 408, 429, 502, 503, 504 (HTTP 500 is NOT retried identically).
+export const DEFAULT_RETRY_STATUSES = [408, 429, 502, 503, 504] as const;
+// Matches Antigravity ccpahttp.New default stream idle timeout (600s).
+export const DEFAULT_HEADERS_TIMEOUT_MS = 600_000;
+
+/** Matches Antigravity defaultConversationalCascadeConfig ModelAPIRetryConfig + ModelAPIBackoff. */
+export const ANTIGRAVITY_RETRY_CONFIG = {
+	maxRetries: 8,
+	initialSleepDurationMs: 4_000,
+	maxSleepDurationMs: MAX_ANTIGRAVITY_RETRY_DELAY_MS,
+	exponentialMultiplier: 2,
+	jitterRange: 0.4,
+} as const;
+
+/** Matches Antigravity model_api/common/continuation.NewStream defaults. */
+export const ANTIGRAVITY_CONTINUATION_RETRY_CONFIG = {
+	baseDelayMs: 100,
+	maxDelayMs: 5_000,
+	maxRetries: 3,
+	maxContinuations: 32,
+	maxResumeDelayMs: 60_000,
+} as const;
 
 /** Raised when an upstream accepts a request but never sends response headers. */
 export class UpstreamHeadersTimeoutError extends Error {
@@ -40,18 +69,55 @@ export function isRetryableStatus(status: number, retryStatuses: readonly number
 export function isRetryableFetchError(error: unknown): boolean {
 	if (error instanceof DOMException && error.name === "AbortError") return true;
 	if (error instanceof UpstreamHeadersTimeoutError) return true;
-	return error instanceof TypeError;
+	if (error instanceof TypeError) return true;
+	const msg = error instanceof Error ? error.message.toLowerCase() : String(error ?? "").toLowerCase();
+	if (msg.includes("x509") || msg.includes("certificate") || msg.includes("tls")) return false;
+	return false;
 }
 
+/**
+ * Matches Antigravity timeutil.backoff + core.backoff / generator.retrySleepDuration:
+ * exponential growth capped at maxDelayMs with downward jitter `[clamped * (1 - jitterRange), clamped]`
+ * floored at baseDelayMs, and when serverRetryDelayMs > 0, `max(backoff, serverRetryDelayMs + rand * backoff * jitterRange)`.
+ */
 export function calculateBackoffMs(
 	attempt: number,
-	baseDelayMs = 250,
-	maxDelayMs = 5_000,
-	random = Math.random,
+	baseDelayMs: number = ANTIGRAVITY_RETRY_CONFIG.initialSleepDurationMs,
+	maxDelayMs: number = ANTIGRAVITY_RETRY_CONFIG.maxSleepDurationMs,
+	random: () => number = Math.random,
+	exponentialMultiplier: number = ANTIGRAVITY_RETRY_CONFIG.exponentialMultiplier,
+	jitterRange: number = ANTIGRAVITY_RETRY_CONFIG.jitterRange,
+	serverRetryDelayMs = 0,
 ): number {
-	const exponential = baseDelayMs * 2 ** Math.max(0, attempt);
-	const jitter = exponential * 0.2 * random();
-	return Math.min(maxDelayMs, Math.round(exponential + jitter));
+	const raw = baseDelayMs * exponentialMultiplier ** Math.max(0, attempt);
+	const clamped = Number.isFinite(raw) ? Math.min(maxDelayMs, raw) : maxDelayMs;
+	const backoff = Math.max(
+		baseDelayMs,
+		Math.round(clamped - random() * clamped * jitterRange),
+	);
+	if (serverRetryDelayMs > 0) {
+		const serverWithJitter =
+			serverRetryDelayMs + Math.round(random() * backoff * jitterRange);
+		return Math.max(backoff, serverWithJitter);
+	}
+	return backoff;
+}
+
+/**
+ * Matches Antigravity continuation.sleepForMidStreamRetry:
+ * `min(baseDelay << min(max(retry - 1, 0), 6), maxDelay)` with half-jitter `[0.5, 1.0)`.
+ */
+export function calculateContinuationBackoffMs(
+	attempt: number,
+	random = Math.random,
+	serverRetryDelayMs = 0,
+	baseDelayMs = ANTIGRAVITY_CONTINUATION_RETRY_CONFIG.baseDelayMs,
+	maxDelayMs = ANTIGRAVITY_CONTINUATION_RETRY_CONFIG.maxDelayMs,
+): number {
+	const shift = Math.min(Math.max(attempt - 1, 0), 6);
+	const exp = Math.min(baseDelayMs * 2 ** shift, maxDelayMs);
+	const jittered = Math.round(exp * (0.5 + random() * 0.5));
+	return serverRetryDelayMs > 0 ? Math.max(serverRetryDelayMs, jittered) : jittered;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -126,8 +192,11 @@ export async function fetchWithRetry(input: RequestInfo | URL, options: FetchWit
 	const {
 		retries = 2,
 		timeoutMs = 10_000,
-		baseDelayMs = 250,
-		maxDelayMs = 5_000,
+		baseDelayMs = ANTIGRAVITY_RETRY_CONFIG.initialSleepDurationMs,
+		maxDelayMs = ANTIGRAVITY_RETRY_CONFIG.maxSleepDurationMs,
+		exponentialMultiplier = ANTIGRAVITY_RETRY_CONFIG.exponentialMultiplier,
+		jitterRange = ANTIGRAVITY_RETRY_CONFIG.jitterRange,
+		maxServerRetryDelayMs = MAX_ANTIGRAVITY_RETRY_DELAY_MS,
 		retryStatuses = [...DEFAULT_RETRY_STATUSES],
 		fetchImpl = fetch,
 		sleepImpl = sleep,
@@ -137,6 +206,7 @@ export async function fetchWithRetry(input: RequestInfo | URL, options: FetchWit
 
 	let lastError: unknown;
 	for (let attempt = 0; attempt <= retries; attempt++) {
+		let serverRetryDelayMs = 0;
 		try {
 			const requestInit: RequestInitWithDispatcher = {
 				...init,
@@ -149,6 +219,28 @@ export async function fetchWithRetry(input: RequestInfo | URL, options: FetchWit
 				return response;
 			}
 
+			let errorText = "";
+			if (response.status === 429 || response.status === 402 || response.status >= 500) {
+				errorText = await response.clone().text().catch(() => "");
+			}
+			const serverDelay = extractRetryDelayMs(errorText, response.headers);
+			if (serverDelay !== null) {
+				if (serverDelay > maxServerRetryDelayMs) {
+					return response;
+				}
+				serverRetryDelayMs = serverDelay;
+			}
+			if (
+				response.status === 429 &&
+				!isAntigravityRetryableError({
+					status: response.status,
+					errorText,
+					headers: response.headers,
+				})
+			) {
+				return response;
+			}
+
 			await response.body?.cancel().catch(() => undefined);
 		} catch (err) {
 			lastError = err;
@@ -157,8 +249,104 @@ export async function fetchWithRetry(input: RequestInfo | URL, options: FetchWit
 			}
 		}
 
-		await sleepImpl(calculateBackoffMs(attempt, baseDelayMs, maxDelayMs));
+		await sleepImpl(
+			calculateBackoffMs(
+				attempt,
+				baseDelayMs,
+				maxDelayMs,
+				Math.random,
+				exponentialMultiplier,
+				jitterRange,
+				serverRetryDelayMs,
+			),
+		);
 	}
 
 	throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "fetch failed"));
+}
+
+export interface AntigravityApiRetryOptions<T> {
+	maxRetries?: number;
+	initialSleepDurationMs?: number;
+	maxSleepDurationMs?: number;
+	exponentialMultiplier?: number;
+	jitterRange?: number;
+	maxServerRetryDelayMs?: number;
+	random?: () => number;
+	sleepImpl?: (ms: number) => Promise<void>;
+	signal?: AbortSignal;
+	classifyError?: (error: unknown) => {
+		retryable: boolean;
+		serverRetryDelayMs?: number;
+	};
+	fn: (attempt: number) => Promise<T>;
+}
+
+/**
+ * Twin retry loop to Antigravity core.CallWithRetry / oneharness RunWithAPIRetry:
+ * MaxAttempts = maxRetries + 1 (default 8 + 1 = 9), backoff via ModelAPIBackoff
+ * (4000ms -> 240s, 2.0x, downward jitter 0.4, + server delay additive jitter),
+ * failing fast when server delay > 240s or non-retryable.
+ */
+export async function runWithAntigravityApiRetry<T>(
+	options: AntigravityApiRetryOptions<T>,
+): Promise<T> {
+	const {
+		maxRetries = ANTIGRAVITY_RETRY_CONFIG.maxRetries,
+		initialSleepDurationMs = ANTIGRAVITY_RETRY_CONFIG.initialSleepDurationMs,
+		maxSleepDurationMs = ANTIGRAVITY_RETRY_CONFIG.maxSleepDurationMs,
+		exponentialMultiplier = ANTIGRAVITY_RETRY_CONFIG.exponentialMultiplier,
+		jitterRange = ANTIGRAVITY_RETRY_CONFIG.jitterRange,
+		maxServerRetryDelayMs = MAX_ANTIGRAVITY_RETRY_DELAY_MS,
+		random = Math.random,
+		sleepImpl = sleep,
+		signal,
+		classifyError = (error: unknown) => {
+			if (isRetryableFetchError(error)) return { retryable: true };
+			const status =
+				typeof error === "object" && error !== null && "status" in error && typeof (error as { status: unknown }).status === "number"
+					? (error as { status: number }).status
+					: undefined;
+			const errorText = error instanceof Error ? error.message : String(error ?? "");
+			const serverRetryDelayMs = extractRetryDelayMs(errorText) ?? undefined;
+			return {
+				retryable: isAntigravityRetryableError({ status, errorText }),
+				serverRetryDelayMs,
+			};
+		},
+		fn,
+	} = options;
+
+	const maxAttempts = Math.max(1, maxRetries + 1);
+	let lastError: unknown;
+	for (let attempt = 0; attempt < maxAttempts; attempt++) {
+		if (signal?.aborted) {
+			throw signal.reason ?? new DOMException("Aborted", "AbortError");
+		}
+		try {
+			return await fn(attempt);
+		} catch (error) {
+			lastError = error;
+			const verdict = classifyError(error);
+			const serverDelayMs = verdict.serverRetryDelayMs ?? 0;
+			if (
+				!verdict.retryable ||
+				serverDelayMs > maxServerRetryDelayMs ||
+				attempt + 1 >= maxAttempts
+			) {
+				throw error;
+			}
+			const delayMs = calculateBackoffMs(
+				attempt,
+				initialSleepDurationMs,
+				maxSleepDurationMs,
+				random,
+				exponentialMultiplier,
+				jitterRange,
+				serverDelayMs,
+			);
+			await sleepImpl(delayMs);
+		}
+	}
+	throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "retry exhausted"));
 }

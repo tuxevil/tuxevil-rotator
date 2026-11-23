@@ -1,5 +1,11 @@
+import { randomUUID } from "node:crypto";
+import { rotatorEnv } from "../../env.js";
 import { logger, redactSensitive } from "../../logger.js";
-import { applyModelAlias, getEffortRoutingRule } from "../../types.js";
+import {
+  ANTIGRAVITY_IDENTITY_PROMPT,
+  applyModelAlias,
+  getEffortRoutingRule,
+} from "../../types.js";
 import {
   CLAUDE_THINKING_BUDGET_EFFORTS,
   CLAUDE_THINKING_DISABLED_EFFORT,
@@ -1334,7 +1340,8 @@ export function openAIToAntigravityBody(
 
   // Google rejects compatibility requests whose final contents turn is a
   // model turn. Claude additionally needs dangling tool-call turns removed;
-  // other models keep the call history but still need a user turn to resume.
+  // other models keep the call history and append Antigravity's "Continue"
+  // user turn (matching core.ensureRequestEndsWithUserTurn).
   while (contents.at(-1)?.role === "model") {
     const lastContent = contents.at(-1);
     const hasFunctionCall =
@@ -1346,11 +1353,7 @@ export function openAIToAntigravityBody(
     }
     contents.push({
       role: "user",
-      parts: [
-        {
-          text: "Continue from the previous assistant message. Do not repeat completed tool calls unless new user input asks for them.",
-        },
-      ],
+      parts: [{ text: "Continue" }],
     });
     break;
   }
@@ -1381,13 +1384,13 @@ export function openAIToAntigravityBody(
   let thinkingConfigObj: Record<string, unknown> | undefined;
   if (modelFamily === "claude" && isThinking && !forcesToolUse(input.tool_choice)) {
     if (modelSpec.thinkingBudget === -1) {
-      thinkingConfigObj = { include_thoughts: true };
+      thinkingConfigObj = { includeThoughts: true };
     } else {
       const normalized = normalizeFixedThinking(modelSpec, maxOutputTokens);
       if (normalized.budget !== undefined) {
         thinkingConfigObj = {
-          include_thoughts: true,
-          thinking_budget: normalized.budget,
+          includeThoughts: true,
+          thinkingBudget: normalized.budget,
         };
       }
       if (maxOutputTokens !== normalized.maxOutputTokens) {
@@ -1451,44 +1454,55 @@ export function openAIToAntigravityBody(
     ...(thinkingConfigObj ? { thinkingConfig: thinkingConfigObj } : {}),
   };
 
+  const promptMode = getAntigravitySystemPromptMode();
+  if (promptMode === "twin") {
+    for (let idx = contents.length - 1; idx >= 0; idx--) {
+      const turn = contents[idx];
+      if (turn?.role === "user" && Array.isArray(turn.parts)) {
+        for (const part of turn.parts) {
+          if (isRecord(part) && typeof part.text === "string" && part.text.trim()) {
+            part.text = wrapAntigravityUserRequest(part.text);
+            idx = -1;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  const sessionSeed =
+    (typeof input.user === "string" && input.user.trim()) ||
+    JSON.stringify(contents[0]?.parts ?? "antigravity");
   const request: Record<string, unknown> = {
     contents,
     generationConfig,
+    sessionId: computeAntigravitySessionId(sessionSeed),
   };
 
-  if (systemParts.length > 0) {
-    if (!isClaude && isThinking) {
-      const firstTurn = contents[0];
-      if (
-        firstTurn &&
-        firstTurn.role === "user" &&
-        (firstTurn.parts[0] as any)?.text !== undefined
-      ) {
-        (firstTurn.parts[0] as any).text =
-          systemParts.join("\n\n") + "\n\n" + (firstTurn.parts[0] as any).text;
-      } else if (firstTurn && firstTurn.role === "user") {
-        firstTurn.parts.unshift({ text: systemParts.join("\n\n") + "\n\n" });
-      } else {
-        contents.unshift({
-          role: "user",
-          parts: [{ text: systemParts.join("\n\n") }],
-        });
-      }
-    } else {
-      request.systemInstruction = {
-        role: "system",
-        parts: [{ text: systemParts.join("\n\n") }],
-      };
-    }
+  // Antigravity ALWAYS carries system instructions in request.systemInstruction
+  // (never rewritten into fake user/model turns in contents).
+  const systemText = composeAntigravitySystemInstruction(
+    systemParts.join("\n\n"),
+    promptMode,
+  );
+  if (systemText) {
+    request.systemInstruction = {
+      role: "system",
+      parts: [{ text: systemText }],
+    };
   }
 
   if (geminiTools.length > 0) request.tools = geminiTools;
   if (geminiToolConfig) request.toolConfig = geminiToolConfig;
 
   const mappedModel = applyModelAlias(effortTarget);
+  const requestId = computeAntigravityRequestId("agent");
+  const userPromptId = randomUUID();
 
   return {
     project: "compat-placeholder",
+    requestId,
+    userPromptId,
     model: mappedModel,
     displayModel: requestedModel,
     requestedModel,
@@ -1499,6 +1513,71 @@ export function openAIToAntigravityBody(
     requestType: "agent",
     request,
   };
+}
+
+export type AntigravitySystemPromptMode =
+  | "default-identity"
+  | "prepend"
+  | "twin"
+  | "passthrough";
+
+export function getAntigravitySystemPromptMode(): AntigravitySystemPromptMode {
+  const raw = (rotatorEnv("ANTIGRAVITY_SYSTEM_PROMPT_MODE") || "")
+    .trim()
+    .toLowerCase();
+  if (raw === "twin" || raw === "prepend" || raw === "passthrough") return raw;
+  return "default-identity";
+}
+
+/**
+ * Matches Antigravity ccpa.HashSessionID (64-bit FNV-1a signed decimal string).
+ */
+export function computeAntigravitySessionId(seed: string): string {
+  const FNV_OFFSET = 0xcbf29ce484222325n;
+  const FNV_PRIME = 0x100000001b3n;
+  const MASK_64 = 0xffffffffffffffffn;
+  let hash = FNV_OFFSET;
+  const bytes = Buffer.from(seed, "utf8");
+  for (const byte of bytes) {
+    hash ^= BigInt(byte);
+    hash = (hash * FNV_PRIME) & MASK_64;
+  }
+  return BigInt.asIntN(64, hash).toString(10);
+}
+
+/**
+ * Matches Antigravity ccpa.ComputeRequestID (`prefix/uuid`).
+ */
+export function computeAntigravityRequestId(prefix = "agent"): string {
+  const cleanPrefix = prefix.trim() || "unknown";
+  return `${cleanPrefix}/${randomUUID()}`;
+}
+
+/**
+ * Wraps a user prompt with Antigravity's <USER_REQUEST> tag convention.
+ */
+export function wrapAntigravityUserRequest(text: string): string {
+  if (!text || text.includes("<USER_REQUEST>")) return text;
+  return `<USER_REQUEST>\n${text}\n</USER_REQUEST>`;
+}
+
+export function composeAntigravitySystemInstruction(
+  callerSystemText: string,
+  mode: AntigravitySystemPromptMode = getAntigravitySystemPromptMode(),
+): string | null {
+  const trimmed = callerSystemText.trim();
+  if (mode === "passthrough") {
+    return trimmed || null;
+  }
+  if (!trimmed) {
+    return ANTIGRAVITY_IDENTITY_PROMPT;
+  }
+  if (mode === "prepend" || mode === "twin") {
+    return trimmed.includes(ANTIGRAVITY_IDENTITY_PROMPT)
+      ? trimmed
+      : `${ANTIGRAVITY_IDENTITY_PROMPT}\n\n${trimmed}`;
+  }
+  return trimmed;
 }
 
 export function convertAnthropicToolsToOpenAI(

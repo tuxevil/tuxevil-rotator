@@ -1328,17 +1328,47 @@ export const OLLAMA_USER_AGENT =
 // TTL for the cached /api/tags listing (model catalog refresh).
 export const TAGS_CACHE_TTL_MS = 5 * 60 * 1000;
 export const ANTIGRAVITY_VERSION =
-	rotatorEnv("ANTIGRAVITY_VERSION") ||
-	process.env.PI_AI_ANTIGRAVITY_VERSION ||
-	"2.26.0";
+  rotatorEnv("ANTIGRAVITY_VERSION") ||
+  process.env.PI_AI_ANTIGRAVITY_VERSION ||
+  "2.32.2";
+const ANTIGRAVITY_OS_TYPE =
+  process.platform === "win32" ? "windows" : process.platform;
+const ANTIGRAVITY_ARCH =
+  process.arch === "x64" ? "amd64" : process.arch;
 export const DEFAULT_ANTIGRAVITY_USER_AGENT =
   rotatorEnv("ANTIGRAVITY_USER_AGENT") ||
-  `antigravity/hub/${ANTIGRAVITY_VERSION} (aidev_client; os_type=darwin; arch=arm64)`;
+  `antigravity/hub/${ANTIGRAVITY_VERSION} (aidev_client; os_type=${ANTIGRAVITY_OS_TYPE}; arch=${ANTIGRAVITY_ARCH})`;
 export const QUOTA_USER_AGENT =
-	rotatorEnv("QUOTA_USER_AGENT") ||
-	DEFAULT_ANTIGRAVITY_USER_AGENT;
+  rotatorEnv("QUOTA_USER_AGENT") ||
+  DEFAULT_ANTIGRAVITY_USER_AGENT;
 export const REQUEST_USER_AGENT =
   rotatorEnv("REQUEST_USER_AGENT") || QUOTA_USER_AGENT;
+export function resolveAntigravityProtoPlatform(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): string {
+  if (platform === "darwin") {
+    return arch === "x64" ? "DARWIN_AMD64" : "DARWIN_ARM64";
+  }
+  if (platform === "win32") {
+    return "WINDOWS_AMD64";
+  }
+  return arch === "arm64" ? "LINUX_ARM64" : "LINUX_AMD64";
+}
+export interface AntigravityClientMetadata {
+  ideType: "ANTIGRAVITY";
+  ideVersion: string;
+  platform: string;
+  pluginType: "GEMINI";
+  ideName: "antigravity";
+}
+export const ANTIGRAVITY_CLIENT_METADATA: AntigravityClientMetadata = {
+  ideType: "ANTIGRAVITY",
+  ideVersion: ANTIGRAVITY_VERSION,
+  platform: resolveAntigravityProtoPlatform(),
+  pluginType: "GEMINI",
+  ideName: "antigravity",
+};
 export const REQUEST_GOOG_API_CLIENT =
   rotatorEnv("X_GOOG_API_CLIENT") ||
   "google-cloud-sdk vscode_cloudshelleditor/0.1";
@@ -1349,6 +1379,10 @@ export const REQUEST_CLIENT_METADATA =
     platform: "MACOS",
     pluginType: "GEMINI",
   });
+export const ANTIGRAVITY_IDENTITY_PROMPT =
+  "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.\n" +
+  "You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.\n" +
+  "The USER will send you requests, which you must always prioritize addressing. User requests are enclosed within <USER_REQUEST> tags.";
 
 // ── Virtual Keys & Spend Logging ─────────────────────────────────────
 

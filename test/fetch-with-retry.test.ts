@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
 	calculateBackoffMs,
+	DEFAULT_HEADERS_TIMEOUT_MS,
 	fetchWithHeadersTimeout,
 	fetchWithRetry,
 	isRetryableFetchError,
@@ -21,6 +22,10 @@ describe("fetchWithRetry", () => {
 		assert.equal(isRetryableFetchError(new TypeError("fetch failed")), true);
 		assert.equal(isRetryableFetchError(new UpstreamHeadersTimeoutError(30_000)), true);
 		assert.equal(isRetryableFetchError(new Error("bad input")), false);
+	});
+
+	it("defaults upstream headers timeout to 600s matching Antigravity ccpahttp.New", () => {
+		assert.equal(DEFAULT_HEADERS_TIMEOUT_MS, 600_000);
 	});
 
 	it("bounds time waiting for response headers without timing out the body", async () => {
@@ -59,10 +64,11 @@ describe("fetchWithRetry", () => {
 		});
 	});
 
-	it("calculates bounded exponential backoff with jitter", () => {
+	it("calculates bounded exponential backoff with downward Antigravity jitter", () => {
 		assert.equal(calculateBackoffMs(0, 100, 1_000, () => 0), 100);
 		assert.equal(calculateBackoffMs(1, 100, 1_000, () => 0), 200);
-		assert.equal(calculateBackoffMs(10, 100, 500, () => 1), 500);
+		assert.equal(calculateBackoffMs(10, 100, 500, () => 0), 500);
+		assert.equal(calculateBackoffMs(10, 100, 500, () => 1), 300);
 	});
 
 	it("returns first successful response", async () => {

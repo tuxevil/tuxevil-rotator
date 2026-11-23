@@ -471,7 +471,7 @@ data: [DONE]
 			const contents = (result.request as { contents: Array<{ role: string; parts: unknown[] }> }).contents;
 			assert.equal(contents.at(-1)?.role, "user");
 			assert.match(JSON.stringify(contents), /Context: The assistant used tools/);
-			assert.match(JSON.stringify(contents.at(-1)?.parts), /Continue from the previous assistant message/);
+			assert.match(JSON.stringify(contents.at(-1)?.parts), /"text":"Continue"/);
 		} finally {
 			thoughtSignatureCache.delete(callId);
 		}

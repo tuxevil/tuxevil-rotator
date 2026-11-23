@@ -239,8 +239,9 @@ describe("proxy compat integration", () => {
 			assert.equal(JSON.parse(capturesDaily[0].body).catalogModel, undefined);
 			assert.equal(capturesDaily[0].headers.authorization, "Bearer access-token");
 			assert.equal(capturesDaily[0].headers["user-agent"], DEFAULT_ANTIGRAVITY_USER_AGENT);
-			assert.equal(capturesDaily[0].headers["x-goog-api-client"], "google-cloud-sdk vscode_cloudshelleditor/0.1");
-			assert.equal(capturesDaily[0].headers["client-metadata"], "{\"ideType\":\"ANTIGRAVITY\",\"platform\":\"MACOS\",\"pluginType\":\"GEMINI\"}");
+			assert.equal(capturesDaily[0].headers["x-goog-api-client"], undefined);
+			assert.equal(capturesDaily[0].headers["client-metadata"], undefined);
+			assert.equal(capturesDaily[0].headers["anthropic-beta"], undefined);
 		} finally {
 			await closeServer(daily.server);
 			await closeServer(prod.server);
@@ -285,9 +286,18 @@ describe("proxy compat integration", () => {
 				selectionMode: "typesafe",
 				selectionConfidence: 0.9,
 				selectionReason: "typesafe-selected",
-			}, { "user-agent": "OpenAI/1.0.0" });
+			}, {
+				"user-agent": "OpenAI/1.0.0",
+				"content-type": "application/json",
+				accept: "application/json",
+				expect: "100-continue",
+			});
 			assert.equal(forwarded.endpoint, daily.url);
 			assert.doesNotMatch(capturesDaily[0].body, /selectionReason/);
+			assert.equal(capturesDaily[0].headers["content-type"], "application/json");
+			assert.notEqual(capturesDaily[0].headers["accept"], "text/event-stream");
+			assert.notEqual(capturesDaily[0].headers["accept"], "application/json");
+			assert.equal(capturesDaily[0].headers["expect"], undefined);
 
 			const outcome = await withRotation(
 				createRotatorStub(account),
@@ -363,7 +373,7 @@ describe("classifyUpstreamResponse", () => {
 		assert.equal(action.kind, "rate-limited");
 		if (action.kind === "rate-limited") {
 			assert.equal(action.providerResourceExhausted, true);
-			assert.equal(action.cooldownMs, 4_815_000);
+			assert.equal(action.cooldownMs, 4_814_000);
 			assert.match(action.errorText, /quota exceeded/);
 		}
 	});
@@ -396,7 +406,7 @@ describe("classifyUpstreamResponse", () => {
 		assert.equal(action.kind, "rate-limited");
 		if (action.kind === "rate-limited") {
 			assert.equal(action.providerResourceExhausted, true);
-			assert.equal(action.cooldownMs, 2_447_512_000);
+			assert.equal(action.cooldownMs, 2_447_511_000);
 		}
 	});
 

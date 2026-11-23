@@ -1,5 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
-import { ANTIGRAVITY_VERSION, CLIENT_ID, CLIENT_SECRET, REQUEST_USER_AGENT, TOKEN_URL } from "../../types.js";
+import {
+	ANTIGRAVITY_CLIENT_METADATA,
+	CLIENT_ID,
+	CLIENT_SECRET,
+	REQUEST_USER_AGENT,
+	TOKEN_URL,
+} from "../../types.js";
 import { fetchWithRetry } from "../../fetch-with-retry.js";
 
 export const DEFAULT_REDIRECT_URI = "http://localhost:51121/oauth-callback";
@@ -217,17 +223,12 @@ async function onboardUser(accessToken: string, tierId: string): Promise<string 
 	const headers: Record<string, string> = {
 		Authorization: `Bearer ${accessToken}`,
 		"Content-Type": "application/json",
-		"User-Agent": `${REQUEST_USER_AGENT} google-api-nodejs-client/10.3.0`,
-		"X-Goog-Api-Client": "gl-node/22.21.1",
+		"User-Agent": REQUEST_USER_AGENT,
 	};
 
 	const body = JSON.stringify({
-		tier_id: tierId,
-		metadata: {
-			ide_type: "ANTIGRAVITY",
-			ide_version: ANTIGRAVITY_VERSION,
-			ide_name: "antigravity",
-		},
+		tierId,
+		metadata: ANTIGRAVITY_CLIENT_METADATA,
 	});
 
 	for (let attempt = 0; attempt < ONBOARD_MAX_POLLS; attempt++) {
@@ -270,7 +271,7 @@ export async function discoverProject(accessToken: string): Promise<ProjectDisco
 				method: "POST",
 				headers,
 				body: JSON.stringify({
-					metadata: { ideType: "ANTIGRAVITY" },
+					metadata: ANTIGRAVITY_CLIENT_METADATA,
 				}),
 			});
 

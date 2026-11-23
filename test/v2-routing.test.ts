@@ -854,8 +854,8 @@ describe("v2 routing and status", () => {
       const after = Date.now();
 
       assert.equal(result.status, 429);
-      assert.ok(account.cooldownsByModel.claude >= before + 4_815_000);
-      assert.ok(account.cooldownsByModel.claude <= after + 4_815_000);
+      assert.ok(account.cooldownsByModel.claude >= before + 4_814_000);
+      assert.ok(account.cooldownsByModel.claude <= after + 4_814_000);
       assert.equal(account.cooldownsByModel.gemini, undefined);
       assert.equal(account.cooldownsByModel.__default__, undefined);
     } finally {
