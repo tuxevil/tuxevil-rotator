@@ -103,7 +103,7 @@ import {
 import { requireAdmin } from "./admin-auth.js";
 import { getMaxBodyBytes, PayloadTooLargeError, readLimitedBody } from "./body-limit.js";
 import { validateConfig, validateProxyRequestBody } from "./validators.js";
-import { calculateBackoffMs } from "./fetch-with-retry.js";
+import { calculateContinuationBackoffMs } from "./fetch-with-retry.js";
 import { logger } from "./logger.js";
 import {
   trackFeature,
@@ -222,14 +222,15 @@ import {
 import { authenticateVirtualKey, sendAuthErrorResponse } from "./key-auth.js";
 import { logSpend } from "./spend-logger.js";
 import { hashKey } from "./virtual-keys.js";
-import { STREAM_BACKPRESSURE_TIMEOUT_MS } from "./stream-guards.js";
+import { STREAM_BACKPRESSURE_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS } from "./stream-guards.js";
 
 const proxyLogger = logger.child("proxy");
 const GENERIC_UPSTREAM_ERROR = "Upstream request failed";
 
-const DEFAULT_STREAM_RECOVERY_MAX_RETRIES = 2;
+// Twin to Antigravity model_api/common/continuation.NewStream (maxRetries = 3,
+// maxContinuations = 32, idleTimeout = 600s via STREAM_IDLE_TIMEOUT_MS).
+const DEFAULT_STREAM_RECOVERY_MAX_RETRIES = 3;
 const MAX_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes max cooldown
-const STREAM_IDLE_TIMEOUT_MS = 2 * 60 * 1000; // Release account if a stream goes silent.
 const LARGE_CONTEXT_WARN_BYTES = 1 * 1024 * 1024;
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -383,7 +384,7 @@ export async function classifyUpstreamResponse(
   modelKey: string,
   providerId = DEFAULT_PROVIDER,
 ): Promise<UpstreamAction> {
-  if (response.status === 429) {
+  if (response.status === 429 || response.status === 402) {
     const errorText = await response.text().catch(() => "");
     const rateLimitReason = classifyRateLimitReason(errorText, response.status);
     const providerResourceExhausted = rateLimitReason === "quota-exhausted";
@@ -446,7 +447,7 @@ export async function classifyUpstreamResponse(
     return { kind: "server-error-503", errorText, endpoint };
   }
 
-  if (response.status >= 500) {
+  if (response.status >= 500 || response.status === 408) {
     const errorText = await response.text().catch(() => "");
     return {
       kind: "rotate-on-5xx",
@@ -454,6 +455,11 @@ export async function classifyUpstreamResponse(
       errorText,
       endpoint,
     };
+  }
+
+  if (response.status >= 400) {
+    const errorText = await response.text().catch(() => "");
+    return { kind: "bad-request", errorText, endpoint };
   }
 
   // Reference parameters to satisfy "all parameters are used" without changing behavior.
@@ -1623,7 +1629,8 @@ async function sleepTransportRetry(
   signal?: AbortSignal,
 ): Promise<boolean> {
   if (signal?.aborted) return false;
-  const backoffMs = calculateBackoffMs(attempt, 500, 5_000);
+  // Twin to Antigravity continuation.sleepForMidStreamRetry: 100ms base -> 5s cap, [0.5, 1.0) jitter.
+  const backoffMs = calculateContinuationBackoffMs(attempt + 1);
   log(
     `[${requestId}] Retrying after transport error on current account ${label} in ${backoffMs}ms (attempt ${attempt + 1}/${maxRetries})`,
     rotator,

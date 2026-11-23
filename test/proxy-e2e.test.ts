@@ -498,8 +498,8 @@ describe("proxy e2e: 429 rate-limited", () => {
 			assert.equal(outcome.ok, false);
 			if (!outcome.ok) {
 				assert.equal(outcome.status, 429);
-				// Retry-After: 120 seconds = 120000ms (+1000ms buffer from parser)
-				assert.equal(outcome.retryAfterMs, 121_000);
+				// Retry-After: 120 seconds = 120000ms (Antigravity parity, no artificial buffer)
+				assert.equal(outcome.retryAfterMs, 120_000);
 				assert.equal(outcome.endpoint, upstream.url);
 			}
 			assert.equal(tracking.markExhausted, 1);
@@ -538,12 +538,12 @@ describe("proxy e2e: 429 rate-limited", () => {
 			assert.equal(outcome.ok, false);
 			if (!outcome.ok) {
 				assert.equal(outcome.status, 429);
-				assert.equal(outcome.retryAfterMs, 4_815_000);
+				assert.equal(outcome.retryAfterMs, 4_814_000);
 			}
 			assert.equal(tracking.finishRequest, 1, "RESOURCE_EXHAUSTED should release the account once");
 			assert.deepEqual(tracking.lastMarkExhausted, {
 				model: "gemini-3.1-pro",
-				cooldownMs: 4_815_000,
+				cooldownMs: 4_814_000,
 			});
 		} finally {
 			await upstream.close();

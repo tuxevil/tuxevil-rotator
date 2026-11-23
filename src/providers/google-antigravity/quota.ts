@@ -16,8 +16,6 @@ import {
   QUOTA_SUMMARY_API_URL,
   QUOTA_USER_AGENT,
   QUOTA_MODEL_KEYS,
-  REQUEST_CLIENT_METADATA,
-  REQUEST_GOOG_API_CLIENT,
   resolveQuotaModelKey,
 } from "../../types.js";
 import { fetchWithRetry } from "../../fetch-with-retry.js";
@@ -811,8 +809,6 @@ export async function fetchProviderQuota(
         "Content-Type": "application/json",
         Authorization: `Bearer ${account.accessToken}`,
         "User-Agent": QUOTA_USER_AGENT,
-        "X-Goog-Api-Client": REQUEST_GOOG_API_CLIENT,
-        "Client-Metadata": REQUEST_CLIENT_METADATA,
       },
       body: JSON.stringify({
         project: getProviderProjectId(account.config, DEFAULT_PROVIDER),
@@ -857,8 +853,6 @@ export async function fetchProviderQuota(
             "Content-Type": "application/json",
             Authorization: `Bearer ${account.accessToken}`,
             "User-Agent": QUOTA_USER_AGENT,
-            "X-Goog-Api-Client": REQUEST_GOOG_API_CLIENT,
-            "Client-Metadata": REQUEST_CLIENT_METADATA,
           },
           body: JSON.stringify({ project: projectId }),
           timeoutMs: 8000,

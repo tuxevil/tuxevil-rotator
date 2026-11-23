@@ -411,10 +411,10 @@ describe("compat adapters", () => {
 			],
 		});
 
-		const contents = (body.request as { contents: Array<{ role: string }> }).contents;
+		const contents = (body.request as { contents: Array<{ role: string; parts: Array<{ text?: string }> }> }).contents;
 		assert.notEqual(contents.at(-1)?.role, "model");
 		assert.match(JSON.stringify(body.request), /Pi is/);
-		assert.match(JSON.stringify(body.request), /Continue from the previous assistant message/);
+		assert.deepEqual(contents.at(-1), { role: "user", parts: [{ text: "Continue" }] });
 	});
 
 	it("does not send Claude assistant prefill for trailing dangling tool calls", () => {
@@ -546,7 +546,7 @@ describe("compat adapters", () => {
 		assert.deepEqual(contents.map((content) => content.role), ["user", "model", "user"]);
 		const reqStr = JSON.stringify(body.request);
 		assert.match(reqStr, /"text":"hi there"/);
-		assert.match(reqStr, /Continue from the previous assistant message/);
+		assert.match(reqStr, /"text":"Continue"/);
 	});
 
 	it("converts Responses function_call input items into assistant tool call history", () => {

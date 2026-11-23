@@ -1,6 +1,7 @@
 import type { ServerResponse } from "node:http";
 
-export const STREAM_IDLE_TIMEOUT_MS = 2 * 60 * 1000;
+// Matches Antigravity ccpahttp.New default stream idle timeout (600s).
+export const STREAM_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 export const STREAM_BACKPRESSURE_TIMEOUT_MS = 30 * 1000;
 
 export class StreamIdleTimeoutError extends Error {
