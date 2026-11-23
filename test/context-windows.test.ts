@@ -21,6 +21,10 @@ import {
 describe("official context windows", () => {
 	describe("google antigravity", () => {
 		const knownPairs: ReadonlyArray<readonly [string, number]> = [
+			["claude-opus-5-5", 1_000_000],
+			["claude-opus-5-5-high", 1_000_000],
+			["claude-sonnet-5-5", 1_000_000],
+			["claude-sonnet-5-5-medium", 1_000_000],
 			["claude-opus-4-6-thinking", 1_000_000],
 			["claude-opus-4-6", 1_000_000],
 			["claude-sonnet-4-6", 1_000_000],
@@ -29,6 +33,13 @@ describe("official context windows", () => {
 			["claude-sonnet-4-5", 200_000],
 			["gpt-oss-120b", 131_072],
 			["gpt-oss-120b-medium", 131_072],
+			["gemini-4-carbon", 1_000_000],
+			["gemini-4-argon", 1_000_000],
+			["gemini-4-neon", 1_000_000],
+			["gemini-4-neon-xhigh", 1_000_000],
+			["gemini-4-hydrogen", 1_000_000],
+			["gemini-4-hydrogen-tiered", 1_000_000],
+			["gemini-4-hydrogen-sonar", 1_000_000],
 			["gemini-3.1-pro", 1_000_000],
 			["gemini-3.1-pro-high", 1_000_000],
 			["gemini-3.1-pro-low", 1_000_000],
@@ -69,6 +80,13 @@ describe("official context windows", () => {
 
 		it("propagates contextWindow through getModelSpec for Antigravity ids", () => {
 			assert.equal(getModelSpec("claude-sonnet-4-6").contextWindow, 1_000_000);
+			assert.equal(getModelSpec("claude-opus-5-5").maxOutputTokens, 128_000);
+			assert.equal(getModelSpec("claude-sonnet-5-5").maxOutputTokens, 128_000);
+			assert.equal(getModelSpec("gemini-4-carbon").maxOutputTokens, 262_144);
+			assert.equal(getModelSpec("gemini-4-neon-xhigh").maxOutputTokens, 262_144);
+			assert.equal(getModelSpec("gemini-4-hydrogen-high").maxOutputTokens, 262_144);
+			assert.equal(getModelSpec("gemini-4-hydrogen-tiered").thinkingBudget, -1);
+			assert.equal(getModelSpec("gemini-4-hydrogen-sonar").maxOutputTokens, 65_536);
 			assert.equal(getModelSpec("gemini-3.1-pro-low").contextWindow, 1_000_000);
 			assert.equal(getModelSpec("gpt-oss-120b-medium").contextWindow, 131_072);
 		});

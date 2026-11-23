@@ -506,6 +506,18 @@ describe("status and formatting helpers", () => {
     assert.equal(modelColor("kimi-k3"), "#047857");
     assert.equal(modelColor("gpt-5.6-terra"), "#eab308");
     assert.notEqual(modelColor("gpt-5.6-sol"), modelColor("claude-opus-4-6-thinking"));
+    // Gemini 4 families stay distinct in the blue/indigo spectrum
+    assert.notEqual(modelColor("gemini-4-carbon"), modelColor("gemini-4-neon"));
+    assert.notEqual(modelColor("gemini-4-neon"), modelColor("gemini-4-argon"));
+    assert.notEqual(modelColor("gemini-4-argon"), modelColor("gemini-4-hydrogen"));
+    assert.equal(modelColor("gemini-4-hydrogen-tiered-xhigh"), modelColor("gemini-4-hydrogen-xhigh"));
+    // Claude 5.5 and Codex 6.1/6.2 models map to their respective family palettes
+    assert.equal(modelColor("claude-opus-5-5"), "#dc2626");
+    assert.equal(modelColor("claude-sonnet-5-5"), "#f87171");
+    assert.equal(modelColor("gpt-6.2-astra"), "#854d0e");
+    assert.equal(modelColor("gpt-6.2-sol"), "#b45309");
+    assert.equal(modelColor("gpt-6.1-sol"), "#ca8a04");
+    assert.equal(modelColor("gpt-6.1-terra"), "#facc15");
   });
 });
 

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+
+- Refresh Artificial Analysis Intelligence Index routing-quality snapshot (`2026-11-23`) with per-effort scores for Gemini 4 (`gemini-4-neon`, `gemini-4-hydrogen`, `gemini-4-carbon`, `gemini-4-argon`), Gemini 3.8 Flash, Claude 5.5 (`claude-opus-5-5`, `claude-sonnet-5-5`), and OpenAI Codex (`gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6.1-sol`).
+- Add static model specs, context windows, and distinct dashboard chart colors for Gemini 4 (`carbon`, `neon`, `argon`, `hydrogen` + `-tiered`/`-sonar`), Claude 5.5, GPT-6.1/6.2, and newer Ollama Cloud models.
+
 ## [4.4.6] - 2026-11-23
 
 ### Changed

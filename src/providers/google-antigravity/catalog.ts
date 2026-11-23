@@ -26,6 +26,15 @@ export interface AntigravityModelSpec {
  * `getAntigravityContextWindow` can do an O(1) lookup.
  */
 export const ANTIGRAVITY_CONTEXT_WINDOWS: Record<string, number> = {
+  // Anthropic Claude 5.5 family — 1M context window per Anthropic docs.
+  "claude-opus-5-5": 1_000_000,
+  "claude-opus-5-5-high": 1_000_000,
+  "claude-opus-5-5-medium": 1_000_000,
+  "claude-opus-5-5-low": 1_000_000,
+  "claude-sonnet-5-5": 1_000_000,
+  "claude-sonnet-5-5-high": 1_000_000,
+  "claude-sonnet-5-5-medium": 1_000_000,
+  "claude-sonnet-5-5-low": 1_000_000,
   // Anthropic Claude 4.6 family — 1M context window per Anthropic docs.
   "claude-opus-4-6": 1_000_000,
   "claude-opus-4-6-thinking": 1_000_000,
@@ -39,12 +48,36 @@ export const ANTIGRAVITY_CONTEXT_WINDOWS: Record<string, number> = {
   // OpenAI gpt-oss-120b — 131,072 per platform.openai.com/docs/models/gpt-oss-120b.
   "gpt-oss-120b": 131_072,
   "gpt-oss-120b-medium": 131_072,
-  // Google Gemini 4 Argon family — 1M context window.
+  // Google Gemini 4 family — 1M unified context window per Google Gemini API docs.
+  "gemini-4-carbon": 1_000_000,
+  "gemini-4-carbon-disabled": 1_000_000,
+  "gemini-4-carbon-high": 1_000_000,
+  "gemini-4-carbon-medium": 1_000_000,
+  "gemini-4-carbon-low": 1_000_000,
   "gemini-4-argon": 1_000_000,
+  "gemini-4-argon-disabled": 1_000_000,
   "gemini-4-argon-high": 1_000_000,
   "gemini-4-argon-medium": 1_000_000,
   "gemini-4-argon-low": 1_000_000,
+  "gemini-4-neon": 1_000_000,
+  "gemini-4-neon-disabled": 1_000_000,
+  "gemini-4-neon-xhigh": 1_000_000,
+  "gemini-4-neon-high": 1_000_000,
+  "gemini-4-neon-medium": 1_000_000,
+  "gemini-4-neon-low": 1_000_000,
+  "gemini-4-hydrogen": 1_000_000,
+  "gemini-4-hydrogen-disabled": 1_000_000,
+  "gemini-4-hydrogen-xhigh": 1_000_000,
+  "gemini-4-hydrogen-high": 1_000_000,
+  "gemini-4-hydrogen-medium": 1_000_000,
+  "gemini-4-hydrogen-low": 1_000_000,
+  "gemini-4-hydrogen-tiered": 1_000_000,
+  "gemini-4-hydrogen-tiered-high": 1_000_000,
+  "gemini-4-hydrogen-tiered-xhigh": 1_000_000,
+  "gemini-4-hydrogen-sonar": 1_000_000,
   // Google Gemini 3.x — 1M context window per deepmind.google/models/gemini/*.
+  "gemini-3.8-flash": 1_000_000,
+  "gemini-3.8-flash-tiered": 1_000_000,
   "gemini-3.8-flash-high": 1_000_000,
   "gemini-3.8-flash-medium": 1_000_000,
   "gemini-3.8-flash-low": 1_000_000,

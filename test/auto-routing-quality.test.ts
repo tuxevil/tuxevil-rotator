@@ -29,7 +29,7 @@ describe("Artificial Analysis routing assessment", () => {
 
   it("falls back to V4.3.2 when that is the only version for the selected model", () => {
     const sonnet46 = { providerId: "google-antigravity", modelId: "claude-sonnet-4-6" };
-    const sonnet55 = { providerId: "google-antigravity", modelId: "claude-sonnet-5-5-high" };
+    const sonnet55 = { providerId: "google-antigravity", modelId: "claude-sonnet-5-5" };
     const gemini38 = { providerId: "google-antigravity", modelId: "gemini-3.8-flash-high" };
     const assessment = assessAARoutingSelection(sonnet46, [sonnet46, sonnet55, gemini38]);
 
@@ -37,6 +37,40 @@ describe("Artificial Analysis routing assessment", () => {
     assert.equal(assessment.selectedScore, 30);
     assert.equal(assessment.rank, 3);
     assert.equal(assessment.comparableCandidates, 3);
+  });
+
+  it("scores Gemini 4 Neon, Hydrogen, Carbon and GPT-6.1/6.2 models with exact effort alignment", () => {
+    const hydrogenHigh = { providerId: "google-antigravity", modelId: "gemini-4-hydrogen-high" };
+    const hydrogenXhigh = { providerId: "google-antigravity", modelId: "gemini-4-hydrogen-xhigh" };
+    const neonXhigh = { providerId: "google-antigravity", modelId: "gemini-4-neon-xhigh" };
+    const carbonHigh = { providerId: "google-antigravity", modelId: "gemini-4-carbon-high" };
+    const gpt62Astra = { providerId: "openai-codex", modelId: "gpt-6.2-astra" };
+    const gpt62Sol = { providerId: "openai-codex", modelId: "gpt-6.2-sol" };
+    const gpt61Sol = { providerId: "openai-codex", modelId: "gpt-6.1-sol" };
+
+    const assessment = assessAARoutingSelection(hydrogenHigh, [
+      hydrogenHigh,
+      hydrogenXhigh,
+      neonXhigh,
+      carbonHigh,
+      gpt62Astra,
+      gpt62Sol,
+      gpt61Sol,
+    ]);
+
+    assert.equal(assessment.status, "ranked");
+    assert.equal(assessment.scoreVersion, "v5.0");
+    assert.equal(assessment.selectedScore, 51);
+    assert.equal(assessment.alignment, "model-effort-exact");
+    assert.equal(assessment.bestCandidate?.modelId, "gpt-6.2-astra");
+    assert.equal(assessment.bestCandidate?.score, 62);
+    assert.equal(assessment.rank, 7);
+    assert.equal(assessment.comparableCandidates, 7);
+
+    const neonCheck = assessAARoutingSelection(neonXhigh, [neonXhigh, carbonHigh, hydrogenXhigh]);
+    assert.equal(neonCheck.selectedScore, 61);
+    assert.equal(neonCheck.rank, 1);
+    assert.equal(neonCheck.alignment, "model-effort-exact");
   });
 
   it("keeps a V5-only selected model on V5 even when alternatives also have V4 scores", () => {
