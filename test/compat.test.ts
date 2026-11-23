@@ -15,6 +15,7 @@ import {
 	validateOpenAIResponsesRequest,
 } from "../src/compat.js";
 import { logger } from "../src/logger.js";
+import { ANTIGRAVITY_IDENTITY_PROMPT } from "../src/types.js";
 
 describe("compat adapters", () => {
 	it("normalizes OpenAI Responses prompt into input", () => {
@@ -115,13 +116,20 @@ describe("compat adapters", () => {
 			],
 		});
 		assert.equal(body.model, "claude-sonnet-4-6");
-		const bodyStr = JSON.stringify(body);
-		assert.match(bodyStr, /"project":"compat-placeholder"/);
-		assert.match(bodyStr, /"userAgent":"antigravity"/);
-		assert.match(bodyStr, /"requestType":"agent"/);
-		assert.match(bodyStr, /"systemInstruction":{"role":"system","parts":\[{"text":"be terse"}\]}/);
-		const reqStr = JSON.stringify(body.request);
-		assert.match(reqStr, /"contents":\[{"role":"user","parts":\[{"text":"ping"}\]}\]/);
+		assert.equal(body.project, "compat-placeholder");
+		assert.equal(body.userAgent, "antigravity");
+		assert.equal(body.requestType, "agent");
+		const reqObj = body.request as {
+			systemInstruction?: { role?: string; parts?: Array<{ text?: string }> };
+			contents?: Array<{ role?: string; parts?: Array<{ text?: string }> }>;
+		};
+		assert.deepEqual(reqObj.systemInstruction, {
+			role: "system",
+			parts: [{ text: `${ANTIGRAVITY_IDENTITY_PROMPT}\n\nbe terse` }],
+		});
+		assert.deepEqual(reqObj.contents, [
+			{ role: "user", parts: [{ text: "<USER_REQUEST>\nping\n</USER_REQUEST>" }] },
+		]);
 	});
 
 	it("converts developer role messages to system instructions in Antigravity request body", () => {
@@ -133,10 +141,17 @@ describe("compat adapters", () => {
 			],
 		});
 		assert.equal(body.model, "claude-sonnet-4-6");
-		const bodyStr = JSON.stringify(body);
-		assert.match(bodyStr, /"systemInstruction":{"role":"system","parts":\[{"text":"be helpful and coding agent"}\]}/);
-		const reqStr = JSON.stringify(body.request);
-		assert.match(reqStr, /"contents":\[{"role":"user","parts":\[{"text":"hello"}\]}\]/);
+		const reqObj = body.request as {
+			systemInstruction?: { role?: string; parts?: Array<{ text?: string }> };
+			contents?: Array<{ role?: string; parts?: Array<{ text?: string }> }>;
+		};
+		assert.deepEqual(reqObj.systemInstruction, {
+			role: "system",
+			parts: [{ text: `${ANTIGRAVITY_IDENTITY_PROMPT}\n\nbe helpful and coding agent` }],
+		});
+		assert.deepEqual(reqObj.contents, [
+			{ role: "user", parts: [{ text: "<USER_REQUEST>\nhello\n</USER_REQUEST>" }] },
+		]);
 	});
 
 	it("validates Anthropic messages contract", () => {
@@ -174,12 +189,18 @@ describe("compat adapters", () => {
 			messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
 		});
 		assert.equal(body.model, "claude-sonnet-4-6");
-		const bodyStr = JSON.stringify(body);
-		assert.match(bodyStr, /"model":"claude-sonnet-4-6"/);
-		assert.match(bodyStr, /"userAgent":"antigravity"/);
-		assert.match(bodyStr, /"systemInstruction":{"role":"system","parts":\[{"text":"policy"}\]}/);
-		const reqStr = JSON.stringify(body.request);
-		assert.match(reqStr, /"contents":\[{"role":"user","parts":\[{"text":"hello"}\]}\]/);
+		assert.equal(body.userAgent, "antigravity");
+		const reqObj = body.request as {
+			systemInstruction?: { role?: string; parts?: Array<{ text?: string }> };
+			contents?: Array<{ role?: string; parts?: Array<{ text?: string }> }>;
+		};
+		assert.deepEqual(reqObj.systemInstruction, {
+			role: "system",
+			parts: [{ text: `${ANTIGRAVITY_IDENTITY_PROMPT}\n\npolicy` }],
+		});
+		assert.deepEqual(reqObj.contents, [
+			{ role: "user", parts: [{ text: "<USER_REQUEST>\nhello\n</USER_REQUEST>" }] },
+		]);
 	});
 
 	it("converts OpenAI data URL images into Antigravity inlineData", () => {

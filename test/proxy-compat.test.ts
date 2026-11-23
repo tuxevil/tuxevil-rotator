@@ -233,7 +233,7 @@ describe("proxy compat integration", () => {
 			assert.equal(capturesProd.length, 1);
 			assert.match(capturesDaily[0].url, /v1internal:streamGenerateContent\?alt=sse/);
 			assert.match(capturesDaily[0].body, /"systemInstruction"/);
-			assert.match(capturesDaily[0].body, /"contents":\[\{"role":"user","parts":\[\{"text":"ping"\}\]\}\]/);
+			assert.match(capturesDaily[0].body, /<USER_REQUEST>\\nping\\n<\/USER_REQUEST>/);
 			assert.match(capturesDaily[0].body, /"userAgent":"antigravity"/);
 			assert.equal(JSON.parse(capturesDaily[0].body).requestedModel, undefined);
 			assert.equal(JSON.parse(capturesDaily[0].body).catalogModel, undefined);

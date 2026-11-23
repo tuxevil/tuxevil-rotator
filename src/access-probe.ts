@@ -63,7 +63,7 @@ export async function serveAccessProbe(req: IncomingMessage, res: ServerResponse
       controller.signal.throwIfAborted();
       if (rotator.getConfig().modelAccessShadow === true) logAccessPolicyShadow(account.config, provider, model, {});
       rotator.recordUpstreamAttempt(account);
-      const forwarded = await adapter.forwardRequest(account, body, {}, controller.signal);
+      const forwarded = await adapter.forwardRequest(account, body, {}, controller.signal, { apiRetry: false });
       status = forwarded.response.status;
       const reader = forwarded.response.body?.getReader();
       if (reader) {

@@ -142,6 +142,17 @@ export interface Config {
   idempotencyWindowMs?: number;
   // Retry upstream failures before any response bytes reach the client. Default: 2.
   streamRecoveryMaxRetries?: number;
+  // Antigravity single-account / non-rotating retry overrides (defaults match
+  // Antigravity defaultConversationalCascadeConfig: 8 retries, 4s -> 240s, 0.4 jitter).
+  antigravityApiRetry?: {
+    enabled?: boolean;
+    maxRetries?: number;
+    initialSleepDurationMs?: number;
+    maxSleepDurationMs?: number;
+    exponentialMultiplier?: number;
+    jitterRange?: number;
+    maxServerRetryDelayMs?: number;
+  };
   // Prompt compression mode ("off" | "lite" | "rtk" | "rtk+lite").
   compressionMode?: "off" | "lite" | "rtk" | "rtk+lite";
   // Partially override per-model specs used by the compat layer. Keys are model id

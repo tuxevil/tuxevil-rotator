@@ -69,9 +69,21 @@ export function isRetryableStatus(status: number, retryStatuses: readonly number
 export function isRetryableFetchError(error: unknown): boolean {
 	if (error instanceof DOMException && error.name === "AbortError") return true;
 	if (error instanceof UpstreamHeadersTimeoutError) return true;
-	if (error instanceof TypeError) return true;
-	const msg = error instanceof Error ? error.message.toLowerCase() : String(error ?? "").toLowerCase();
+	const cause =
+		typeof error === "object" && error !== null && "cause" in error
+			? (error as { cause?: unknown }).cause
+			: undefined;
+	const msg = [
+		error instanceof Error ? error.message : String(error ?? ""),
+		cause instanceof Error ? cause.message : String(cause ?? ""),
+		typeof cause === "object" && cause !== null && "code" in cause
+			? String((cause as { code?: unknown }).code ?? "")
+			: "",
+	]
+		.join(" ")
+		.toLowerCase();
 	if (msg.includes("x509") || msg.includes("certificate") || msg.includes("tls")) return false;
+	if (error instanceof TypeError) return true;
 	return false;
 }
 
@@ -120,8 +132,23 @@ export function calculateContinuationBackoffMs(
 	return serverRetryDelayMs > 0 ? Math.max(serverRetryDelayMs, jittered) : jittered;
 }
 
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+	if (signal?.aborted) {
+		return Promise.reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+	}
+	return new Promise((resolve, reject) => {
+		const timer = setTimeout(() => {
+			if (signal) signal.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		const onAbort = () => {
+			clearTimeout(timer);
+			reject(signal?.reason ?? new DOMException("Aborted", "AbortError"));
+		};
+		if (signal) {
+			signal.addEventListener("abort", onAbort, { once: true });
+		}
+	});
 }
 
 function createTimeoutSignal(timeoutMs: number | undefined, inputSignal: AbortSignal | null | undefined): AbortSignal | undefined {
@@ -231,7 +258,7 @@ export async function fetchWithRetry(input: RequestInfo | URL, options: FetchWit
 				serverRetryDelayMs = serverDelay;
 			}
 			if (
-				response.status === 429 &&
+				response.status >= 400 &&
 				!isAntigravityRetryableError({
 					status: response.status,
 					errorText,
@@ -273,7 +300,13 @@ export interface AntigravityApiRetryOptions<T> {
 	jitterRange?: number;
 	maxServerRetryDelayMs?: number;
 	random?: () => number;
-	sleepImpl?: (ms: number) => Promise<void>;
+	sleepImpl?: (ms: number, signal?: AbortSignal) => Promise<void>;
+	onRetry?: (info: {
+		attempt: number;
+		delayMs: number;
+		error: unknown;
+		serverRetryDelayMs: number;
+	}) => void;
 	signal?: AbortSignal;
 	classifyError?: (error: unknown) => {
 		retryable: boolean;
@@ -300,6 +333,7 @@ export async function runWithAntigravityApiRetry<T>(
 		maxServerRetryDelayMs = MAX_ANTIGRAVITY_RETRY_DELAY_MS,
 		random = Math.random,
 		sleepImpl = sleep,
+		onRetry,
 		signal,
 		classifyError = (error: unknown) => {
 			if (isRetryableFetchError(error)) return { retryable: true };
@@ -345,7 +379,13 @@ export async function runWithAntigravityApiRetry<T>(
 				jitterRange,
 				serverDelayMs,
 			);
-			await sleepImpl(delayMs);
+			onRetry?.({
+				attempt,
+				delayMs,
+				error,
+				serverRetryDelayMs: serverDelayMs,
+			});
+			await sleepImpl(delayMs, signal);
 		}
 	}
 	throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "retry exhausted"));

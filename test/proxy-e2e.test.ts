@@ -12,7 +12,11 @@ import {
   withRotation,
   type RequestBody,
 } from "../src/proxy.js";
-import { ANTIGRAVITY_ENDPOINTS, type AccountRuntime } from "../src/types.js";
+import {
+	ANTIGRAVITY_ENDPOINTS,
+	type AccountRuntime,
+	type Config,
+} from "../src/types.js";
 import {
 	getAccountIdentity,
 	getCredentialGeneration,
@@ -94,7 +98,9 @@ type RotatorTracking = {
 
 type RotatorOptions = {
 	accounts?: AccountRuntime[];
+	accountCount?: number;
 	streamRecoveryMaxRetries?: number;
+	antigravityApiRetry?: Config["antigravityApiRetry"];
 };
 
 function makeRotator(
@@ -148,7 +154,9 @@ function makeRotator(
 		getGlobalDelayMs: () => 0,
 		getConfig: () => ({
 			streamRecoveryMaxRetries: options.streamRecoveryMaxRetries ?? 2,
+			...(options.antigravityApiRetry ? { antigravityApiRetry: options.antigravityApiRetry } : {}),
 		}),
+		...(options.accountCount !== undefined ? { getAccountCount: () => options.accountCount! } : {}),
 		saveState: async () => {},
 		getStatus: () => ({ accounts: [] }),
 		getOllamaModels: () => [],
@@ -360,7 +368,7 @@ describe("proxy e2e: pre-flush stream recovery", () => {
       calls += 1;
       req.resume();
       req.once("end", () => {
-        res.writeHead(500, { "Content-Type": "text/plain" });
+        res.writeHead(502, { "Content-Type": "text/plain" });
         res.end("still unavailable");
       });
     });
@@ -1369,45 +1377,24 @@ describe("proxy e2e: 403 non-flagged", () => {
 	});
 });
 
-describe("proxy e2e: 5xx (non-503)", () => {
-	it("marks the account in error and rotates", async () => {
-		const captures: Capture[] = [];
+describe("proxy e2e: 5xx & single-account Antigravity parity", () => {
+	it("aborts immediately on HTTP 500 without rotating or retrying", async () => {
+		let calls = 0;
 		const upstream = await listen((req, res) => {
-			let body = "";
-			req.on("data", (chunk) => { body += chunk.toString(); });
-			req.on("end", () => {
-				captures.push({ url: req.url || "", headers: req.headers, body });
+			calls += 1;
+			req.resume();
+			req.once("end", () => {
 				res.writeHead(500, { "Content-Type": "application/json" });
 				res.end("internal error");
 			});
 		});
 		endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
 
-		const tracking = { markError: 0, finishRequest: 0 };
-		const rotator = {
-			getActiveAccount: async () => makeAccount("err@example.com"),
-			rotateToNext: async () => null,
-			finishRequest: () => { tracking.finishRequest++; },
-			getSafetyJitterMs: () => 0,
-			recordUpstreamAttempt: () => {},
-			markExhausted: () => {},
-			recordProvider429: () => {},
-			getRetryAfterMs: () => 0,
-			getFlagContext: () => ({
-				timerType: "fresh",
-				accountQuotaPercent: 100,
-				wasProAccount: false,
-				accountRequestsLastHour: 0,
-				poolSize: 1,
-				poolHealthyCount: 1,
-				uptimeSeconds: 0,
-			}),
-			markFlagged: () => {},
-			markError: () => { tracking.markError++; },
-			recordRequest: () => false,
-			recordProxyEvent: () => {},
-			getGlobalDelayMs: () => 0,
-		} as unknown as AccountRotator;
+		const tracking = { markError: 0, finishRequest: 0, rotations: 0 };
+		const rotator = makeRotator(makeAccount("err500@example.com"), tracking, {
+			accounts: [makeAccount("unused@example.com")],
+			accountCount: 2,
+		});
 
 		try {
 			const outcome = await withRotation(
@@ -1418,15 +1405,164 @@ describe("proxy e2e: 5xx (non-503)", () => {
 				async () => "should-not-reach",
 			);
 
-			// After 500 with no replacement, should return 429/503
+			assert.equal(outcome.ok, false);
+			if (!outcome.ok) {
+				assert.equal(outcome.status, 500);
+			}
+			assert.equal(calls, 1);
+			assert.equal(tracking.rotations, 0);
+			assert.equal(tracking.markError, 1);
+			assert.equal(tracking.finishRequest, 1);
+		} finally {
+			await upstream.close();
+		}
+	});
+
+	it("aborts immediately on MODEL_CAPACITY_EXHAUSTED (503 / 429) without rotating or retrying", async () => {
+		for (const status of [503, 429]) {
+			let calls = 0;
+			const upstream = await listen((req, res) => {
+				calls += 1;
+				req.resume();
+				req.once("end", () => {
+					res.writeHead(status, { "Content-Type": "application/json" });
+					res.end(
+						JSON.stringify({
+							error: {
+								message: "No capacity available",
+								details: [{ metadata: { reason: "MODEL_CAPACITY_EXHAUSTED" } }],
+							},
+						}),
+					);
+				});
+			});
+			endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
+
+			const tracking = { markError: 0, finishRequest: 0, rotations: 0 };
+			const rotator = makeRotator(makeAccount("cap@example.com"), tracking, {
+				accounts: [makeAccount("unused@example.com")],
+				accountCount: 2,
+			});
+
+			try {
+				const outcome = await withRotation(
+					rotator,
+					"gemini-3.1-pro",
+					{},
+					makeBody(),
+					async () => "should-not-reach",
+				);
+
+				assert.equal(outcome.ok, false);
+				if (!outcome.ok) {
+					assert.equal(outcome.status, status);
+				}
+				assert.equal(calls, 1);
+				assert.equal(tracking.rotations, 0);
+				assert.equal(tracking.finishRequest, 1);
+			} finally {
+				await upstream.close();
+			}
+		}
+	});
+
+	it("marks the account in error and rotates on retryable 502 when no replacement remains", async () => {
+		const captures: Capture[] = [];
+		const upstream = await listen((req, res) => {
+			let body = "";
+			req.on("data", (chunk) => { body += chunk.toString(); });
+			req.on("end", () => {
+				captures.push({ url: req.url || "", headers: req.headers, body });
+				res.writeHead(502, { "Content-Type": "application/json" });
+				res.end("bad gateway");
+			});
+		});
+		endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
+
+		const tracking = { markError: 0, finishRequest: 0 };
+		const rotator = makeRotator(makeAccount("err502@example.com"), tracking, {
+			accounts: [],
+		});
+
+		try {
+			const outcome = await withRotation(
+				rotator,
+				"gemini-3.1-pro",
+				{},
+				makeBody(),
+				async () => "should-not-reach",
+			);
+
+			// After 502 with no replacement, should return 429/503
 			assert.equal(outcome.ok, false);
 			if (!outcome.ok) {
 				assert.ok([429, 503].includes(outcome.status));
 			}
-			assert.equal(tracking.markError, 1, "500 should call markError");
+			assert.equal(tracking.markError, 1, "502 should call markError");
 			assert.equal(tracking.finishRequest, 1, "5xx should release the account once");
 		} finally {
 			await upstream.close();
+		}
+	});
+
+	it("applies runWithAntigravityApiRetry on single-account network, 429, and 503 failures", async () => {
+		for (const mode of ["network", "429", "503"] as const) {
+			let calls = 0;
+			const upstream = await listen((req, res) => {
+				calls += 1;
+				if (calls <= 2) {
+					if (mode === "network") {
+						res.destroy();
+						return;
+					}
+					req.resume();
+					req.once("end", () => {
+						res.writeHead(mode === "429" ? 429 : 503, {
+							"Content-Type": "application/json",
+						});
+						res.end(
+							mode === "429"
+								? JSON.stringify({ error: { status: "RATE_LIMITED", retryDelay: "0.01s" } })
+								: "PREFILL_QUEUE_OVERLOADED",
+						);
+					});
+					return;
+				}
+				req.resume();
+				req.once("end", () => {
+					res.writeHead(200, { "Content-Type": "text/event-stream" });
+					res.end("data: recovered\n\n");
+				});
+			});
+			endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
+
+			const rotator = makeRotator(makeAccount("single-twin@example.com"), {}, {
+				accountCount: 1,
+				antigravityApiRetry: {
+					enabled: true,
+					maxRetries: 4,
+					initialSleepDurationMs: 1,
+					maxSleepDurationMs: 5,
+				},
+			});
+
+			try {
+				const outcome = await withRotation(
+					rotator,
+					"gemini-3.1-pro",
+					{},
+					makeBody(),
+					async (response) => response.text(),
+				);
+				assert.equal(outcome.ok, true, `Expected ${mode} single-account failure to recover`);
+				assert.equal(calls, 3);
+				if (outcome.ok) {
+					assert.equal(outcome.result, "data: recovered\n\n");
+					assert.equal(outcome.context?.retries, 2);
+				}
+			} finally {
+				await upstream.close();
+			}
 		}
 	});
 });

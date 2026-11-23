@@ -10,7 +10,11 @@ import {
 } from "../src/providers/google-antigravity/translators.js";
 import { setModelSpecsOverride } from "../src/compat/model-specs.js";
 import { dynamicCatalog } from "../src/providers/google-antigravity/dynamic-catalog.js";
-import { setEffortRoutingOverride, setModelAliasesOverride } from "../src/types.js";
+import {
+	ANTIGRAVITY_IDENTITY_PROMPT,
+	setEffortRoutingOverride,
+	setModelAliasesOverride,
+} from "../src/types.js";
 
 type AntigravityBodyWithRequest = ReturnType<typeof openAIToAntigravityBody> & {
 	request: {
@@ -46,10 +50,10 @@ describe("translators component", () => {
 		assert.equal(body.requestType, "agent");
 		assert.deepEqual(body.request.systemInstruction, {
 			role: "system",
-			parts: [{ text: "be terse" }],
+			parts: [{ text: `${ANTIGRAVITY_IDENTITY_PROMPT}\n\nbe terse` }],
 		});
 		assert.deepEqual(body.request.contents, [
-			{ role: "user", parts: [{ text: "ping" }] },
+			{ role: "user", parts: [{ text: "<USER_REQUEST>\nping\n</USER_REQUEST>" }] },
 		]);
 	});
 
@@ -64,10 +68,10 @@ describe("translators component", () => {
 		assert.equal(body.model, "claude-sonnet-4-6");
 		assert.deepEqual(body.request.systemInstruction, {
 			role: "system",
-			parts: [{ text: "be polite" }],
+			parts: [{ text: `${ANTIGRAVITY_IDENTITY_PROMPT}\n\nbe polite` }],
 		});
 		assert.deepEqual(body.request.contents, [
-			{ role: "user", parts: [{ text: "hello" }] },
+			{ role: "user", parts: [{ text: "<USER_REQUEST>\nhello\n</USER_REQUEST>" }] },
 		]);
 	});
 

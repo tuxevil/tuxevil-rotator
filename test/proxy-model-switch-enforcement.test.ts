@@ -301,7 +301,7 @@ describe("Models switch enforcement at request admission and dispatch", () => {
     mock.method(getProviderAdapter(GOOGLE), "forwardRequest", async (account: AccountRuntime, forwardedBody: RequestBody) => {
       captures.push({ providerId: GOOGLE, account, body: forwardedBody });
       return captures.length === 1
-        ? { response: new Response("upstream failed", { status: 500 }), endpoint: "mock://google" }
+        ? { response: new Response("upstream failed", { status: 502 }), endpoint: "mock://google" }
         : successResponse();
     });
     const outcome = await withRotation(rotator, body.model, {}, body, (response) => response.text());
@@ -473,7 +473,7 @@ describe("Models switch enforcement at request admission and dispatch", () => {
     mock.method(getProviderAdapter(GOOGLE), "forwardRequest", async (account: AccountRuntime, body: RequestBody) => {
       captures.push({ providerId: GOOGLE, account, body });
       return captures.length === 1
-        ? { response: new Response("upstream failed", { status: 500 }), endpoint: "mock://google" }
+        ? { response: new Response("upstream failed", { status: 502 }), endpoint: "mock://google" }
         : successResponse();
     });
     const outcome = await withRotation(rotator, MODEL, {}, requestBody(), (response) => response.text());

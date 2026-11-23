@@ -16,8 +16,15 @@ import { DEFAULT_PROVIDER, getProviderProjectId } from "../credential-helpers.js
 import { getAccountProxyDispatcher } from "../proxy-dispatcher.js";
 import {
   fetchWithHeadersTimeout,
+  isRetryableFetchError,
+  runWithAntigravityApiRetry,
+  type AntigravityApiRetryOptions,
   type RequestInitWithDispatcher,
 } from "../../fetch-with-retry.js";
+import {
+  extractRetryDelayMs,
+  isAntigravityRetryableError,
+} from "../../rate-limit-parser.js";
 
 const forwardLogger = logger.child("google-forward");
 
@@ -315,106 +322,76 @@ export const GOOGLE_BENCHMARK_CONSTANTS = {
   timeoutMs: BENCHMARK_TIMEOUT_MS,
 } as const;
 
+export interface ForwardRequestOptions {
+  /**
+   * Controls Antigravity single-account / non-rotating retry handling via
+   * `runWithAntigravityApiRetry`. Defaults to true for standalone calls; pass
+   * `{ apiRetry: false }` when an outer multi-account rotation loop owns retries.
+   */
+  apiRetry?:
+    | boolean
+    | Partial<Omit<AntigravityApiRetryOptions<ForwardedResponse>, "fn">>;
+}
+
 /**
- * Forward a request to the real Antigravity endpoint with credential swapping.
+ * Strict Antigravity CCPA wire header allowlist (twin to `ccpahttp` +
+ * `codeassistclient.setHeaders`): never leak third-party SDK or proxy headers.
  */
-export async function forwardRequest(
+export function buildAntigravityWireHeaders(
   account: AccountRuntime,
-  body: RequestBody,
   originalHeaders: Record<string, string>,
-  signal?: AbortSignal,
-): Promise<ForwardedResponse> {
-  // Swap credentials
-  body.project = getProviderProjectId(account.config, DEFAULT_PROVIDER);
-
-  // Map internal display/compat names to Google upstream names (single source
-  // of truth: src/types.ts:applyModelAlias)
-  body.model = applyModelAlias(body.model);
-
-  const {
-    displayModel: _displayModel,
-    requestedModel: _requestedModel,
-    catalogModel: _catalogModel,
-    providerId: _providerId,
-    selectionMode: _selectionMode,
-    selectionConfidence: _selectionConfidence,
-    selectionReason: _selectionReason,
-    ...bodyToForward
-  } = body;
-  if (typeof bodyToForward.requestId !== "string" || !bodyToForward.requestId) {
-    bodyToForward.requestId = `agent/${randomUUID()}`;
-  }
-  if (typeof bodyToForward.userPromptId !== "string" || !bodyToForward.userPromptId) {
-    bodyToForward.userPromptId = randomUUID();
-  }
-  if (typeof bodyToForward.userAgent !== "string" || !bodyToForward.userAgent) {
-    bodyToForward.userAgent = "antigravity";
-  }
-  if (typeof bodyToForward.requestType !== "string" || !bodyToForward.requestType) {
-    bodyToForward.requestType = "agent";
-  }
-  const requestBody = JSON.stringify(bodyToForward);
-
-  // Build headers: keep safe originals while replacing hop-by-hop, framing,
-  // and provider-managed headers (case-insensitively to prevent duplicates).
-  const STRIPPED_HEADERS = new Set([
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailers",
-    "transfer-encoding",
-    "upgrade",
-    "expect",
-    "host",
-    "content-length",
-    "content-type",
-    "accept",
-    "authorization",
-    "user-agent",
-    "x-goog-api-client",
-    "client-metadata",
-    "anthropic-beta",
-    "x-goog-request-reason",
-    "x-goog-user-project",
-    // Forwarding / proxying artefacts that should never reach the upstream
-    "x-forwarded-for",
-    "x-forwarded-host",
-    "x-forwarded-proto",
-    "x-forwarded-port",
-    "x-real-ip",
-    "forwarded",
-    "via",
-  ]);
-  const forwardHeaders: Record<string, string> = {};
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${account.accessToken ?? ""}`,
+    "User-Agent": REQUEST_USER_AGENT,
+  };
+  let requestReason = "";
+  let userProjectHeader = "";
   for (const [key, value] of Object.entries(originalHeaders)) {
-    if (!STRIPPED_HEADERS.has(key.toLowerCase())) {
-      forwardHeaders[key] = value;
+    const lower = key.toLowerCase();
+    if (lower === "x-goog-request-reason" && typeof value === "string" && value.trim()) {
+      requestReason = value.trim();
+    } else if (lower === "x-goog-user-project" && typeof value === "string" && value.trim()) {
+      userProjectHeader = value.trim();
     }
   }
-  // Header parity with Antigravity (ccpahttp.(*Transport).newPostRequest +
-  // codeassistclient.(*CodeAssistClient).setHeaders): only Content-Type,
-  // User-Agent, Authorization, plus optional X-Goog-Request-Reason /
-  // X-Goog-User-Project when explicitly supplied.
-  forwardHeaders["Content-Type"] = "application/json";
-  forwardHeaders["Authorization"] = `Bearer ${account.accessToken}`;
-  forwardHeaders["User-Agent"] = REQUEST_USER_AGENT;
-  const requestReason =
-    originalHeaders["x-goog-request-reason"] ??
-    originalHeaders["X-Goog-Request-Reason"] ??
-    process.env.GOOG_REQUEST_REASON?.trim();
+  requestReason ||= process.env.GOOG_REQUEST_REASON?.trim() || "";
+  userProjectHeader ||= process.env.GOOG_USER_PROJECT?.trim() || "";
   if (requestReason) {
-    forwardHeaders["X-Goog-Request-Reason"] = requestReason;
+    headers["X-Goog-Request-Reason"] = requestReason;
   }
-  const userProjectHeader =
-    originalHeaders["x-goog-user-project"] ??
-    originalHeaders["X-Goog-User-Project"] ??
-    process.env.GOOG_USER_PROJECT?.trim();
   if (userProjectHeader) {
-    forwardHeaders["X-Goog-User-Project"] = userProjectHeader;
+    headers["X-Goog-User-Project"] = userProjectHeader;
   }
+  return headers;
+}
 
+class RetryableAntigravityHttpError extends Error {
+  readonly status: number;
+  readonly serverRetryDelayMs?: number;
+  readonly fallbackResult: ForwardedResponse;
+
+  constructor(
+    status: number,
+    message: string,
+    serverRetryDelayMs: number | undefined,
+    fallbackResult: ForwardedResponse,
+  ) {
+    super(message);
+    this.name = "RetryableAntigravityHttpError";
+    this.status = status;
+    this.serverRetryDelayMs = serverRetryDelayMs;
+    this.fallbackResult = fallbackResult;
+  }
+}
+
+async function forwardRequestOnce(
+  account: AccountRuntime,
+  forwardHeaders: Record<string, string>,
+  requestBody: string,
+  signal?: AbortSignal,
+): Promise<ForwardedResponse> {
   // Try endpoints with cascade on 401/403/404
   for (
     let endpointIdx = 0;
@@ -473,6 +450,121 @@ export async function forwardRequest(
   }
 
   throw new Error("All endpoints failed");
+}
+
+/**
+ * Forward a request to the real Antigravity endpoint with credential swapping.
+ */
+export async function forwardRequest(
+  account: AccountRuntime,
+  body: RequestBody,
+  originalHeaders: Record<string, string>,
+  signal?: AbortSignal,
+  options?: ForwardRequestOptions,
+): Promise<ForwardedResponse> {
+  // Swap credentials
+  body.project = getProviderProjectId(account.config, DEFAULT_PROVIDER);
+
+  // Map internal display/compat names to Google upstream names (single source
+  // of truth: src/types.ts:applyModelAlias)
+  body.model = applyModelAlias(body.model);
+
+  const {
+    displayModel: _displayModel,
+    requestedModel: _requestedModel,
+    catalogModel: _catalogModel,
+    providerId: _providerId,
+    selectionMode: _selectionMode,
+    selectionConfidence: _selectionConfidence,
+    selectionReason: _selectionReason,
+    ...bodyToForward
+  } = body;
+  if (typeof bodyToForward.requestId !== "string" || !bodyToForward.requestId) {
+    bodyToForward.requestId = `agent/${randomUUID()}`;
+  }
+  if (typeof bodyToForward.userPromptId !== "string" || !bodyToForward.userPromptId) {
+    bodyToForward.userPromptId = randomUUID();
+  }
+  if (typeof bodyToForward.userAgent !== "string" || !bodyToForward.userAgent) {
+    bodyToForward.userAgent = "antigravity";
+  }
+  if (typeof bodyToForward.requestType !== "string" || !bodyToForward.requestType) {
+    bodyToForward.requestType = "agent";
+  }
+  const requestBody = JSON.stringify(bodyToForward);
+  const forwardHeaders = buildAntigravityWireHeaders(account, originalHeaders);
+
+  const retrySpec = options?.apiRetry;
+  if (retrySpec === false) {
+    return forwardRequestOnce(account, forwardHeaders, requestBody, signal);
+  }
+
+  const retryOptions =
+    typeof retrySpec === "object" && retrySpec !== null ? retrySpec : {};
+  const label = account.config.label || account.config.email;
+
+  try {
+    return await runWithAntigravityApiRetry({
+      ...retryOptions,
+      signal: retryOptions.signal ?? signal,
+      classifyError: (error) => {
+        if (error instanceof RetryableAntigravityHttpError) {
+          return {
+            retryable: true,
+            serverRetryDelayMs: error.serverRetryDelayMs,
+          };
+        }
+        return { retryable: isRetryableFetchError(error) };
+      },
+      onRetry: (info) => {
+        forwardLogger.log(
+          "warn",
+          `[${label}] Single-account Antigravity retry #${info.attempt + 1} in ${info.delayMs}ms`,
+        );
+        retryOptions.onRetry?.(info);
+      },
+      fn: async () => {
+        const result = await forwardRequestOnce(
+          account,
+          forwardHeaders,
+          requestBody,
+          signal,
+        );
+        const status = result.response.status;
+        if (status === 408 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504) {
+          const errorText = await result.response.clone().text().catch(() => "");
+          if (
+            isAntigravityRetryableError({
+              status,
+              errorText,
+              headers: result.response.headers,
+            })
+          ) {
+            const serverRetryDelayMs =
+              extractRetryDelayMs(errorText, result.response.headers) ?? undefined;
+            const fallbackResponse = new Response(errorText, {
+              status: result.response.status,
+              statusText: result.response.statusText,
+              headers: result.response.headers,
+            });
+            await result.response.body?.cancel().catch(() => undefined);
+            throw new RetryableAntigravityHttpError(
+              status,
+              errorText || `HTTP ${status}`,
+              serverRetryDelayMs,
+              { response: fallbackResponse, endpoint: result.endpoint },
+            );
+          }
+        }
+        return result;
+      },
+    });
+  } catch (err) {
+    if (err instanceof RetryableAntigravityHttpError) {
+      return err.fallbackResult;
+    }
+    throw err;
+  }
 }
 
 export function createGoogleStreamAccumulator(): SseEventAccumulator {

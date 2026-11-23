@@ -1342,6 +1342,7 @@ export function openAIToAntigravityBody(
   // model turn. Claude additionally needs dangling tool-call turns removed;
   // other models keep the call history and append Antigravity's "Continue"
   // user turn (matching core.ensureRequestEndsWithUserTurn).
+  let appendedContinueTurn = false;
   while (contents.at(-1)?.role === "model") {
     const lastContent = contents.at(-1);
     const hasFunctionCall =
@@ -1355,6 +1356,7 @@ export function openAIToAntigravityBody(
       role: "user",
       parts: [{ text: "Continue" }],
     });
+    appendedContinueTurn = true;
     break;
   }
 
@@ -1456,7 +1458,11 @@ export function openAIToAntigravityBody(
 
   const promptMode = getAntigravitySystemPromptMode();
   if (promptMode === "twin") {
-    for (let idx = contents.length - 1; idx >= 0; idx--) {
+    const searchEnd =
+      appendedContinueTurn && contents.length > 1
+        ? contents.length - 2
+        : contents.length - 1;
+    for (let idx = searchEnd; idx >= 0; idx--) {
       const turn = contents[idx];
       if (turn?.role === "user" && Array.isArray(turn.parts)) {
         for (const part of turn.parts) {
@@ -1525,8 +1531,15 @@ export function getAntigravitySystemPromptMode(): AntigravitySystemPromptMode {
   const raw = (rotatorEnv("ANTIGRAVITY_SYSTEM_PROMPT_MODE") || "")
     .trim()
     .toLowerCase();
-  if (raw === "twin" || raw === "prepend" || raw === "passthrough") return raw;
-  return "default-identity";
+  if (
+    raw === "default-identity" ||
+    raw === "prepend" ||
+    raw === "passthrough" ||
+    raw === "twin"
+  ) {
+    return raw;
+  }
+  return "twin";
 }
 
 /**
