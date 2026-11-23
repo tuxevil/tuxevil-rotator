@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## [4.4.6] - 2026-11-23
+
+### Changed
+
+- Update `MODEL_PRICING` and the standalone telemetry receiver mirror with official November 2026 API rates for Gemini 4 (`gemini-4-neon`, `gemini-4-hydrogen`, `gemini-4-carbon`, `gemini-4-argon-disabled` plus family fallbacks), Claude 5.5 (`claude-opus-5-5`, `claude-sonnet-5-5` plus `5-5`/`5.5` family fallbacks), OpenAI Codex (`gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6.1-sol`, `gpt-6.1-terra`), and Ollama Cloud (`beam`, `deepseek-v4.1-flash:1017`, `hy4`, `inkling-2-small`, `kimi-k3.1-pro`, `mimo-v2.6-flash`, `mimo-v2.6-pro`, `minimax-m3.1-flash`, `muse-spark-open`, and updated `mistral-large-4`).
+
 ## [4.4.5] - 2026-11-23
 
 ### Fixed

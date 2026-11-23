@@ -336,6 +336,8 @@ function sanitizeTokensByModel(raw) {
 const MODEL_PRICING = {
 	"claude-opus-4-6-thinking": { inputPer1M: 5.0, outputPer1M: 25.0 },
 	"claude-sonnet-4-6": { inputPer1M: 3.0, outputPer1M: 15.0 },
+	"claude-opus-5-5": { inputPer1M: 4.0, outputPer1M: 20.0, cachingPer1M: 0.2 },
+	"claude-sonnet-5-5": { inputPer1M: 2.0, outputPer1M: 10.0, cachingPer1M: 0.1 },
 	"gemini-3.1-pro": { inputPer1M: 2.0, outputPer1M: 12.0 },
 	"gemini-3.1-pro-low": { inputPer1M: 2.0, outputPer1M: 12.0 },
 	"gemini-3.1-pro-high": { inputPer1M: 2.0, outputPer1M: 12.0 },
@@ -345,30 +347,67 @@ const MODEL_PRICING = {
 	"gemini-3.6-flash-medium": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
 	"gemini-3.6-flash-low": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
 	"gemini-3.6-flash-tiered": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
-	// Gemini introductory pricing: see docs/model-pricing.md (2026-10-25).
+	// Gemini introductory pricing: see docs/model-pricing.md (2026-11-23).
 	"gemini-3.7-flash-tiered": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
 	// Gemini 3.8 Flash uses the same introductory window and doubles on 2027-01-01.
+	"gemini-3.8-flash": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
+	"gemini-3.8-flash-tiered": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
 	"gemini-3.8-flash-low": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
 	"gemini-3.8-flash-medium": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
 	"gemini-3.8-flash-high": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
+	"gemini-4-carbon": { inputPer1M: 2.0, outputPer1M: 10.0, cachingPer1M: 0.1 },
+	"gemini-4-argon": { inputPer1M: 2.0, outputPer1M: 10.0, cachingPer1M: 0.1 },
+	"gemini-4-argon-disabled": { inputPer1M: 2.0, outputPer1M: 10.0, cachingPer1M: 0.1 },
+	"gemini-4-argon-low": { inputPer1M: 2.0, outputPer1M: 10.0, cachingPer1M: 0.1 },
+	"gemini-4-argon-medium": { inputPer1M: 2.0, outputPer1M: 10.0, cachingPer1M: 0.1 },
+	"gemini-4-argon-high": { inputPer1M: 2.0, outputPer1M: 10.0, cachingPer1M: 0.1 },
+	"gemini-4-neon": { inputPer1M: 3.0, outputPer1M: 15.0, cachingPer1M: 0.15 },
+	"gemini-4-neon-low": { inputPer1M: 3.0, outputPer1M: 15.0, cachingPer1M: 0.15 },
+	"gemini-4-neon-medium": { inputPer1M: 3.0, outputPer1M: 15.0, cachingPer1M: 0.15 },
+	"gemini-4-neon-high": { inputPer1M: 3.0, outputPer1M: 15.0, cachingPer1M: 0.15 },
+	"gemini-4-neon-xhigh": { inputPer1M: 3.0, outputPer1M: 15.0, cachingPer1M: 0.15 },
+	"gemini-4-hydrogen": { inputPer1M: 1.5, outputPer1M: 7.5, cachingPer1M: 0.075 },
+	"gemini-4-hydrogen-low": { inputPer1M: 1.5, outputPer1M: 7.5, cachingPer1M: 0.075 },
+	"gemini-4-hydrogen-medium": { inputPer1M: 1.5, outputPer1M: 7.5, cachingPer1M: 0.075 },
+	"gemini-4-hydrogen-high": { inputPer1M: 1.5, outputPer1M: 7.5, cachingPer1M: 0.075 },
+	"gemini-4-hydrogen-xhigh": { inputPer1M: 1.5, outputPer1M: 7.5, cachingPer1M: 0.075 },
+	"gemini-4-hydrogen-tiered": { inputPer1M: 1.5, outputPer1M: 7.5, cachingPer1M: 0.075 },
+	"gemini-4-hydrogen-sonar": { inputPer1M: 1.5, outputPer1M: 7.5, cachingPer1M: 0.075 },
 	"gpt-oss-120b-medium": { inputPer1M: 2.0, outputPer1M: 10.0 },
 
 	// Ollama Cloud standard-price models — mirrors MODEL_PRICING in src/types.ts
+	"beam": { inputPer1M: 0.125, outputPer1M: 0.40, cachingPer1M: 0.015 },
 	"gpt-oss:20b": { inputPer1M: 0.07, outputPer1M: 0.30, cachingPer1M: 0.035 },
 	"gpt-oss:120b": { inputPer1M: 0.15, outputPer1M: 0.60, cachingPer1M: 0.014 },
 	"deepseek-v4-flash:preview":   { inputPer1M: 0.14,  outputPer1M: 0.28 },
 	"deepseek-v4-flash:0731": { inputPer1M: 0.14, outputPer1M: 0.28, cachingPer1M: 0.0028 },
+	"deepseek-v4.1-flash": { inputPer1M: 0.30, outputPer1M: 1.20, cachingPer1M: 0.006 },
+	"deepseek-v4.1-flash:1017": { inputPer1M: 0.30, outputPer1M: 1.20, cachingPer1M: 0.006 },
 	"deepseek-v4-pro": { inputPer1M: 1.32, outputPer1M: 3.96, cachingPer1M: 0.044 },
+	"deepseek-v4-pro:0813": { inputPer1M: 1.74, outputPer1M: 3.48 },
 	"qwen3.5:397b": { inputPer1M: 0.60, outputPer1M: 3.60 },
 	"glm-5.1": { inputPer1M: 0.80, outputPer1M: 2.56 },
 	"glm-5.2": { inputPer1M: 1.40, outputPer1M: 4.40, cachingPer1M: 0.26 },
+	"glm-5.3": { inputPer1M: 1.40, outputPer1M: 4.40, cachingPer1M: 0.26 },
+	"glm-5.3-flash": { inputPer1M: 0.15, outputPer1M: 0.50, cachingPer1M: 0.03 },
+	"gemma4": { inputPer1M: 0.14, outputPer1M: 0.40, cachingPer1M: 0.05 },
 	"gemma4:31b": { inputPer1M: 0.14, outputPer1M: 0.40, cachingPer1M: 0.05 },
+	"hy4": { inputPer1M: 0.834, outputPer1M: 2.501, cachingPer1M: 0.042 },
+	"inkling-2-small": { inputPer1M: 0.30, outputPer1M: 1.00, cachingPer1M: 0.03 },
 	"kimi-k2.6": { inputPer1M: 0.95, outputPer1M: 4.00, cachingPer1M: 0.16 },
 	"kimi-k2.7-code": { inputPer1M: 0.95, outputPer1M: 4.00, cachingPer1M: 0.19 },
 	"kimi-k3": { inputPer1M: 3.00, outputPer1M: 15.00, cachingPer1M: 0.30 },
+	"kimi-k3.1-pro": { inputPer1M: 2.00, outputPer1M: 10.00, cachingPer1M: 0.20 },
+	"mimo-v2.6-flash": { inputPer1M: 0.14, outputPer1M: 0.28, cachingPer1M: 0.0028 },
+	"mimo-v2.6-pro": { inputPer1M: 0.435, outputPer1M: 0.87, cachingPer1M: 0.0036 },
 	"minimax-m2.7": { inputPer1M: 0.30, outputPer1M: 1.20, cachingPer1M: 0.06 },
 	"minimax-m3": { inputPer1M: 0.60, outputPer1M: 2.40, cachingPer1M: 0.12 },
+	"minimax-m3.1-flash": { inputPer1M: 0.15, outputPer1M: 0.60, cachingPer1M: 0.015 },
+	"mistral-large-4": { inputPer1M: 0.70, outputPer1M: 2.10, cachingPer1M: 0.07 },
+	"mistral-large-3": { inputPer1M: 0.50, outputPer1M: 1.50 },
 	"mistral-large-3:675b": { inputPer1M: 0.50, outputPer1M: 1.50 },
+	"muse-spark-open": { inputPer1M: 1.25, outputPer1M: 4.25, cachingPer1M: 0.15 },
+	"nemotron-3-nano": { inputPer1M: 0.06, outputPer1M: 0.24 },
 	"nemotron-3-nano:30b": { inputPer1M: 0.06, outputPer1M: 0.24 },
 	"nemotron-3-super": { inputPer1M: 0.015, outputPer1M: 0.60, cachingPer1M: 0.015 },
 	"nemotron-3-ultra": { inputPer1M: 0.10, outputPer1M: 3.00, cachingPer1M: 0.10 },
@@ -384,31 +423,34 @@ const MODEL_PRICING = {
 	"laguna-s-2.1-free":           { inputPer1M: 0.20,  outputPer1M: 0.80 },
 
 	// OpenAI Codex models — mirrors MODEL_PRICING in src/types.ts
-	"gpt-5.6-sol": { inputPer1M: 4.0, outputPer1M: 20.0, cachingPer1M: 0.40 },
-	"gpt-5.6-terra": { inputPer1M: 2.0, outputPer1M: 12.0, cachingPer1M: 0.20 },
-	"gpt-5.6-luna": { inputPer1M: 0.20, outputPer1M: 1.20, cachingPer1M: 0.02 },
-	"gemini-4-argon": { inputPer1M: 2.0, outputPer1M: 10.0, cachingPer1M: 0.1 },
-	"gemini-4-argon-low": { inputPer1M: 2.0, outputPer1M: 10.0, cachingPer1M: 0.1 },
-	"gemini-4-argon-medium": { inputPer1M: 2.0, outputPer1M: 10.0, cachingPer1M: 0.1 },
-	"gemini-4-argon-high": { inputPer1M: 2.0, outputPer1M: 10.0, cachingPer1M: 0.1 },
+	"gpt-6.2-astra": { inputPer1M: 8.0, outputPer1M: 40.0, cachingPer1M: 0.4 },
+	"gpt-6.2-sol": { inputPer1M: 2.0, outputPer1M: 10.0, cachingPer1M: 0.1 },
+	"gpt-6.1-sol": { inputPer1M: 2.0, outputPer1M: 10.0, cachingPer1M: 0.1 },
+	"gpt-6.1-terra": { inputPer1M: 1.0, outputPer1M: 5.0, cachingPer1M: 0.05 },
 	"gpt-6-astra": { inputPer1M: 10.0, outputPer1M: 50.0, cachingPer1M: 1.0 },
 	"gpt-6-sol": { inputPer1M: 2.0, outputPer1M: 10.0, cachingPer1M: 0.2 },
 	"gpt-6-luna": { inputPer1M: 0.1, outputPer1M: 0.5, cachingPer1M: 0.01 },
-	"deepseek-v4.1-flash": { inputPer1M: 0.30, outputPer1M: 1.20, cachingPer1M: 0.006 },
-	"glm-5.3": { inputPer1M: 1.40, outputPer1M: 4.40, cachingPer1M: 0.26 },
-	"glm-5.3-flash": { inputPer1M: 0.15, outputPer1M: 0.50, cachingPer1M: 0.03 },
-	"gemma4": { inputPer1M: 0.14, outputPer1M: 0.40, cachingPer1M: 0.05 },
-	"mistral-large-4": { inputPer1M: 0.68, outputPer1M: 2.09, cachingPer1M: 0.07 },
-	"mistral-large-3": { inputPer1M: 0.50, outputPer1M: 1.50 },
-	"nemotron-3-nano": { inputPer1M: 0.06, outputPer1M: 0.24 },
-	"deepseek-v4-pro:0813": { inputPer1M: 1.74, outputPer1M: 3.48 },
+	"gpt-5.6-sol": { inputPer1M: 4.0, outputPer1M: 20.0, cachingPer1M: 0.40 },
+	"gpt-5.6-terra": { inputPer1M: 2.0, outputPer1M: 12.0, cachingPer1M: 0.20 },
+	"gpt-5.6-luna": { inputPer1M: 0.20, outputPer1M: 1.20, cachingPer1M: 0.02 },
 };
 
 function getModelPricing(model) {
 	if (MODEL_PRICING[model]) return MODEL_PRICING[model];
 	const lower = (model || "").toLowerCase();
-	if (lower.includes("opus")) return MODEL_PRICING["claude-opus-4-6-thinking"];
-	if (lower.includes("sonnet")) return MODEL_PRICING["claude-sonnet-4-6"];
+	if (MODEL_PRICING[lower]) return MODEL_PRICING[lower];
+	if (lower.includes("opus")) {
+		if (lower.includes("5-5") || lower.includes("5.5")) return MODEL_PRICING["claude-opus-5-5"];
+		return MODEL_PRICING["claude-opus-4-6-thinking"];
+	}
+	if (lower.includes("sonnet")) {
+		if (lower.includes("5-5") || lower.includes("5.5")) return MODEL_PRICING["claude-sonnet-5-5"];
+		return MODEL_PRICING["claude-sonnet-4-6"];
+	}
+	if (lower.includes("4-carbon") || lower.includes("4.0-carbon")) return MODEL_PRICING["gemini-4-carbon"];
+	if (lower.includes("4-argon") || lower.includes("4.0-argon")) return MODEL_PRICING["gemini-4-argon"];
+	if (lower.includes("4-neon") || lower.includes("4.0-neon")) return MODEL_PRICING["gemini-4-neon"];
+	if (lower.includes("4-hydrogen") || lower.includes("4.0-hydrogen")) return MODEL_PRICING["gemini-4-hydrogen"];
 	if (lower.includes("3.8-flash")) return MODEL_PRICING["gemini-3.8-flash-high"];
 	if (lower.includes("3.7-flash")) return MODEL_PRICING["gemini-3.7-flash-tiered"];
 	if (lower.includes("3.6-flash")) return MODEL_PRICING["gemini-3.6-flash-high"];

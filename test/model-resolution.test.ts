@@ -230,11 +230,49 @@ describe("model resolution", () => {
 	});
 
 	it("uses Argon implicit-cache introductory pricing for every effort", () => {
-		for (const suffix of ["", "-low", "-medium", "-high"]) {
+		for (const suffix of ["", "-disabled", "-low", "-medium", "-high", "-xhigh"]) {
 			assert.deepEqual(getModelPricing(`gemini-4-argon${suffix}`), {
 				inputPer1M: 2, outputPer1M: 10, cachingPer1M: 0.1,
 			});
 		}
+	});
+
+	it("uses official Gemini 4 Carbon, Neon, and Hydrogen pricing across variants", () => {
+		for (const suffix of ["", "-high"]) {
+			assert.deepEqual(getModelPricing(`gemini-4-carbon${suffix}`), {
+				inputPer1M: 2, outputPer1M: 10, cachingPer1M: 0.1,
+			});
+		}
+		for (const suffix of ["", "-low", "-medium", "-high", "-xhigh", "-custom"]) {
+			assert.deepEqual(getModelPricing(`gemini-4-neon${suffix}`), {
+				inputPer1M: 3, outputPer1M: 15, cachingPer1M: 0.15,
+			});
+		}
+		for (const suffix of ["", "-low", "-medium", "-high", "-xhigh", "-tiered", "-sonar"]) {
+			assert.deepEqual(getModelPricing(`gemini-4-hydrogen${suffix}`), {
+				inputPer1M: 1.5, outputPer1M: 7.5, cachingPer1M: 0.075,
+			});
+		}
+	});
+
+	it("uses official Claude 5.5 and GPT-6.1/6.2 pricing", () => {
+		for (const id of ["claude-opus-5-5", "claude-opus-5-5-high", "claude-opus-5.5-thinking"]) {
+			assert.deepEqual(getModelPricing(id), {
+				inputPer1M: 4, outputPer1M: 20, cachingPer1M: 0.2,
+			});
+		}
+		for (const id of ["claude-sonnet-5-5", "claude-sonnet-5-5-medium", "claude-sonnet-5.5"]) {
+			assert.deepEqual(getModelPricing(id), {
+				inputPer1M: 2, outputPer1M: 10, cachingPer1M: 0.1,
+			});
+		}
+		assert.deepEqual(MODEL_PRICING["gpt-6.2-astra"], { inputPer1M: 8, outputPer1M: 40, cachingPer1M: 0.4 });
+		assert.deepEqual(MODEL_PRICING["gpt-6.2-sol"], { inputPer1M: 2, outputPer1M: 10, cachingPer1M: 0.1 });
+		assert.deepEqual(MODEL_PRICING["gpt-6.1-sol"], { inputPer1M: 2, outputPer1M: 10, cachingPer1M: 0.1 });
+		assert.deepEqual(MODEL_PRICING["gpt-6.1-terra"], { inputPer1M: 1, outputPer1M: 5, cachingPer1M: 0.05 });
+		assert.deepEqual(MODEL_PRICING["beam"], { inputPer1M: 0.125, outputPer1M: 0.4, cachingPer1M: 0.015 });
+		assert.deepEqual(MODEL_PRICING["minimax-m3.1-flash"], { inputPer1M: 0.15, outputPer1M: 0.6, cachingPer1M: 0.015 });
+		assert.deepEqual(MODEL_PRICING["deepseek-v4.1-flash:1017"], { inputPer1M: 0.3, outputPer1M: 1.2, cachingPer1M: 0.006 });
 	});
 
 	it("keeps every application price mirrored in standalone telemetry", () => {
