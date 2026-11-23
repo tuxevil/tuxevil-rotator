@@ -1576,6 +1576,74 @@ describe("proxy e2e: 5xx & single-account Antigravity parity", () => {
 			}
 		}
 	});
+
+	it("rotates to another account after exhausting single-account retries on network, 429, and 503 failures", async () => {
+		for (const mode of ["network", "429", "503"] as const) {
+			const attemptsByToken: string[] = [];
+			const upstream = await listen((req, res) => {
+				const auth = String(req.headers.authorization ?? "");
+				attemptsByToken.push(auth);
+				if (auth.includes("token-primary@example.com")) {
+					if (mode === "network") {
+						res.destroy();
+						return;
+					}
+					req.resume();
+					req.once("end", () => {
+						res.writeHead(mode === "429" ? 429 : 503, {
+							"Content-Type": "application/json",
+						});
+						res.end(
+							mode === "429"
+								? JSON.stringify({ error: { status: "RATE_LIMITED", retryDelay: "0.01s" } })
+								: "PREFILL_QUEUE_OVERLOADED",
+						);
+					});
+					return;
+				}
+				req.resume();
+				req.once("end", () => {
+					res.writeHead(200, { "Content-Type": "text/event-stream" });
+					res.end("data: rotated-after-retries\n\n");
+				});
+			});
+			endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
+
+			const tracking = { rotations: 0, markError: 0, markExhausted: 0 };
+			const rotator = makeRotator(makeAccount("primary@example.com"), tracking, {
+				accounts: [makeAccount("backup@example.com")],
+				antigravityApiRetry: {
+					enabled: true,
+					maxRetries: 2,
+					initialSleepDurationMs: 1,
+					maxSleepDurationMs: 5,
+				},
+			});
+
+			try {
+				const outcome = await withRotation(
+					rotator,
+					"gemini-3.1-pro",
+					{},
+					makeBody(),
+					async (response) => response.text(),
+				);
+				assert.equal(outcome.ok, true, `Expected ${mode} to rotate to backup after exhausting primary retries`);
+				assert.equal(tracking.rotations, 1);
+				assert.deepEqual(attemptsByToken, [
+					"Bearer token-primary@example.com",
+					"Bearer token-primary@example.com",
+					"Bearer token-primary@example.com",
+					"Bearer token-backup@example.com",
+				]);
+				if (outcome.ok) {
+					assert.equal(outcome.result, "data: rotated-after-retries\n\n");
+				}
+			} finally {
+				await upstream.close();
+			}
+		}
+	});
 });
 
 describe("proxy e2e: native Gemini thinkingLevel passthrough", () => {
