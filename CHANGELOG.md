@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [4.4.7] - 2026-11-23
+
 ### Changed
 
 - Refresh Artificial Analysis Intelligence Index routing-quality snapshot (`2026-11-23`) with per-effort scores for Gemini 4 (`gemini-4-neon`, `gemini-4-hydrogen`, `gemini-4-carbon`, `gemini-4-argon`), Gemini 3.8 Flash, Claude 5.5 (`claude-opus-5-5`, `claude-sonnet-5-5`), and OpenAI Codex (`gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6.1-sol`).
