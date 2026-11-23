@@ -55,9 +55,11 @@ afterEach(() => {
 });
 
 it("builds the modern quota User-Agent from the configured Antigravity version", () => {
+	const expectedOsType = process.platform === "win32" ? "windows" : process.platform;
+	const expectedArch = process.arch === "x64" ? "amd64" : process.arch;
 	assert.equal(
 		DEFAULT_ANTIGRAVITY_USER_AGENT,
-		`antigravity/hub/${ANTIGRAVITY_VERSION} (aidev_client; os_type=darwin; arch=arm64)`,
+		`antigravity/hub/${ANTIGRAVITY_VERSION} (aidev_client; os_type=${expectedOsType}; arch=${expectedArch})`,
 	);
 });
 
