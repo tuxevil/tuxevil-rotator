@@ -178,10 +178,10 @@ describe("Antigravity IDE/CLI twin parity", () => {
 		assert.match(String(geminiRequest.sessionId), /^-?\d+$/);
 		assert.deepEqual(geminiRequest.systemInstruction, {
 			role: "system",
-			parts: [{ text: "Follow project rules." }],
+			parts: [{ text: `${ANTIGRAVITY_IDENTITY_PROMPT}\n\nFollow project rules.` }],
 		});
 		assert.deepEqual(geminiRequest.contents, [
-			{ role: "user", parts: [{ text: "Hello" }] },
+			{ role: "user", parts: [{ text: "<USER_REQUEST>\nHello\n</USER_REQUEST>" }] },
 			{ role: "model", parts: [{ text: "Partial" }] },
 			{ role: "user", parts: [{ text: "Continue" }] },
 		]);
@@ -216,14 +216,29 @@ describe("Antigravity IDE/CLI twin parity", () => {
 				model: "gemini-3-flash",
 				request: callerRequest,
 			};
-			await forwardRequest(createTwinAccount(), rawBody, {
-				accept: "application/json",
-				"x-goog-api-client": "spoofed-client",
-				"client-metadata": "spoofed-meta",
-				"anthropic-beta": "interleaved-thinking-2025-05-14",
-				"x-goog-request-reason": "code_assist_agent",
-				"x-goog-user-project": "billing-proj",
-			});
+			await forwardRequest(
+				createTwinAccount(),
+				rawBody,
+				{
+					accept: "application/json",
+					"x-goog-api-client": "spoofed-client",
+					"client-metadata": "spoofed-meta",
+					"anthropic-beta": "interleaved-thinking-2025-05-14",
+					"anthropic-version": "2023-06-01",
+					"openai-beta": "assistants=v2",
+					"x-stainless-lang": "js",
+					"x-api-key": "sk-leak",
+					"x-title": "OpenCode",
+					"http-referer": "https://localhost:3000",
+					cookie: "session=secret",
+					"x-skip-safety-jitter": "true",
+					"x-live-request": "true",
+					"x-goog-request-reason": "code_assist_agent",
+					"x-goog-user-project": "billing-proj",
+				},
+				undefined,
+				{ apiRetry: false },
+			);
 
 			assert.equal(captures.length, 1);
 			const headers = captures[0].headers;
@@ -235,6 +250,15 @@ describe("Antigravity IDE/CLI twin parity", () => {
 			assert.equal(headers["x-goog-api-client"], undefined);
 			assert.equal(headers["client-metadata"], undefined);
 			assert.equal(headers["anthropic-beta"], undefined);
+			assert.equal(headers["anthropic-version"], undefined);
+			assert.equal(headers["openai-beta"], undefined);
+			assert.equal(headers["x-stainless-lang"], undefined);
+			assert.equal(headers["x-api-key"], undefined);
+			assert.equal(headers["x-title"], undefined);
+			assert.equal(headers["http-referer"], undefined);
+			assert.equal(headers.cookie, undefined);
+			assert.equal(headers["x-skip-safety-jitter"], undefined);
+			assert.equal(headers["x-live-request"], undefined);
 			assert.notEqual(headers.accept, "text/event-stream");
 			assert.notEqual(headers.accept, "application/json");
 
@@ -488,5 +512,88 @@ describe("Antigravity IDE/CLI twin parity", () => {
 			"google-antigravity",
 		);
 		assert.equal(action408.kind, "rotate-on-5xx");
+	});
+
+	it("retries standalone forwardRequest on 429/503 and aborts immediately on HTTP 500 and MODEL_CAPACITY_EXHAUSTED", async () => {
+		let transientCalls = 0;
+		const { server, url } = await startCaptureServer(() => {
+			transientCalls += 1;
+			if (transientCalls === 1) {
+				return { status: 503, body: "service temporarily unavailable" };
+			}
+			if (transientCalls === 2) {
+				return { status: 429, body: JSON.stringify({ error: { retryDelay: "0.01s" } }) };
+			}
+			return {
+				status: 200,
+				headers: { "Content-Type": "text/event-stream" },
+				body: 'data: {"response":{"candidates":[{"content":{"parts":[{"text":"recovered"}]}}]}}\n\n',
+			};
+		});
+		endpointOverrides.splice(0, endpointOverrides.length, url);
+
+		try {
+			const res = await forwardRequest(
+				createTwinAccount(),
+				{
+					project: "twin",
+					model: "gemini-3-flash",
+					request: { contents: [{ role: "user", parts: [{ text: "hi" }] }] },
+				},
+				{},
+				undefined,
+				{
+					apiRetry: {
+						maxRetries: 4,
+						initialSleepDurationMs: 1,
+						maxSleepDurationMs: 5,
+					},
+				},
+			);
+			assert.equal(res.response.status, 200);
+			assert.equal(transientCalls, 3);
+		} finally {
+			await stopServer(server);
+		}
+
+		for (const abortCase of [
+			{ status: 500, body: "internal error" },
+			{
+				status: 503,
+				body: JSON.stringify({
+					error: { details: [{ metadata: { reason: "MODEL_CAPACITY_EXHAUSTED" } }] },
+				}),
+			},
+		]) {
+			let abortCalls = 0;
+			const abortSrv = await startCaptureServer(() => {
+				abortCalls += 1;
+				return abortCase;
+			});
+			endpointOverrides.splice(0, endpointOverrides.length, abortSrv.url);
+			try {
+				const res = await forwardRequest(
+					createTwinAccount(),
+					{
+						project: "twin",
+						model: "gemini-3-flash",
+						request: { contents: [{ role: "user", parts: [{ text: "hi" }] }] },
+					},
+					{},
+					undefined,
+					{
+						apiRetry: {
+							maxRetries: 4,
+							initialSleepDurationMs: 1,
+							maxSleepDurationMs: 5,
+						},
+					},
+				);
+				assert.equal(res.response.status, abortCase.status);
+				assert.equal(abortCalls, 1);
+			} finally {
+				await stopServer(abortSrv.server);
+			}
+		}
 	});
 });

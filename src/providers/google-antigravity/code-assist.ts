@@ -1,13 +1,13 @@
 import {
 	ANTIGRAVITY_CLIENT_METADATA,
 	ANTIGRAVITY_ENDPOINTS,
-	REQUEST_USER_AGENT,
 } from "../../types.js";
 import type { AccountRuntime } from "../../types.js";
 import type { ForwardedResponse } from "../../proxy.js";
 import { fetchWithRetry } from "../../fetch-with-retry.js";
 import { DEFAULT_PROVIDER, getProviderProjectId } from "../credential-helpers.js";
 import { getAccountProxyDispatcher } from "../proxy-dispatcher.js";
+import { buildAntigravityWireHeaders } from "./forward.js";
 
 export const CODE_ASSIST_ACTIONS = [
 	"loadCodeAssist",
@@ -86,38 +86,6 @@ function normalizeClientMetadata(raw: unknown): Record<string, unknown> {
 	};
 }
 
-function buildHeaders(
-	account: AccountRuntime,
-	originalHeaders: Record<string, string>,
-): Record<string, string> {
-	const headers: Record<string, string> = { ...originalHeaders };
-	const hopByHop = new Set([
-		"authorization",
-		"connection",
-		"content-length",
-		"host",
-		"keep-alive",
-		"proxy-authenticate",
-		"proxy-authorization",
-		"te",
-		"trailers",
-		"transfer-encoding",
-		"upgrade",
-		"accept",
-		"user-agent",
-		"x-goog-api-client",
-		"client-metadata",
-		"anthropic-beta",
-	]);
-	for (const key of Object.keys(headers)) {
-		if (hopByHop.has(key.toLowerCase())) delete headers[key];
-	}
-	headers.Authorization = `Bearer ${account.accessToken ?? ""}`;
-	headers["Content-Type"] = "application/json";
-	headers["User-Agent"] = REQUEST_USER_AGENT;
-	return headers;
-}
-
 function buildUpstreamBody(
 	account: AccountRuntime,
 	action: CodeAssistAction,
@@ -168,7 +136,7 @@ export async function forwardCodeAssistRequest(
 		action,
 		body as Record<string, unknown>,
 	);
-	const headers = buildHeaders(account, originalHeaders);
+	const headers = buildAntigravityWireHeaders(account, originalHeaders);
 	let lastError: unknown;
 
 	for (let index = 0; index < ANTIGRAVITY_ENDPOINTS.length; index++) {

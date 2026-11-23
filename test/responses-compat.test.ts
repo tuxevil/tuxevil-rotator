@@ -195,7 +195,7 @@ describe("responses compat", () => {
 			assert.equal(payload.output_text, "pong");
 			assert.equal(payload.output[0].type, "message");
 			assert.match(captures[0].body, /"systemInstruction"/);
-			assert.match(captures[0].body, /"contents":\[{"role":"user","parts":\[{"text":"ping"}\]}\]/);
+			assert.match(captures[0].body, /<USER_REQUEST>\\nping\\n<\/USER_REQUEST>/);
 
 			const retrieveRes = responseStub();
 			handleOpenAIResponsesRetrieve(req, retrieveRes, payload.id);

@@ -103,7 +103,11 @@ import {
 import { requireAdmin } from "./admin-auth.js";
 import { getMaxBodyBytes, PayloadTooLargeError, readLimitedBody } from "./body-limit.js";
 import { validateConfig, validateProxyRequestBody } from "./validators.js";
-import { calculateContinuationBackoffMs } from "./fetch-with-retry.js";
+import {
+  calculateContinuationBackoffMs,
+  isRetryableFetchError,
+  type AntigravityApiRetryOptions,
+} from "./fetch-with-retry.js";
 import { logger } from "./logger.js";
 import {
   trackFeature,
@@ -216,6 +220,9 @@ import {
 import { applyConfigDefaults } from "./account-store.js";
 import {
   classifyRateLimitReason,
+  hasTransientBackendOverloadMarker,
+  isAntigravityRetryableError,
+  isModelCapacityExhaustedError,
   parseRetryAfterMs,
   RESOURCE_EXHAUSTED_FALLBACK_MS,
 } from "./rate-limit-parser.js";
@@ -265,6 +272,47 @@ function getStreamRecoveryMaxRetries(rotator: AccountRotator): number {
     return DEFAULT_STREAM_RECOVERY_MAX_RETRIES;
   }
   return configured;
+}
+
+type InlineAntigravityRetryConfig = Partial<
+  Omit<AntigravityApiRetryOptions<ForwardedResponse>, "fn">
+>;
+
+function buildAntigravityApiRetryConfig(
+  rotator: AccountRotator,
+): InlineAntigravityRetryConfig | null {
+  const cfg = rotator.getConfig?.();
+  const override = cfg?.antigravityApiRetry;
+  if (
+    override?.enabled === false ||
+    override?.maxRetries === 0 ||
+    cfg?.streamRecoveryMaxRetries === 0
+  ) {
+    return null;
+  }
+  return override ? { ...override } : {};
+}
+
+function shouldUseInlineAntigravityApiRetry(
+  rotator: AccountRotator,
+  account: AccountRuntime,
+  modelKey: string,
+  providerId: string,
+): boolean {
+  if (providerId !== DEFAULT_PROVIDER) return false;
+  const retryCfg = buildAntigravityApiRetryConfig(rotator);
+  if (!retryCfg) return false;
+  if (rotator.getConfig?.().antigravityApiRetry?.enabled === true) {
+    return true;
+  }
+  if (typeof rotator.getAccountCount !== "function") {
+    return false;
+  }
+  if (rotator.getAccountCount() <= 1) {
+    return true;
+  }
+  const healthyCount = rotator.getFlagContext?.(account, modelKey)?.poolHealthyCount;
+  return typeof healthyCount === "number" && healthyCount <= 1;
 }
 
 export interface RequestBody {
@@ -364,6 +412,13 @@ export type UpstreamAction =
   | { kind: "bad-request"; errorText: string; endpoint: string }
   | { kind: "server-error-503"; errorText: string; endpoint: string }
   | {
+      kind: "non-retryable-error";
+      httpStatus: number;
+      errorText: string;
+      endpoint: string;
+      reason: string;
+    }
+  | {
       kind: "rotate-on-5xx";
       httpStatus: number;
       errorText: string;
@@ -386,6 +441,15 @@ export async function classifyUpstreamResponse(
 ): Promise<UpstreamAction> {
   if (response.status === 429 || response.status === 402) {
     const errorText = await response.text().catch(() => "");
+    if (providerId === DEFAULT_PROVIDER && isModelCapacityExhaustedError(errorText)) {
+      return {
+        kind: "non-retryable-error",
+        httpStatus: response.status,
+        errorText,
+        endpoint,
+        reason: "MODEL_CAPACITY_EXHAUSTED",
+      };
+    }
     const rateLimitReason = classifyRateLimitReason(errorText, response.status);
     const providerResourceExhausted = rateLimitReason === "quota-exhausted";
     const cooldownMs = providerResourceExhausted
@@ -444,11 +508,40 @@ export async function classifyUpstreamResponse(
 
   if (response.status === 503) {
     const errorText = await response.text().catch(() => "");
+    if (providerId === DEFAULT_PROVIDER && isModelCapacityExhaustedError(errorText)) {
+      return {
+        kind: "non-retryable-error",
+        httpStatus: 503,
+        errorText,
+        endpoint,
+        reason: "MODEL_CAPACITY_EXHAUSTED",
+      };
+    }
     return { kind: "server-error-503", errorText, endpoint };
   }
 
   if (response.status >= 500 || response.status === 408) {
     const errorText = await response.text().catch(() => "");
+    if (providerId === DEFAULT_PROVIDER) {
+      if (isModelCapacityExhaustedError(errorText)) {
+        return {
+          kind: "non-retryable-error",
+          httpStatus: response.status,
+          errorText,
+          endpoint,
+          reason: "MODEL_CAPACITY_EXHAUSTED",
+        };
+      }
+      if (response.status === 500 && !hasTransientBackendOverloadMarker(errorText)) {
+        return {
+          kind: "non-retryable-error",
+          httpStatus: 500,
+          errorText,
+          endpoint,
+          reason: "HTTP_500",
+        };
+      }
+    }
     return {
       kind: "rotate-on-5xx",
       httpStatus: response.status,
@@ -754,6 +847,20 @@ async function handleUpstreamAccountAction(
     );
     logRequestEnd(400, `endpoint=${action.endpoint}`);
     return buildFailureDecision(options, 400, action.errorText);
+  }
+
+  if (action.kind === "non-retryable-error") {
+    writeLog(
+      `[${label}] Aborting non-retryable upstream error (${action.reason}, HTTP ${action.httpStatus}): ${action.errorText.slice(0, 200)}`,
+      "warn",
+    );
+    recordFailureAttempt?.(action.httpStatus);
+    logRequestEnd(action.httpStatus, `endpoint=${action.endpoint}`);
+    rotator.markError(
+      account,
+      `${action.httpStatus}: ${action.errorText.slice(0, 200)}`,
+    );
+    return buildFailureDecision(options, action.httpStatus, action.errorText);
   }
 
   if (action.kind === "server-error-503") {
@@ -1119,7 +1226,7 @@ export async function benchmarkAccount(
       account,
       benchmarkSpec.body.model,
       rotator,
-    ).forwardRequest(account, benchmarkSpec.body, {}, signal);
+    ).forwardRequest(account, benchmarkSpec.body, {}, signal, { apiRetry: false });
     ttfbMs = Date.now() - startedAt;
     const raw = await forwarded.response.text();
     const latencyMs = Date.now() - startedAt;
@@ -1345,6 +1452,9 @@ export async function withRotation<T>(
 
   const maxRetries = getStreamRecoveryMaxRetries(rotator);
   const maxAttempts = maxRetries + 1;
+  let antigravitySingleAccountRetriesDone = false;
+  let forceSingleAccountApiRetry = false;
+  let extraSingleAccountRetries = 0;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (requestIsOff()) return modelOffOutcome();
@@ -1437,11 +1547,29 @@ export async function withRotation<T>(
       }
       if (rotator.getConfig?.().modelAccessShadow === true) logAccessPolicyShadow(account.config, provider.id, model, originalHeaders);
       rotator.recordUpstreamAttempt(account);
+      const inlineRetryCfg =
+        forceSingleAccountApiRetry ||
+        (!antigravitySingleAccountRetriesDone &&
+          shouldUseInlineAntigravityApiRetry(rotator, account, modelKey, provider.id))
+          ? buildAntigravityApiRetryConfig(rotator)
+          : null;
+      forceSingleAccountApiRetry = false;
+      if (inlineRetryCfg) antigravitySingleAccountRetriesDone = true;
       const forwarded = await provider.forwardRequest(
         account,
         { ...body },
         originalHeaders,
         signal,
+        {
+          apiRetry: inlineRetryCfg
+            ? {
+                ...inlineRetryCfg,
+                onRetry: () => {
+                  extraSingleAccountRetries += 1;
+                },
+              }
+            : false,
+        },
       );
       const { response, endpoint } = forwarded;
       accessHttpStatus = response.status;
@@ -1453,7 +1581,7 @@ export async function withRotation<T>(
         requestId,
         requestStartMs,
         endpoint,
-        retries: attempt,
+        retries: attempt + extraSingleAccountRetries,
         providerId: provider.id,
         requestedModel: body.displayModel || model,
         selectedModel: model,
@@ -1504,10 +1632,30 @@ export async function withRotation<T>(
           context,
           logRequestEnd,
           rotateAndRelease,
-          canRetry: attempt < maxRetries,
+          canRetry: attempt < maxRetries && !antigravitySingleAccountRetriesDone,
           writeLog: (message, level = "info") => log(message, rotator, level),
         });
         if (decision.kind === "retry") continue;
+        if (
+          decision.actionKind !== "non-retryable-error" &&
+          decision.actionKind !== "flagged-401" &&
+          decision.actionKind !== "flagged-403" &&
+          decision.actionKind !== "forbidden" &&
+          decision.actionKind !== "not-found" &&
+          decision.actionKind !== "bad-request" &&
+          provider.id === DEFAULT_PROVIDER &&
+          !antigravitySingleAccountRetriesDone &&
+          typeof rotator.getAccountCount === "function" &&
+          buildAntigravityApiRetryConfig(rotator) !== null &&
+          isAntigravityRetryableError({
+            status: response.status,
+            errorText: action.errorText,
+            headers: response.headers,
+          })
+        ) {
+          forceSingleAccountApiRetry = true;
+          continue;
+        }
         return failureDecisionToOutcome(decision);
       }
 
@@ -1569,7 +1717,7 @@ export async function withRotation<T>(
           totalMs: Date.now() - requestStartMs,
         };
       }
-      if (attempt >= maxRetries) {
+      if (antigravitySingleAccountRetriesDone || attempt >= maxRetries) {
         return {
           ok: false,
           status: 502,
@@ -1582,13 +1730,23 @@ export async function withRotation<T>(
             requestId,
             requestStartMs,
             endpoint: "unknown",
-            retries: attempt,
+            retries: attempt + extraSingleAccountRetries,
           },
           totalMs: Date.now() - requestStartMs,
         };
       }
       const nextAccount = await rotateAndRelease();
       if (!nextAccount) {
+        if (
+          providerId === DEFAULT_PROVIDER &&
+          !antigravitySingleAccountRetriesDone &&
+          typeof rotator.getAccountCount === "function" &&
+          isRetryableFetchError(err) &&
+          buildAntigravityApiRetryConfig(rotator) !== null
+        ) {
+          forceSingleAccountApiRetry = true;
+          continue;
+        }
         const waited = await sleepTransportRetry(
           requestId,
           label,
@@ -1895,6 +2053,9 @@ async function handleProxyRequest(
     : undefined;
   const maxRetries = getStreamRecoveryMaxRetries(rotator);
   const maxAttempts = maxRetries + 1;
+  let antigravitySingleAccountRetriesDone = false;
+  let forceSingleAccountApiRetry = false;
+  let extraSingleAccountRetries = 0;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (requestIsOff()) {
       sendModelOff();
@@ -2010,11 +2171,29 @@ async function handleProxyRequest(
       }
       if (rotator.getConfig?.().modelAccessShadow === true) logAccessPolicyShadow(account.config, provider.id, body.model, flattenHeaders(req.headers));
       rotator.recordUpstreamAttempt(account);
+      const inlineRetryCfg =
+        forceSingleAccountApiRetry ||
+        (!antigravitySingleAccountRetriesDone &&
+          shouldUseInlineAntigravityApiRetry(rotator, account, modelKey, provider.id))
+          ? buildAntigravityApiRetryConfig(rotator)
+          : null;
+      forceSingleAccountApiRetry = false;
+      if (inlineRetryCfg) antigravitySingleAccountRetriesDone = true;
       const forwarded = await provider.forwardRequest(
         account,
         { ...body },
         flattenHeaders(req.headers),
         clientController.signal,
+        {
+          apiRetry: inlineRetryCfg
+            ? {
+                ...inlineRetryCfg,
+                onRetry: () => {
+                  extraSingleAccountRetries += 1;
+                },
+              }
+            : false,
+        },
       );
       const { response, endpoint } = forwarded;
       accessHttpStatus = response.status;
@@ -2026,7 +2205,7 @@ async function handleProxyRequest(
         requestId,
         requestStartMs,
         endpoint,
-        retries: attempt,
+        retries: attempt + extraSingleAccountRetries,
         providerId: provider.id,
         requestedModel: body.displayModel || body.model,
         selectedModel: body.model,
@@ -2058,11 +2237,31 @@ async function handleProxyRequest(
           context,
           logRequestEnd,
           rotateAndRelease,
-          canRetry: attempt < maxRetries,
+          canRetry: attempt < maxRetries && !antigravitySingleAccountRetriesDone,
           writeLog: proxyLog,
           recordFailureAttempt: recordOutcome,
         });
         if (decision.kind === "retry") continue;
+        if (
+          decision.actionKind !== "non-retryable-error" &&
+          decision.actionKind !== "flagged-401" &&
+          decision.actionKind !== "flagged-403" &&
+          decision.actionKind !== "forbidden" &&
+          decision.actionKind !== "not-found" &&
+          decision.actionKind !== "bad-request" &&
+          provider.id === DEFAULT_PROVIDER &&
+          !antigravitySingleAccountRetriesDone &&
+          typeof rotator.getAccountCount === "function" &&
+          buildAntigravityApiRetryConfig(rotator) !== null &&
+          isAntigravityRetryableError({
+            status: response.status,
+            errorText: action.errorText,
+            headers: response.headers,
+          })
+        ) {
+          forceSingleAccountApiRetry = true;
+          continue;
+        }
         sendFailureDecision(decision);
         return;
       }
@@ -2178,13 +2377,23 @@ async function handleProxyRequest(
         res.end();
         return;
       }
-      if (!isFetchTransportError(err) || attempt >= maxRetries) {
+      if (!isFetchTransportError(err) || antigravitySingleAccountRetriesDone || attempt >= maxRetries) {
         res.writeHead(502, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: GENERIC_UPSTREAM_ERROR }));
         return;
       }
       const nextAccount = await rotateAndRelease();
       if (!nextAccount) {
+        if (
+          providerId === DEFAULT_PROVIDER &&
+          !antigravitySingleAccountRetriesDone &&
+          typeof rotator.getAccountCount === "function" &&
+          isRetryableFetchError(err) &&
+          buildAntigravityApiRetryConfig(rotator) !== null
+        ) {
+          forceSingleAccountApiRetry = true;
+          continue;
+        }
         const waited = await sleepTransportRetry(
           requestId,
           label,
