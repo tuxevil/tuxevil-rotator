@@ -26,23 +26,141 @@ import { createServer } from "node:http";
 import {
 	appendFileSync,
 	writeFileSync,
+	renameSync,
+	statSync,
 	mkdirSync,
 	existsSync,
 	readdirSync,
 	readFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
 
 const PORT = parseInt(process.env.PORT || "3800", 10);
 const DATA_DIR = process.env.DATA_DIR || "./data";
 const STATS_TOKEN = process.env.STATS_TOKEN || "";
+const TRUSTED_PROXIES_RAW = (process.env.TRUSTED_PROXIES || "loopback,private").trim();
+const REQUIRE_HTTPS_ADMIN = process.env.REQUIRE_HTTPS_ADMIN === "1" || process.env.REQUIRE_HTTPS_ADMIN === "true";
+const MAX_DAILY_FILE_BYTES = parseInt(process.env.MAX_DAILY_FILE_BYTES || String(50 * 1024 * 1024), 10);
+const MAX_NOTIFICATIONS = 200;
 
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 
+// ── Trusted proxy & client IP resolution ─────────────────────────────
+const TRUSTED_PROXY_TOKENS = new Set(
+	TRUSTED_PROXIES_RAW.toLowerCase() === "none"
+		? []
+		: TRUSTED_PROXIES_RAW.split(",").map((s) => s.trim()).filter(Boolean),
+);
+
+function normalizeIp(ip) {
+	if (!ip || typeof ip !== "string") return "";
+	const trimmed = ip.trim();
+	return trimmed.startsWith("::ffff:") ? trimmed.slice(7) : trimmed;
+}
+
+function isLoopbackIp(ip) {
+	const norm = normalizeIp(ip);
+	return norm === "127.0.0.1" || norm === "::1";
+}
+
+function isPrivateIp(ip) {
+	const norm = normalizeIp(ip);
+	if (isLoopbackIp(norm)) return true;
+	if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(norm)) return true;
+	if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(norm)) return true;
+	const m = norm.match(/^172\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/);
+	if (m) {
+		const second = Number(m[1]);
+		if (second >= 16 && second <= 31) return true;
+	}
+	if (/^(?:fc|fd)[0-9a-f]{2}:/i.test(norm)) return true;
+	return false;
+}
+
+function isTrustedProxy(ip) {
+	const norm = normalizeIp(ip);
+	if (!norm || TRUSTED_PROXY_TOKENS.size === 0) return false;
+	if (TRUSTED_PROXY_TOKENS.has(norm)) return true;
+	if (TRUSTED_PROXY_TOKENS.has("loopback") && isLoopbackIp(norm)) return true;
+	if (TRUSTED_PROXY_TOKENS.has("private") && isPrivateIp(norm)) return true;
+	return false;
+}
+
+function getClientIp(req) {
+	const remote = normalizeIp(req.socket?.remoteAddress || "");
+	if (!isTrustedProxy(remote)) return remote || "unknown";
+	const xff = req.headers["x-forwarded-for"];
+	if (typeof xff !== "string" || !xff.trim()) return remote || "unknown";
+	// Walk right-to-left skipping trusted proxy hops so client-prepended values cannot spoof the IP
+	const parts = xff.split(",").map(normalizeIp).filter(Boolean);
+	for (let i = parts.length - 1; i >= 0; i--) {
+		if (!isTrustedProxy(parts[i])) return parts[i];
+	}
+	return parts[0] || remote || "unknown";
+}
+
+function isAdminTransportAllowed(req) {
+	if (!REQUIRE_HTTPS_ADMIN) return true;
+	const remote = normalizeIp(req.socket?.remoteAddress || "");
+	if (isLoopbackIp(remote)) return true;
+	if (isTrustedProxy(remote)) {
+		const proto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase();
+		return proto === "https";
+	}
+	return false;
+}
+
+// ── Constant-time auth & brute-force protection ──────────────────────
+const STATS_TOKEN_DIGEST = STATS_TOKEN
+	? createHash("sha256").update(STATS_TOKEN).digest()
+	: null;
+
+function constantTimeTokenMatch(provided) {
+	if (!STATS_TOKEN_DIGEST || typeof provided !== "string" || provided.length === 0) return false;
+	const digest = createHash("sha256").update(provided).digest();
+	return timingSafeEqual(digest, STATS_TOKEN_DIGEST);
+}
+
 function isStatsAuthorized(req) {
-	return STATS_TOKEN.length > 0 &&
-		req.headers.authorization === "Bearer " + STATS_TOKEN;
+	const auth = req.headers.authorization;
+	if (typeof auth !== "string" || !auth.startsWith("Bearer ")) return false;
+	return constantTimeTokenMatch(auth.slice(7));
+}
+
+const MAX_RATE_LIMIT_ENTRIES = 10_000;
+const AUTH_FAIL_WINDOW_MS = 15 * 60_000;
+const AUTH_FAIL_MAX = 15;
+const authFailMap = new Map();
+
+function enforceMapCap(map, maxEntries) {
+	while (map.size >= maxEntries) {
+		const oldest = map.keys().next().value;
+		if (oldest === undefined) break;
+		map.delete(oldest);
+	}
+}
+
+function isAuthLockedOut(ip) {
+	const now = Date.now();
+	const entry = authFailMap.get(ip);
+	if (!entry) return false;
+	if (now - entry.windowStart > AUTH_FAIL_WINDOW_MS) {
+		authFailMap.delete(ip);
+		return false;
+	}
+	return entry.count >= AUTH_FAIL_MAX;
+}
+
+function recordAuthFailure(ip) {
+	const now = Date.now();
+	let entry = authFailMap.get(ip);
+	if (!entry || now - entry.windowStart > AUTH_FAIL_WINDOW_MS) {
+		enforceMapCap(authFailMap, MAX_RATE_LIMIT_ENTRIES);
+		entry = { windowStart: now, count: 0 };
+		authFailMap.set(ip, entry);
+	}
+	entry.count++;
 }
 
 function sendUnauthorized(res) {
@@ -51,15 +169,28 @@ function sendUnauthorized(res) {
 }
 
 function requireStatsAuth(req, res) {
+	if (!isAdminTransportAllowed(req)) {
+		res.writeHead(403, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ error: "HTTPS required for admin endpoints" }));
+		return false;
+	}
 	if (!STATS_TOKEN) {
 		res.writeHead(403, { "Content-Type": "application/json" });
 		res.end(JSON.stringify({ error: "STATS_TOKEN not configured" }));
 		return false;
 	}
+	const ip = getClientIp(req);
+	if (isAuthLockedOut(ip)) {
+		res.writeHead(429, { "Content-Type": "application/json", "Retry-After": "900" });
+		res.end(JSON.stringify({ error: "Too many failed authentication attempts" }));
+		return false;
+	}
 	if (!isStatsAuthorized(req)) {
+		recordAuthFailure(ip);
 		sendUnauthorized(res);
 		return false;
 	}
+	authFailMap.delete(ip);
 	return true;
 }
 
@@ -69,14 +200,18 @@ const NOTIFICATIONS_FILE = join(DATA_DIR, "notifications.json");
 function loadNotifications() {
 	try {
 		if (existsSync(NOTIFICATIONS_FILE)) {
-			return JSON.parse(readFileSync(NOTIFICATIONS_FILE, "utf-8"));
+			const parsed = JSON.parse(readFileSync(NOTIFICATIONS_FILE, "utf-8"));
+			return Array.isArray(parsed) ? parsed : [];
 		}
 	} catch { /* corrupted file, start fresh */ }
 	return [];
 }
 
 function saveNotifications(notifications) {
-	writeFileSync(NOTIFICATIONS_FILE, JSON.stringify(notifications, null, 2), "utf-8");
+	const bounded = notifications.slice(-MAX_NOTIFICATIONS);
+	const tmpFile = `${NOTIFICATIONS_FILE}.${process.pid}.${Date.now()}.tmp`;
+	writeFileSync(tmpFile, JSON.stringify(bounded, null, 2), "utf-8");
+	renameSync(tmpFile, NOTIFICATIONS_FILE);
 }
 
 const NOTIFICATION_TYPES = new Set(["info", "warning", "critical"]);
@@ -91,8 +226,8 @@ function isSafeNotificationUrl(value) {
 	if (value === undefined || value === null || value === "") return true;
 	if (typeof value !== "string" || value.length > MAX_NOTIFICATION_STRING_LEN) return false;
 	try {
-		const parsed = new URL(value, "http://localhost");
-		return parsed.protocol === "http:" || parsed.protocol === "https:";
+		const parsed = new URL(value);
+		return (parsed.protocol === "http:" || parsed.protocol === "https:") && Boolean(parsed.hostname);
 	} catch {
 		return false;
 	}
@@ -161,13 +296,32 @@ function getActiveNotifications(clientVersion) {
 
 // ── Validation ───────────────────────────────────────────────────────
 const ALLOWED_EVENTS = new Set(["boot", "heartbeat", "shutdown", "flag"]);
+const ALLOWED_FEATURE_KEYS = new Set(["dashboard", "proAdvisor", "freshWindowToggle", "hostedLogin"]);
+const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const MAX_BODY_BYTES = 4096;
+const MAX_ADMIN_BODY_BYTES = 16_384;
 const MAX_MODELS = 20;
 const MAX_STRING_LEN = 128;
+const MAX_REQUESTS_CAP = 1_000_000_000;
+const MAX_TOKENS_CAP = 10_000_000_000_000;
+const MAX_UPTIME_CAP = 315_360_000; // 10 years
+
+function isFiniteInRange(val, min, max) {
+	return typeof val === "number" && Number.isFinite(val) && val >= min && val <= max;
+}
+
+function isOptionalAccountCount(val) {
+	return val === undefined || isFiniteInRange(val, 0, 1000);
+}
+
+function safeNonNegInt(val, max) {
+	if (!isFiniteInRange(val, 0, max)) return 0;
+	return Math.floor(val);
+}
 
 function isCorePayload(data) {
 	if (typeof data !== "object" || data === null) return false;
-	if (typeof data.installId !== "string" || data.installId.length > 64) return false;
+	if (typeof data.installId !== "string" || data.installId.length === 0 || data.installId.length > 64) return false;
 	if (typeof data.version !== "string" || data.version.length > MAX_STRING_LEN) return false;
 	if (typeof data.ts !== "string" || data.ts.length > 30) return false;
 
@@ -179,11 +333,17 @@ function isHeartbeatPayload(data) {
 	if (typeof data.nodeVersion !== "string" || data.nodeVersion.length > MAX_STRING_LEN) return false;
 	if (typeof data.os !== "string" || data.os.length > MAX_STRING_LEN) return false;
 	if (typeof data.arch !== "string" || data.arch.length > MAX_STRING_LEN) return false;
-	if (typeof data.accountCount !== "number" || data.accountCount < 0 || data.accountCount > 1000) return false;
+	if (!isFiniteInRange(data.accountCount, 0, 1000)) return false;
 	if (!Array.isArray(data.modelsUsed) || data.modelsUsed.length > MAX_MODELS) return false;
-	if (typeof data.totalRequests !== "number" || data.totalRequests < 0) return false;
-	if (typeof data.uptimeSeconds !== "number" || data.uptimeSeconds < 0) return false;
+	if (!data.modelsUsed.every((m) => typeof m === "string" && m.length > 0 && m.length <= 64)) return false;
+	if (!isFiniteInRange(data.totalRequests, 0, MAX_REQUESTS_CAP)) return false;
+	if (!isFiniteInRange(data.uptimeSeconds, 0, MAX_UPTIME_CAP)) return false;
 	if (typeof data.routingHealthState !== "string" || data.routingHealthState.length > 30) return false;
+	if (!isOptionalAccountCount(data.flaggedCount)) return false;
+	if (!isOptionalAccountCount(data.disabledCount)) return false;
+	if (!isOptionalAccountCount(data.proCount)) return false;
+	if (!isOptionalAccountCount(data.freeCount)) return false;
+	if (data.featuresUsed !== undefined && (typeof data.featuresUsed !== "object" || data.featuresUsed === null || Array.isArray(data.featuresUsed))) return false;
 
 	// Reject if any email-like string is detected anywhere
 	const serialized = JSON.stringify(data);
@@ -199,20 +359,20 @@ function isFlagPayload(data) {
 	if (data.event !== "flag") return false;
 	if (typeof data.flag !== "object" || data.flag === null) return false;
 	const flag = data.flag;
-	if (typeof flag.flagHttpStatus !== "number") return false;
-	if (!Array.isArray(flag.flagPatternsMatched)) return false;
-	if (typeof flag.model !== "string") return false;
-	if (typeof flag.timerType !== "string") return false;
-	if (typeof flag.accountQuotaPercent !== "number") return false;
+	if (!isFiniteInRange(flag.flagHttpStatus, 0, 599)) return false;
+	if (!Array.isArray(flag.flagPatternsMatched) || flag.flagPatternsMatched.length > 20) return false;
+	if (typeof flag.model !== "string" || flag.model.length > 64) return false;
+	if (typeof flag.timerType !== "string" || flag.timerType.length > 16) return false;
+	if (!isFiniteInRange(flag.accountQuotaPercent, -1, 100)) return false;
 	if (typeof flag.wasProAccount !== "boolean") return false;
-	if (typeof flag.accountTotalRequests !== "number") return false;
-	if (typeof flag.accountRequestsLastHour !== "number") return false;
-	if (typeof flag.accountConcurrentAtFlag !== "number") return false;
-	if (typeof flag.poolSize !== "number") return false;
-	if (typeof flag.poolHealthyCount !== "number") return false;
+	if (!isFiniteInRange(flag.accountTotalRequests, 0, MAX_REQUESTS_CAP)) return false;
+	if (!isFiniteInRange(flag.accountRequestsLastHour, 0, MAX_REQUESTS_CAP)) return false;
+	if (!isFiniteInRange(flag.accountConcurrentAtFlag, 0, 10_000)) return false;
+	if (!isFiniteInRange(flag.poolSize, 0, 1000)) return false;
+	if (!isFiniteInRange(flag.poolHealthyCount, 0, 1000)) return false;
 	if (typeof flag.protectivePauseTriggered !== "boolean") return false;
-	if (typeof flag.uptimeSeconds !== "number") return false;
-	if (typeof flag.timeSinceLastFlagSeconds !== "number") return false;
+	if (!isFiniteInRange(flag.uptimeSeconds, 0, MAX_UPTIME_CAP)) return false;
+	if (!isFiniteInRange(flag.timeSinceLastFlagSeconds, -1, MAX_UPTIME_CAP)) return false;
 	if (flag.flagReasonCode !== undefined &&
 		(typeof flag.flagReasonCode !== "string" || !/^[A-Z][A-Z0-9_]{0,63}$/.test(flag.flagReasonCode))) return false;
 	if (flag.flagReasonMessage !== undefined && !isSafeFlagReasonMessage(flag.flagReasonMessage)) return false;
@@ -243,8 +403,29 @@ function getDailyFile() {
 	return join(DATA_DIR, `${date}.jsonl`);
 }
 
+function appendWithinDailyCap(filePath, line) {
+	if (MAX_DAILY_FILE_BYTES > 0 && existsSync(filePath)) {
+		const size = statSync(filePath).size;
+		if (size + Buffer.byteLength(line, "utf-8") > MAX_DAILY_FILE_BYTES) {
+			throw new Error("Daily storage cap reached");
+		}
+	}
+	appendFileSync(filePath, line, "utf-8");
+}
+
+function sanitizeFeaturesUsed(raw) {
+	const clean = Object.create(null);
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return clean;
+	for (const key of ALLOWED_FEATURE_KEYS) {
+		if (Object.hasOwn(raw, key) && typeof raw[key] === "boolean") {
+			clean[key] = raw[key];
+		}
+	}
+	return clean;
+}
+
 function storeEvent(payload) {
-	// Sanitize: keep only known fields
+	// Sanitize: keep only known fields with strict types
 	const clean = {
 		event: payload.event,
 		installId: payload.installId,
@@ -254,20 +435,22 @@ function storeEvent(payload) {
 		arch: payload.arch,
 		ts: payload.ts,
 		receivedAt: new Date().toISOString(),
-		accountCount: payload.accountCount,
-		modelsUsed: payload.modelsUsed,
-		totalRequests: payload.totalRequests,
-		uptimeSeconds: payload.uptimeSeconds,
-		routingHealthState: payload.routingHealthState,
-		flaggedCount: payload.flaggedCount ?? 0,
-		disabledCount: payload.disabledCount ?? 0,
-		proCount: payload.proCount ?? 0,
-		freeCount: payload.freeCount ?? 0,
+		accountCount: safeNonNegInt(payload.accountCount, 1000),
+		modelsUsed: Array.isArray(payload.modelsUsed)
+			? payload.modelsUsed.filter((m) => typeof m === "string" && m.length > 0 && m.length <= 64).slice(0, MAX_MODELS)
+			: [],
+		totalRequests: safeNonNegInt(payload.totalRequests, MAX_REQUESTS_CAP),
+		uptimeSeconds: safeNonNegInt(payload.uptimeSeconds, MAX_UPTIME_CAP),
+		routingHealthState: typeof payload.routingHealthState === "string" ? payload.routingHealthState.slice(0, 30) : "unknown",
+		flaggedCount: safeNonNegInt(payload.flaggedCount, 1000),
+		disabledCount: safeNonNegInt(payload.disabledCount, 1000),
+		proCount: safeNonNegInt(payload.proCount, 1000),
+		freeCount: safeNonNegInt(payload.freeCount, 1000),
 		tokensByModel: sanitizeTokensByModel(payload.tokensByModel),
-		featuresUsed: payload.featuresUsed ?? {},
+		featuresUsed: sanitizeFeaturesUsed(payload.featuresUsed),
 	};
 
-	appendFileSync(getDailyFile(), JSON.stringify(clean) + "\n", "utf-8");
+	appendWithinDailyCap(getDailyFile(), JSON.stringify(clean) + "\n");
 
 	// Flag events also go to a dedicated file for easy analysis
 	if (payload.event === "flag" && payload.flag) {
@@ -279,7 +462,7 @@ function storeEvent(payload) {
 			...sanitizeFlagData(payload.flag),
 		};
 		const flagFile = getDailyFile().replace(".jsonl", "-flags.jsonl");
-		appendFileSync(flagFile, JSON.stringify(flagClean) + "\n", "utf-8");
+		appendWithinDailyCap(flagFile, JSON.stringify(flagClean) + "\n");
 	}
 }
 
@@ -290,7 +473,7 @@ function sanitizeFlagData(flag) {
 		"blocked_401",
 	]);
 	return {
-		flagHttpStatus: typeof flag.flagHttpStatus === "number" ? flag.flagHttpStatus : 0,
+		flagHttpStatus: safeNonNegInt(flag.flagHttpStatus, 599),
 		...(typeof flag.flagReasonCode === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(flag.flagReasonCode)
 			? { flagReasonCode: flag.flagReasonCode } : {}),
 		...(isSafeFlagReasonMessage(flag.flagReasonMessage)
@@ -300,32 +483,31 @@ function sanitizeFlagData(flag) {
 			: [],
 		model: typeof flag.model === "string" ? flag.model.slice(0, 64) : "unknown",
 		timerType: typeof flag.timerType === "string" ? flag.timerType.slice(0, 10) : "unknown",
-		accountQuotaPercent: typeof flag.accountQuotaPercent === "number" ? flag.accountQuotaPercent : -1,
+		accountQuotaPercent: isFiniteInRange(flag.accountQuotaPercent, -1, 100) ? flag.accountQuotaPercent : -1,
 		wasProAccount: !!flag.wasProAccount,
-		accountTotalRequests: typeof flag.accountTotalRequests === "number" ? flag.accountTotalRequests : 0,
-		accountRequestsLastHour: typeof flag.accountRequestsLastHour === "number" ? flag.accountRequestsLastHour : 0,
-		accountConcurrentAtFlag: typeof flag.accountConcurrentAtFlag === "number" ? flag.accountConcurrentAtFlag : 0,
-		poolSize: typeof flag.poolSize === "number" ? flag.poolSize : 0,
-		poolHealthyCount: typeof flag.poolHealthyCount === "number" ? flag.poolHealthyCount : 0,
+		accountTotalRequests: safeNonNegInt(flag.accountTotalRequests, MAX_REQUESTS_CAP),
+		accountRequestsLastHour: safeNonNegInt(flag.accountRequestsLastHour, MAX_REQUESTS_CAP),
+		accountConcurrentAtFlag: safeNonNegInt(flag.accountConcurrentAtFlag, 10_000),
+		poolSize: safeNonNegInt(flag.poolSize, 1000),
+		poolHealthyCount: safeNonNegInt(flag.poolHealthyCount, 1000),
 		protectivePauseTriggered: !!flag.protectivePauseTriggered,
-		uptimeSeconds: typeof flag.uptimeSeconds === "number" ? flag.uptimeSeconds : 0,
-		timeSinceLastFlagSeconds: typeof flag.timeSinceLastFlagSeconds === "number" ? flag.timeSinceLastFlagSeconds : -1,
+		uptimeSeconds: safeNonNegInt(flag.uptimeSeconds, MAX_UPTIME_CAP),
+		timeSinceLastFlagSeconds: isFiniteInRange(flag.timeSinceLastFlagSeconds, -1, MAX_UPTIME_CAP) ? flag.timeSinceLastFlagSeconds : -1,
 	};
 }
 
 function sanitizeTokensByModel(raw) {
-	if (typeof raw !== "object" || raw === null) return {};
-	const MAX_MODELS = 20;
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
 	const clean = Object.create(null);
 	let count = 0;
 	for (const [model, data] of Object.entries(raw)) {
 		if (count >= MAX_MODELS) break;
-		if (typeof model !== "string" || model.length > 64) continue;
+		if (typeof model !== "string" || model.length === 0 || model.length > 64 || FORBIDDEN_KEYS.has(model)) continue;
 		if (typeof data !== "object" || data === null) continue;
 		clean[model] = {
-			input: typeof data.input === "number" && data.input >= 0 ? data.input : 0,
-			output: typeof data.output === "number" && data.output >= 0 ? data.output : 0,
-			requests: typeof data.requests === "number" && data.requests >= 0 ? data.requests : 0,
+			input: safeNonNegInt(data.input, MAX_TOKENS_CAP),
+			output: safeNonNegInt(data.output, MAX_TOKENS_CAP),
+			requests: safeNonNegInt(data.requests, MAX_REQUESTS_CAP),
 		};
 		count++;
 	}
@@ -436,9 +618,10 @@ const MODEL_PRICING = {
 };
 
 function getModelPricing(model) {
-	if (MODEL_PRICING[model]) return MODEL_PRICING[model];
-	const lower = (model || "").toLowerCase();
-	if (MODEL_PRICING[lower]) return MODEL_PRICING[lower];
+	if (typeof model !== "string" || !model) return null;
+	if (Object.hasOwn(MODEL_PRICING, model)) return MODEL_PRICING[model];
+	const lower = model.toLowerCase();
+	if (Object.hasOwn(MODEL_PRICING, lower)) return MODEL_PRICING[lower];
 	if (lower.includes("opus")) {
 		if (lower.includes("5-5") || lower.includes("5.5")) return MODEL_PRICING["claude-opus-5-5"];
 		return MODEL_PRICING["claude-opus-4-6-thinking"];
@@ -462,15 +645,23 @@ function getModelPricing(model) {
 function calculateSavings(tokensByModel) {
 	let totalUsd = 0;
 	const byModel = Object.create(null);
-	for (const [model, data] of Object.entries(tokensByModel)) {
+	for (const [model, data] of Object.entries(tokensByModel || {})) {
+		if (FORBIDDEN_KEYS.has(model) || !data || typeof data !== "object") continue;
 		const pricing = getModelPricing(model);
 		if (!pricing) continue;
-		const inputUsd = (data.input / 1_000_000) * pricing.inputPer1M;
-		const outputUsd = (data.output / 1_000_000) * pricing.outputPer1M;
-		byModel[model] = { inputUsd: Math.round(inputUsd * 100) / 100, outputUsd: Math.round(outputUsd * 100) / 100, totalUsd: Math.round((inputUsd + outputUsd) * 100) / 100 };
+		const input = Number.isFinite(data.input) && data.input >= 0 ? data.input : 0;
+		const output = Number.isFinite(data.output) && data.output >= 0 ? data.output : 0;
+		const inputUsd = (input / 1_000_000) * pricing.inputPer1M;
+		const outputUsd = (output / 1_000_000) * pricing.outputPer1M;
+		if (!Number.isFinite(inputUsd) || !Number.isFinite(outputUsd)) continue;
+		byModel[model] = {
+			inputUsd: Math.round(inputUsd * 100) / 100,
+			outputUsd: Math.round(outputUsd * 100) / 100,
+			totalUsd: Math.round((inputUsd + outputUsd) * 100) / 100,
+		};
 		totalUsd += inputUsd + outputUsd;
 	}
-	return { totalUsd: Math.round(totalUsd * 100) / 100, byModel };
+	return { totalUsd: Number.isFinite(totalUsd) ? Math.round(totalUsd * 100) / 100 : 0, byModel };
 }
 
 // ── Stats ────────────────────────────────────────────────────────────
@@ -485,7 +676,7 @@ function parseQueryString(url) {
 		const rawValue = separator === -1 ? "" : part.slice(separator + 1);
 		try {
 			const k = decodeURIComponent(rawKey);
-			if (k) params[k] = decodeURIComponent(rawValue);
+			if (k && !FORBIDDEN_KEYS.has(k)) params[k] = decodeURIComponent(rawValue);
 		} catch {
 			// Ignore malformed query components.
 		}
@@ -493,23 +684,42 @@ function parseQueryString(url) {
 	return params;
 }
 
+// Per-file parsed JSONL cache keyed by filename + (mtimeMs, size) so immutable past days are not re-parsed
+const jsonlFileCache = new Map(); // filename -> { mtimeMs, size, records }
+
+function readJsonlCached(file) {
+	const fullPath = join(DATA_DIR, file);
+	let st;
+	try { st = statSync(fullPath); } catch { return []; }
+	const cached = jsonlFileCache.get(file);
+	if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+		return cached.records;
+	}
+	const records = [];
+	const lines = readFileSync(fullPath, "utf-8").split("\n").filter(Boolean);
+	for (const line of lines) {
+		try { records.push(JSON.parse(line)); } catch { /* skip malformed line */ }
+	}
+	jsonlFileCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, records });
+	return records;
+}
+
 // Collect all raw events + flag events from JSONL files
 function loadAllEvents() {
-	const allFiles = readdirSync(DATA_DIR).filter((f) => f.endsWith(".jsonl") && !f.endsWith("-flags.jsonl")).sort();
-	const flagFiles = readdirSync(DATA_DIR).filter((f) => f.endsWith("-flags.jsonl")).sort();
+	const dirEntries = readdirSync(DATA_DIR);
+	const allFiles = dirEntries.filter((f) => f.endsWith(".jsonl") && !f.endsWith("-flags.jsonl")).sort();
+	const flagFiles = dirEntries.filter((f) => f.endsWith("-flags.jsonl")).sort();
+	const activeSet = new Set([...allFiles, ...flagFiles]);
+	for (const key of jsonlFileCache.keys()) {
+		if (!activeSet.has(key)) jsonlFileCache.delete(key);
+	}
 	const events = [];
 	const flagEvents = [];
 	for (const file of allFiles) {
-		const lines = readFileSync(join(DATA_DIR, file), "utf-8").split("\n").filter(Boolean);
-		for (const line of lines) {
-			try { events.push({ file, ev: JSON.parse(line) }); } catch { /* skip */ }
-		}
+		for (const ev of readJsonlCached(file)) events.push({ file, ev });
 	}
 	for (const file of flagFiles) {
-		const lines = readFileSync(join(DATA_DIR, file), "utf-8").split("\n").filter(Boolean);
-		for (const line of lines) {
-			try { flagEvents.push({ file, fl: JSON.parse(line) }); } catch { /* skip */ }
-		}
+		for (const fl of readJsonlCached(file)) flagEvents.push({ file, fl });
 	}
 	return { events, flagEvents, allFiles, flagFiles };
 }
@@ -601,13 +811,13 @@ function computeInstallList(filters = {}) {
 			version:            ev.version || '?',
 			os:                 ev.os || '?',
 			arch:               ev.arch || '?',
-			accountCount:       ev.accountCount || 0,
+			accountCount:       safeNonNegInt(ev.accountCount, 1000),
 			totalRequests:      maxRequests[ev.installId] || 0,
 			routingHealthState: ev.routingHealthState || 'unknown',
-			flaggedCount:       ev.flaggedCount || 0,
-			disabledCount:      ev.disabledCount || 0,
-			proCount:           ev.proCount || 0,
-			freeCount:          ev.freeCount || 0,
+			flaggedCount:       safeNonNegInt(ev.flaggedCount, 1000),
+			disabledCount:      safeNonNegInt(ev.disabledCount, 1000),
+			proCount:           safeNonNegInt(ev.proCount, 1000),
+			freeCount:          safeNonNegInt(ev.freeCount, 1000),
 			tokensByModel:      tokens,
 			savingsUsd:         savings.totalUsd,
 			flagEvents:         flagsByInstall[ev.installId] || 0,
@@ -704,9 +914,9 @@ function computeStats(filters = {}) {
 			}
 		}
 		for (const m of ev.modelsUsed || []) modelCounts[m] = (modelCounts[m] || 0) + 1;
-		if (ev.featuresUsed) {
+		if (ev.featuresUsed && typeof ev.featuresUsed === "object") {
 			for (const [k, v] of Object.entries(ev.featuresUsed)) {
-				if (v && k in featuresCount) featuresCount[k]++;
+				if (v === true && Object.hasOwn(featuresCount, k)) featuresCount[k]++;
 			}
 		}
 	}
@@ -732,11 +942,11 @@ function computeStats(filters = {}) {
 			if (nowMs - tsMs <= DAY_MS) fleet.active24h++;
 			if (nowMs - tsMs <= 7 * DAY_MS) fleet.active7d++;
 		}
-		fleet.totalAccounts += ev.accountCount || 0;
-		fleet.proAccounts += ev.proCount || 0;
-		fleet.freeAccounts += ev.freeCount || 0;
-		fleet.flaggedAccounts += ev.flaggedCount || 0;
-		fleet.disabledAccounts += ev.disabledCount || 0;
+		fleet.totalAccounts += safeNonNegInt(ev.accountCount, 1000);
+		fleet.proAccounts += safeNonNegInt(ev.proCount, 1000);
+		fleet.freeAccounts += safeNonNegInt(ev.freeCount, 1000);
+		fleet.flaggedAccounts += safeNonNegInt(ev.flaggedCount, 1000);
+		fleet.disabledAccounts += safeNonNegInt(ev.disabledCount, 1000);
 		const health = ev.routingHealthState || "unknown";
 		fleet.healthByInstall[health] = (fleet.healthByInstall[health] || 0) + 1;
 		const osKey = ev.os || "unknown";
@@ -1778,29 +1988,44 @@ setInterval(function() { loadStats(false); }, REFRESH_MS);
 </html>`;
 }
 
-// ── Rate limiting (simple in-memory per-IP) ──────────────────────────
+// ── Rate limiting (bounded in-memory per-IP) ─────────────────────────
 const rateLimitMap = new Map();
+const publicReadRateMap = new Map();
 const RATE_LIMIT_WINDOW_MS = 60_000;
-const RATE_LIMIT_MAX = 12; // 12 requests per minute per IP
+const RATE_LIMIT_MAX = 12; // 12 event posts per minute per IP
+const PUBLIC_READ_LIMIT_MAX = 120; // 120 public reads per minute per IP
 
-function isRateLimited(ip) {
+function checkBucketLimit(map, ip, max) {
 	const now = Date.now();
-	let entry = rateLimitMap.get(ip);
+	let entry = map.get(ip);
 	if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
+		enforceMapCap(map, MAX_RATE_LIMIT_ENTRIES);
 		entry = { windowStart: now, count: 0 };
-		rateLimitMap.set(ip, entry);
+		map.set(ip, entry);
 	}
 	entry.count++;
-	return entry.count > RATE_LIMIT_MAX;
+	return entry.count > max;
+}
+
+function isRateLimited(ip) {
+	return checkBucketLimit(rateLimitMap, ip, RATE_LIMIT_MAX);
+}
+
+function isPublicReadRateLimited(ip) {
+	return checkBucketLimit(publicReadRateMap, ip, PUBLIC_READ_LIMIT_MAX);
 }
 
 // Cleanup stale entries every 5 minutes
 setInterval(() => {
 	const now = Date.now();
 	for (const [ip, entry] of rateLimitMap) {
-		if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS * 2) {
-			rateLimitMap.delete(ip);
-		}
+		if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS * 2) rateLimitMap.delete(ip);
+	}
+	for (const [ip, entry] of publicReadRateMap) {
+		if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS * 2) publicReadRateMap.delete(ip);
+	}
+	for (const [ip, entry] of authFailMap) {
+		if (now - entry.windowStart > AUTH_FAIL_WINDOW_MS * 2) authFailMap.delete(ip);
 	}
 }, 5 * 60_000).unref();
 
@@ -1812,7 +2037,7 @@ function buildDashboardHtml() {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>TUXEVIL // Telemetry Control Room</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"><\/script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" integrity="sha384-e6nUZLBkQ86NJ6TVVKAeSaK8jWa3NhkYWZFomE39AvDbQWeie9PlQqM3pmYW5d1g" crossorigin="anonymous"><\/script>
 <style>
 ${buildSharedCyberCss()}
 .auth-panel{margin-bottom:18px;border-color:rgba(0,240,255,.35)}
@@ -2695,7 +2920,7 @@ function renderInstallList(){
   rows.map(function(r){
     const hc=HC[r.routingHealthState]||'#6d88a6';
     const pct=Math.max(3,Math.round(((r.totalRequests||0)/maxReq)*100));
-    const acctSub='P:'+r.proCount+' F:'+r.freeCount+(r.flaggedCount?' <span style="color:var(--red)">FLG:'+r.flaggedCount+'</span>':'');
+    const acctSub='P:'+esc(Number(r.proCount||0))+' F:'+esc(Number(r.freeCount||0))+(Number(r.flaggedCount)>0?' <span style="color:var(--red)">FLG:'+esc(Number(r.flaggedCount))+'</span>':'');
     return '<tr class="click-row" data-install-id="'+esc(r.installId)+'">'+
       '<td class="mono"><strong style="color:var(--cyan)">'+esc(r.installId.slice(0,8))+'</strong><span style="color:var(--muted)">'+esc(r.installId.slice(8,14))+'…</span></td>'+
       '<td><div class="mini-bar"><span class="mono" style="font-weight:700">'+fmtCompact(r.totalRequests)+'</span><div class="bar-track"><div class="bar-fill" style="width:'+pct+'%"></div></div></div></td>'+
@@ -3878,52 +4103,116 @@ updatePreview();
 }
 
 // ── HTTP Server ──────────────────────────────────────────────────────
-function readBody(req) {
+function applySecurityHeaders(res, mode = "api") {
+	res.setHeader("X-Content-Type-Options", "nosniff");
+	res.setHeader("Referrer-Policy", "no-referrer");
+	res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+	if (mode === "html-dashboard" || mode === "html-notifications" || mode === "html-public") {
+		res.setHeader("X-Frame-Options", "DENY");
+		const scriptSrc = mode === "html-dashboard"
+			? "'self' 'unsafe-inline' https://cdn.jsdelivr.net"
+			: "'self' 'unsafe-inline'";
+		res.setHeader(
+			"Content-Security-Policy",
+			`default-src 'self'; script-src ${scriptSrc}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'`,
+		);
+	}
+	if (mode === "html-dashboard" || mode === "html-notifications") {
+		res.setHeader("Cache-Control", "no-store");
+	}
+}
+
+function applyPublicCors(res, methods = "GET, OPTIONS") {
+	res.setHeader("Access-Control-Allow-Origin", "*");
+	res.setHeader("Access-Control-Allow-Methods", methods);
+	res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+function readBody(req, maxBytes = MAX_BODY_BYTES, timeoutMs = 5_000) {
 	return new Promise((resolve, reject) => {
 		const chunks = [];
 		let size = 0;
-		let rejected = false;
+		let settled = false;
+		const timer = setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			req.destroy();
+			reject(new Error("Request timeout"));
+		}, timeoutMs);
+		timer.unref();
+		const finish = (fn, arg) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			fn(arg);
+		};
 		req.on("data", (chunk) => {
-			if (rejected) return;
+			if (settled) return;
 			size += chunk.length;
-			if (size > MAX_BODY_BYTES) {
-				rejected = true;
+			if (size > maxBytes) {
 				req.destroy();
-				reject(new Error("Payload too large"));
+				finish(reject, new Error("Payload too large"));
 				return;
 			}
 			chunks.push(chunk);
 		});
 		req.on("end", () => {
-			if (!rejected) resolve(Buffer.concat(chunks).toString("utf-8"));
+			finish(resolve, Buffer.concat(chunks).toString("utf-8"));
 		});
-		req.on("error", reject);
+		req.on("error", (err) => finish(reject, err));
 	});
 }
 
 const server = createServer(async (req, res) => {
 	const method = req.method?.toUpperCase();
-	const url = req.url || "";
+	const rawUrl = req.url || "/";
+	let pathname = "/";
+	try {
+		pathname = new URL(rawUrl, "http://localhost").pathname;
+	} catch {
+		applySecurityHeaders(res, "api");
+		res.writeHead(400, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ error: "Bad request" }));
+		return;
+	}
 
-	// CORS
-	res.setHeader("Access-Control-Allow-Origin", "*");
-	res.setHeader("Access-Control-Allow-Methods", "POST, GET, DELETE, OPTIONS");
-	res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+	applySecurityHeaders(res, "api");
+
+	// Preflight CORS only on public telemetry/read endpoints
 	if (method === "OPTIONS") {
+		if (pathname === "/v1/events") {
+			applyPublicCors(res, "POST, OPTIONS");
+			res.writeHead(204);
+			res.end();
+			return;
+		}
+		if (pathname === "/v1/public-stats" || pathname === "/v1/health" || pathname === "/v1/notifications") {
+			applyPublicCors(res, "GET, OPTIONS");
+			res.writeHead(204);
+			res.end();
+			return;
+		}
 		res.writeHead(204);
 		res.end();
 		return;
 	}
 
-	// Dashboard
-	if (method === "GET" && (url === "/" || url === "/dashboard")) {
+	// Dashboard (admin UI shell)
+	if (method === "GET" && (pathname === "/" || pathname === "/dashboard")) {
+		if (!isAdminTransportAllowed(req)) {
+			res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+			res.end("HTTPS required for admin dashboard");
+			return;
+		}
+		applySecurityHeaders(res, "html-dashboard");
 		res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
 		res.end(buildDashboardHtml());
 		return;
 	}
 
 	// Public stats page
-	if (method === "GET" && url === "/stats") {
+	if (method === "GET" && pathname === "/stats") {
+		applySecurityHeaders(res, "html-public");
 		res.writeHead(200, {
 			"Content-Type": "text/html; charset=utf-8",
 			"Cache-Control": "no-cache",
@@ -3933,7 +4222,13 @@ const server = createServer(async (req, res) => {
 	}
 
 	// Notifications Admin UI
-	if (method === "GET" && url === "/notifications") {
+	if (method === "GET" && pathname === "/notifications") {
+		if (!isAdminTransportAllowed(req)) {
+			res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+			res.end("HTTPS required for notification manager");
+			return;
+		}
+		applySecurityHeaders(res, "html-notifications");
 		res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
 		res.end(buildNotificationsAdminHtml());
 		return;
@@ -3942,21 +4237,28 @@ const server = createServer(async (req, res) => {
 	// ── Notifications API ──────────────────────────────────────────
 	// GET /v1/notifications — Public, returns active notifications
 	// Add ?all=true to load all (including expired) for admin UI
-	if (method === "GET" && url.startsWith("/v1/notifications")) {
+	if (method === "GET" && pathname === "/v1/notifications") {
 		try {
-			const q = parseQueryString(url);
+			const q = parseQueryString(rawUrl);
 			if (q.all === "true") {
 				// Return ALL notifications (for admin management UI)
 				if (!requireStatsAuth(req, res)) return;
-				res.writeHead(200, { "Content-Type": "application/json" });
+				res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
 				res.end(JSON.stringify(loadNotifications()));
 			} else {
+				applyPublicCors(res, "GET, OPTIONS");
+				const ip = getClientIp(req);
+				if (isPublicReadRateLimited(ip)) {
+					res.writeHead(429, { "Content-Type": "application/json" });
+					res.end(JSON.stringify({ error: "Too many requests" }));
+					return;
+				}
 				const clientVersion = q.version || null;
 				const active = getActiveNotifications(clientVersion);
 				res.writeHead(200, { "Content-Type": "application/json" });
 				res.end(JSON.stringify(active));
 			}
-		} catch (err) {
+		} catch {
 			res.writeHead(500, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ error: "Failed to load notifications" }));
 		}
@@ -3964,10 +4266,10 @@ const server = createServer(async (req, res) => {
 	}
 
 	// POST /v1/notifications — Create/update notification (auth required)
-	if (method === "POST" && url === "/v1/notifications") {
+	if (method === "POST" && pathname === "/v1/notifications") {
 		if (!requireStatsAuth(req, res)) return;
 		try {
-			const body = await readBody(req);
+			const body = await readBody(req, MAX_ADMIN_BODY_BYTES);
 			const data = JSON.parse(body);
 			if (!isValidNotificationInput(data)) {
 				res.writeHead(400, { "Content-Type": "application/json" });
@@ -3995,20 +4297,33 @@ const server = createServer(async (req, res) => {
 				notifications.push(notification);
 			}
 			saveNotifications(notifications);
-			res.writeHead(200, { "Content-Type": "application/json" });
+			res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
 			res.end(JSON.stringify({ ok: true, notification }));
 		} catch (err) {
-			res.writeHead(400, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ error: "Bad request" }));
+			if (err.message === "Payload too large") {
+				res.writeHead(413, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ error: "Payload too large" }));
+			} else if (err.message === "Request timeout") {
+				res.writeHead(408, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ error: "Request timeout" }));
+			} else {
+				res.writeHead(400, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ error: "Bad request" }));
+			}
 		}
 		return;
 	}
 
 	// DELETE /v1/notifications/:id — Remove notification (auth required)
-	if (method === "DELETE" && url.startsWith("/v1/notifications/")) {
+	if (method === "DELETE" && pathname.startsWith("/v1/notifications/")) {
 		if (!requireStatsAuth(req, res)) return;
 		try {
-			const id = decodeURIComponent(url.slice("/v1/notifications/".length));
+			const id = decodeURIComponent(pathname.slice("/v1/notifications/".length));
+			if (!id || id.length > MAX_NOTIFICATION_STRING_LEN) {
+				res.writeHead(400, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ error: "Invalid notification id" }));
+				return;
+			}
 			const notifications = loadNotifications();
 			const filtered = notifications.filter((n) => n.id !== id);
 			if (filtered.length === notifications.length) {
@@ -4017,45 +4332,52 @@ const server = createServer(async (req, res) => {
 				return;
 			}
 			saveNotifications(filtered);
-			res.writeHead(200, { "Content-Type": "application/json" });
+			res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
 			res.end(JSON.stringify({ ok: true, deleted: id }));
 		} catch {
-			res.writeHead(500, { "Content-Type": "application/json" });
+			res.writeHead(400, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ error: "Failed to delete notification" }));
 		}
 		return;
 	}
 
 	// Public stats (no auth required, 5-minute cache)
-	if (method === "GET" && url === "/v1/public-stats") {
-		const corsHeaders = {
+	if (method === "GET" && pathname === "/v1/public-stats") {
+		applyPublicCors(res, "GET, OPTIONS");
+		const ip = getClientIp(req);
+		if (isPublicReadRateLimited(ip)) {
+			res.writeHead(429, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ error: "Too many requests" }));
+			return;
+		}
+		const headers = {
 			"Content-Type": "application/json",
 			"Cache-Control": "public, max-age=300",
-			"Access-Control-Allow-Origin": "*",
 		};
 		try {
 			const stats = getPublicStats();
-			res.writeHead(200, corsHeaders);
+			res.writeHead(200, headers);
 			res.end(JSON.stringify(stats));
 		} catch {
-			res.writeHead(500, corsHeaders);
+			res.writeHead(500, headers);
 			res.end(JSON.stringify({ error: "Failed to compute public stats" }));
 		}
 		return;
 	}
 
 	// Health check
-	if (method === "GET" && url === "/v1/health") {
+	if (method === "GET" && pathname === "/v1/health") {
+		applyPublicCors(res, "GET, OPTIONS");
 		res.writeHead(200, { "Content-Type": "application/json" });
 		res.end(JSON.stringify({ status: "ok", ts: new Date().toISOString() }));
 		return;
 	}
 
 	// Installs list (protected)
-	if (method === "GET" && url.startsWith("/v1/installs")) {
+	if (method === "GET" && pathname === "/v1/installs") {
 		if (!requireStatsAuth(req, res)) return;
 		try {
-			const q = parseQueryString(url);
+			const q = parseQueryString(rawUrl);
 			const filters = {};
 			if (q.installId) filters.installId = q.installId;
 			if (q.from)      filters.from      = q.from;
@@ -4064,9 +4386,9 @@ const server = createServer(async (req, res) => {
 			if (q.os)        filters.os        = q.os;
 			if (q.model)     filters.model     = q.model;
 			const list = computeInstallList(filters);
-			res.writeHead(200, { "Content-Type": "application/json" });
+			res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
 			res.end(JSON.stringify(list));
-		} catch (err) {
+		} catch {
 			res.writeHead(500, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ error: "Failed to compute install list" }));
 		}
@@ -4074,10 +4396,10 @@ const server = createServer(async (req, res) => {
 	}
 
 	// Stats (protected)
-	if (method === "GET" && url.startsWith("/v1/stats")) {
+	if (method === "GET" && pathname === "/v1/stats") {
 		if (!requireStatsAuth(req, res)) return;
 		try {
-			const q = parseQueryString(url);
+			const q = parseQueryString(rawUrl);
 			const filters = {};
 			if (q.installId) filters.installId = q.installId;
 			if (q.version) filters.version = q.version;
@@ -4086,9 +4408,9 @@ const server = createServer(async (req, res) => {
 			if (q.from) filters.from = q.from;
 			if (q.to) filters.to = q.to;
 			const stats = computeStats(filters);
-			res.writeHead(200, { "Content-Type": "application/json" });
+			res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
 			res.end(JSON.stringify(stats, null, 2));
-		} catch (err) {
+		} catch {
 			res.writeHead(500, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ error: "Failed to compute stats" }));
 		}
@@ -4096,16 +4418,17 @@ const server = createServer(async (req, res) => {
 	}
 
 	// Collect telemetry
-	if (method === "POST" && url === "/v1/events") {
-		const ip = req.headers["x-forwarded-for"]?.toString().split(",")[0]?.trim() || req.socket.remoteAddress || "unknown";
+	if (method === "POST" && pathname === "/v1/events") {
+		applyPublicCors(res, "POST, OPTIONS");
+		const ip = getClientIp(req);
 		if (isRateLimited(ip)) {
-			res.writeHead(429, { "Content-Type": "application/json" });
+			res.writeHead(429, { "Content-Type": "application/json", "Retry-After": "60" });
 			res.end(JSON.stringify({ error: "Too many requests" }));
 			return;
 		}
 
 		try {
-			const body = await readBody(req);
+			const body = await readBody(req, MAX_BODY_BYTES);
 			const data = JSON.parse(body);
 
 			if (!isValidPayload(data)) {
@@ -4121,6 +4444,12 @@ const server = createServer(async (req, res) => {
 			if (err.message === "Payload too large") {
 				res.writeHead(413, { "Content-Type": "application/json" });
 				res.end(JSON.stringify({ error: "Payload too large" }));
+			} else if (err.message === "Request timeout") {
+				res.writeHead(408, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ error: "Request timeout" }));
+			} else if (err.message === "Daily storage cap reached") {
+				res.writeHead(507, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ error: "Daily storage cap reached" }));
 			} else {
 				res.writeHead(400, { "Content-Type": "application/json" });
 				res.end(JSON.stringify({ error: "Bad request" }));
@@ -4133,8 +4462,14 @@ const server = createServer(async (req, res) => {
 	res.end(JSON.stringify({ error: "Not found" }));
 });
 
+server.headersTimeout = 5_000;
+server.requestTimeout = 10_000;
+server.keepAliveTimeout = 5_000;
+server.maxHeadersCount = 50;
+
 server.listen(PORT, "0.0.0.0", () => {
 	console.log(`Telemetry receiver listening on 0.0.0.0:${PORT}`);
 	console.log(`Data dir: ${DATA_DIR}`);
+	console.log(`Trusted proxies: ${TRUSTED_PROXIES_RAW}`);
 	console.log(`Stats: ${STATS_TOKEN ? "protected by STATS_TOKEN" : "⚠ STATS_TOKEN not set — /v1/stats disabled"}`);
 });

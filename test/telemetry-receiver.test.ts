@@ -461,3 +461,193 @@ describe("telemetry receiver", () => {
 		assert.equal(delRes.status, 200);
 	});
 });
+
+describe("telemetry receiver security hardening", () => {
+	let dir = "";
+	let proc: ReturnType<typeof spawn> | null = null;
+	const port = 45000 + Math.floor(Math.random() * 14000);
+
+	before(async () => {
+		dir = await mkdtemp(join(tmpdir(), "pi-telemetry-sec-"));
+		proc = spawn(process.execPath, [RECEIVER_PATH], {
+			env: {
+				...process.env,
+				PORT: String(port),
+				DATA_DIR: dir,
+				STATS_TOKEN: "hardened-secret-token",
+				TRUSTED_PROXIES: "none",
+			},
+			stdio: ["ignore", "ignore", "pipe"],
+		});
+		await waitForHealth(port);
+	});
+
+	after(async () => {
+		proc?.kill("SIGTERM");
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		if (dir) await rm(dir, { recursive: true, force: true });
+	});
+
+	it("rejects non-numeric account counters, non-string modelsUsed, and extreme numbers", async () => {
+		const base = {
+			event: "heartbeat",
+			installId: "sec-test-install",
+			version: "4.4.7",
+			nodeVersion: process.version,
+			os: process.platform,
+			arch: process.arch,
+			ts: new Date().toISOString(),
+			accountCount: 2,
+			modelsUsed: ["gemini-4-neon"],
+			totalRequests: 10,
+			uptimeSeconds: 100,
+			routingHealthState: "healthy",
+		};
+
+		const badPro = { ...base, proCount: "<img src=x>" };
+		const r1 = await fetch(`http://127.0.0.1:${port}/v1/events`, {
+			method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(badPro),
+		});
+		assert.equal(r1.status, 400);
+
+		const badModels = { ...base, modelsUsed: [123] };
+		const r2 = await fetch(`http://127.0.0.1:${port}/v1/events`, {
+			method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(badModels),
+		});
+		assert.equal(r2.status, 400);
+
+		const hugeReq = { ...base, totalRequests: 1e30 };
+		const r3 = await fetch(`http://127.0.0.1:${port}/v1/events`, {
+			method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(hugeReq),
+		});
+		assert.equal(r3.status, 400);
+	});
+
+	it("prevents prototype key NaN poisoning in MODEL_PRICING and featuresCount", async () => {
+		const payload = {
+			event: "heartbeat",
+			installId: "proto-test-install",
+			version: "4.4.7",
+			nodeVersion: process.version,
+			os: process.platform,
+			arch: process.arch,
+			ts: new Date().toISOString(),
+			accountCount: 1,
+			modelsUsed: ["gemini-4-neon"],
+			totalRequests: 5,
+			uptimeSeconds: 50,
+			routingHealthState: "healthy",
+			tokensByModel: {
+				constructor: { input: 1_000_000, output: 1_000_000, requests: 5 },
+				toString: { input: 1_000_000, output: 1_000_000, requests: 5 },
+				"gemini-4-neon": { input: 1_000_000, output: 0, requests: 5 },
+			},
+			featuresUsed: {
+				toString: true,
+				dashboard: true,
+			},
+		};
+
+		const postRes = await fetch(`http://127.0.0.1:${port}/v1/events`, {
+			method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+		});
+		assert.equal(postRes.status, 202);
+
+		const statsRes = await fetch(`http://127.0.0.1:${port}/v1/stats`, {
+			headers: { Authorization: "Bearer hardened-secret-token" },
+		});
+		assert.equal(statsRes.status, 200);
+		const stats = (await statsRes.json()) as any;
+		assert.equal(stats.savings.totalUsd, 3);
+		assert.equal(stats.featuresUsed.dashboard, 1);
+		assert.equal(Object.hasOwn(stats.featuresUsed, "toString"), false);
+	});
+
+	it("enforces security headers, Chart.js SRI, scoped CORS, exact routing, and strict actionUrl", async () => {
+		const dashRes = await fetch(`http://127.0.0.1:${port}/dashboard`);
+		assert.equal(dashRes.status, 200);
+		assert.equal(dashRes.headers.get("x-content-type-options"), "nosniff");
+		assert.equal(dashRes.headers.get("x-frame-options"), "DENY");
+		assert.equal(dashRes.headers.get("cache-control"), "no-store");
+		assert.match(dashRes.headers.get("content-security-policy") || "", /frame-ancestors 'none'/);
+		const dashHtml = await dashRes.text();
+		assert.match(dashHtml, /integrity="sha384-[A-Za-z0-9+/=]+" crossorigin="anonymous"/);
+
+		// Admin endpoint must NOT expose wildcard CORS
+		const adminRes = await fetch(`http://127.0.0.1:${port}/v1/stats`, {
+			headers: { Authorization: "Bearer hardened-secret-token" },
+		});
+		assert.equal(adminRes.status, 200);
+		assert.equal(adminRes.headers.get("access-control-allow-origin"), null);
+
+		// Public endpoint exposes wildcard CORS
+		const pubRes = await fetch(`http://127.0.0.1:${port}/v1/public-stats`);
+		assert.equal(pubRes.status, 200);
+		assert.equal(pubRes.headers.get("access-control-allow-origin"), "*");
+
+		// Exact pathname routing rejects suffix confusion
+		const suffixRes = await fetch(`http://127.0.0.1:${port}/v1/stats-extra`, {
+			headers: { Authorization: "Bearer hardened-secret-token" },
+		});
+		assert.equal(suffixRes.status, 404);
+
+		// Reject relative and protocol-relative actionUrl
+		for (const badUrl of ["/relative/path", "//evil.example/phish", "javascript:alert(1)"]) {
+			const res = await fetch(`http://127.0.0.1:${port}/v1/notifications`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", Authorization: "Bearer hardened-secret-token" },
+				body: JSON.stringify({ title: "Test", message: "Body", actionUrl: badUrl }),
+			});
+			assert.equal(res.status, 400, `expected 400 for actionUrl=${badUrl}`);
+		}
+	});
+
+	it("ignores spoofed X-Forwarded-For when TRUSTED_PROXIES=none and enforces rate limit", async () => {
+		const validEvent = {
+			event: "boot",
+			installId: "rl-test-install",
+			version: "4.4.7",
+			nodeVersion: process.version,
+			os: process.platform,
+			arch: process.arch,
+			ts: new Date().toISOString(),
+			accountCount: 1,
+			modelsUsed: ["gemini-4-neon"],
+			totalRequests: 0,
+			uptimeSeconds: 1,
+			routingHealthState: "healthy",
+		};
+
+		let got429 = false;
+		for (let i = 0; i < 14; i++) {
+			const res = await fetch(`http://127.0.0.1:${port}/v1/events`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Forwarded-For": `203.0.113.${i + 1}`,
+				},
+				body: JSON.stringify(validEvent),
+			});
+			if (res.status === 429) {
+				got429 = true;
+				break;
+			}
+		}
+		assert.equal(got429, true);
+	});
+
+	it("locks out repeated failed admin auth attempts with 429", async () => {
+		let got429 = false;
+		for (let i = 0; i < 17; i++) {
+			const res = await fetch(`http://127.0.0.1:${port}/v1/stats`, {
+				headers: { Authorization: `Bearer wrong-token-${i}` },
+			});
+			if (res.status === 429) {
+				got429 = true;
+				break;
+			}
+			assert.equal(res.status, 401);
+		}
+		assert.equal(got429, true);
+	});
+});
