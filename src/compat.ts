@@ -30,6 +30,7 @@ import {
 } from "./stream-guards.js";
 import type { AccountRotator } from "./rotator.js";
 import {
+  attachClientAbortController,
   withRotation,
   flattenHeaders,
   type RequestBody,
@@ -2328,10 +2329,7 @@ async function completeResponsesViaRotator(
 }> {
   const startedAt = Date.now();
   const createdAt = Math.floor(Date.now() / 1000);
-  const controller = new AbortController();
-  const abort = (): void => controller.abort();
-  req.once("aborted", abort);
-  if (typeof res.once === "function") res.once("close", abort);
+  const { controller, cleanup } = attachClientAbortController(req, res);
   const outcome = await withRotation(
     rotator,
     body.model,
@@ -2370,7 +2368,7 @@ async function completeResponsesViaRotator(
       return completion;
     },
     controller.signal,
-  );
+  ).finally(cleanup);
   if (!outcome.ok) {
     recordCompatFailure(rotator, body, outcome, startedAt, options);
     return {
@@ -2390,6 +2388,18 @@ async function completeResponsesViaRotator(
     context: outcome.context,
     compressionStats: options?.compressionStats,
   };
+}
+
+function logCompatFailure(
+  providerName: "OpenAI" | "Anthropic",
+  status: number,
+  model: string,
+): void {
+  const summary =
+    status === 499
+      ? `${providerName} compat request aborted before completion status=499`
+      : `${providerName} compat upstream failed status=${status}`;
+  compatLogger.warn(`${summary} model=${model}`);
 }
 
 class NonOkOutcomeError extends Error {
@@ -2427,11 +2437,7 @@ async function completeViaRotator(
   const enabled = cfg?.idempotencyEnabled === true;
   const windowMs = cfg?.idempotencyWindowMs ?? 2000;
   const shouldDedup = enabled && streamMode === "none" && !idempotencyManager.isOptedOut(req);
-  const controller = new AbortController();
-  const abort = (): void => controller.abort();
-  req.once("aborted", abort);
-  if (typeof res.once === "function") res.once("close", abort);
-  if (req.aborted || res.destroyed) abort();
+  const { controller, cleanup } = attachClientAbortController(req, res);
 
   const runWithRotation = () =>
     withRotation(
@@ -2553,8 +2559,7 @@ async function completeViaRotator(
       outcome = await runWithRotation();
     }
   } finally {
-    req.off("aborted", abort);
-    if (typeof res.off === "function") res.off("close", abort);
+    cleanup();
   }
 
   if (!outcome.ok) {
@@ -3383,9 +3388,7 @@ async function handleChatCompletions(
     return;
   }
   if (result.status !== 200) {
-    compatLogger.warn(
-      `OpenAI compat upstream failed status=${result.status} model=${validation.value.model}`,
-    );
+    logCompatFailure("OpenAI", result.status, validation.value.model);
     if (!res.headersSent) {
       const retrySec = extractRetryAfterSeconds(result.errorText);
       const headers: Record<string, string> = retrySec ? { "Retry-After": String(retrySec) } : {};
@@ -3895,9 +3898,7 @@ export async function handleAnthropicMessages(
     },
   );
   if (result.status !== 200) {
-    compatLogger.warn(
-      `Anthropic compat upstream failed status=${result.status} model=${validation.value.model}`,
-    );
+    logCompatFailure("Anthropic", result.status, validation.value.model);
     if (!res.headersSent) {
       const retrySec = extractRetryAfterSeconds(result.errorText);
       const headers: Record<string, string> = retrySec ? { "Retry-After": String(retrySec) } : {};

@@ -30,11 +30,15 @@ import {
 	MAX_ANTIGRAVITY_RETRY_DELAY_MS,
 } from "../src/rate-limit-parser.js";
 import { STREAM_IDLE_TIMEOUT_MS } from "../src/stream-guards.js";
+import { DEFAULT_MODEL_SPECS } from "../src/compat/model-specs.js";
+import { ANTIGRAVITY_CONTEXT_WINDOWS } from "../src/providers/google-antigravity/catalog.js";
 import {
 	ANTIGRAVITY_CLIENT_METADATA,
 	ANTIGRAVITY_ENDPOINTS,
 	ANTIGRAVITY_IDENTITY_PROMPT,
+	ANTIGRAVITY_BUILD_CL,
 	ANTIGRAVITY_VERSION,
+	MODEL_PRICING,
 	DEFAULT_ANTIGRAVITY_USER_AGENT,
 	resolveAntigravityProtoPlatform,
 	type AccountRuntime,
@@ -112,11 +116,14 @@ afterEach(() => {
 describe("Antigravity IDE/CLI twin parity", () => {
 	it("matches User-Agent, version, and ProtoJSON platform metadata", () => {
 		if (!process.env.TUXEVIL_ROTATOR_ANTIGRAVITY_VERSION && !process.env.ANTIGRAVITY_VERSION && !process.env.PI_AI_ANTIGRAVITY_VERSION) {
-			assert.equal(ANTIGRAVITY_VERSION, "2.32.2");
+			assert.equal(ANTIGRAVITY_VERSION, "2.34.0");
+		}
+		if (!process.env.TUXEVIL_ROTATOR_ANTIGRAVITY_BUILD_CL && !process.env.ANTIGRAVITY_BUILD_CL) {
+			assert.equal(ANTIGRAVITY_BUILD_CL, "1026637980");
 		}
 		assert.match(
 			DEFAULT_ANTIGRAVITY_USER_AGENT,
-			/^antigravity\/hub\/[^ ]+ \(aidev_client; os_type=(darwin|linux|windows); arch=.+\)$/,
+			/^antigravity\/hub\/[^ ]+ \(os_type=(darwin|linux|windows); arch=.+; aidev_client; cl=[^;)]+\)$/,
 		);
 		assert.equal(resolveAntigravityProtoPlatform("darwin", "arm64"), "DARWIN_ARM64");
 		assert.equal(resolveAntigravityProtoPlatform("darwin", "x64"), "DARWIN_AMD64");
@@ -594,6 +601,38 @@ describe("Antigravity IDE/CLI twin parity", () => {
 			} finally {
 				await stopServer(abortSrv.server);
 			}
+		}
+	});
+
+	it("includes Antigravity 2.34.0 model specs, pricing, and context windows", async () => {
+		const gemini234Models = [
+			"gemini-3.1-pro-preview-customtools",
+			"gemini-3.7-flash",
+			"gemini-3.7-flash-low",
+			"gemini-3.7-flash-medium",
+			"gemini-3.7-flash-high",
+		];
+		for (const model of gemini234Models) {
+			assert.ok(DEFAULT_MODEL_SPECS[model], `Missing DEFAULT_MODEL_SPECS for ${model}`);
+			assert.equal(ANTIGRAVITY_CONTEXT_WINDOWS[model], 1_000_000, `Expected 1M context window for ${model}`);
+			assert.ok(MODEL_PRICING[model], `Missing MODEL_PRICING for ${model}`);
+		}
+		for (const claudeMaxModel of ["claude-opus-5-5-max", "claude-sonnet-5-5-max"]) {
+			assert.ok(DEFAULT_MODEL_SPECS[claudeMaxModel], `Missing DEFAULT_MODEL_SPECS for ${claudeMaxModel}`);
+			assert.equal(ANTIGRAVITY_CONTEXT_WINDOWS[claudeMaxModel], 1_000_000);
+		}
+
+		const action499 = await classifyUpstreamResponse(
+			new Response('{"error":{"message":"cancelled"}}', { status: 499 }),
+			"https://daily-cloudcode-pa.googleapis.com",
+			createTwinAccount(),
+			"gemini-3-flash",
+			"gemini-3-flash",
+		);
+		assert.equal(action499.kind, "non-retryable-error");
+		if (action499.kind === "non-retryable-error") {
+			assert.equal(action499.httpStatus, 499);
+			assert.equal(action499.reason, "HTTP_499");
 		}
 	});
 });

@@ -50,6 +50,36 @@ import {
 import { isDynamicallyAvailableAntigravityModel } from "./providers/google-antigravity/catalog.js";
 import { dynamicCatalog } from "./providers/google-antigravity/dynamic-catalog.js";
 export { forwardRequest, SseEventAccumulator, extractUsageFromSseEvent };
+
+/**
+ * Links client disconnect events (`aborted`/`close`) to an AbortController,
+ * ignoring normal `close` after `res.writableEnded` so finished responses do not
+ * emit synthetic 499s, and detaches listeners on `finish` or explicit `cleanup()`.
+ */
+export function attachClientAbortController(
+  req: IncomingMessage,
+  res: ServerResponse,
+): { controller: AbortController; signal: AbortSignal; cleanup: () => void } {
+  const controller = new AbortController();
+  const cleanup = (): void => {
+    req.off("aborted", abort);
+    if (typeof res.off === "function") {
+      res.off("close", abort);
+      res.off("finish", cleanup);
+    }
+  };
+  const abort = (): void => {
+    cleanup();
+    if (!res.writableEnded) controller.abort();
+  };
+  req.once("aborted", abort);
+  if (typeof res.once === "function") {
+    res.once("close", abort);
+    res.once("finish", cleanup);
+  }
+  if (req.aborted || res.destroyed) abort();
+  return { controller, signal: controller.signal, cleanup };
+}
 import {
   serveStatusApi,
   serveConfigApi,
@@ -550,6 +580,16 @@ export async function classifyUpstreamResponse(
     };
   }
 
+  if (response.status === 499) {
+    const errorText = await response.text().catch(() => "");
+    return {
+      kind: "non-retryable-error",
+      httpStatus: 499,
+      errorText,
+      endpoint,
+      reason: "HTTP_499",
+    };
+  }
   if (response.status >= 400) {
     const errorText = await response.text().catch(() => "");
     return { kind: "bad-request", errorText, endpoint };
@@ -858,10 +898,12 @@ async function handleUpstreamAccountAction(
     );
     recordFailureAttempt?.(action.httpStatus);
     logRequestEnd(action.httpStatus, `endpoint=${action.endpoint}`);
-    rotator.markError(
-      account,
-      `${action.httpStatus}: ${action.errorText.slice(0, 200)}`,
-    );
+    if (action.reason !== "HTTP_499") {
+      rotator.markError(
+        account,
+        `${action.httpStatus}: ${action.errorText.slice(0, 200)}`,
+      );
+    }
     return buildFailureDecision(options, action.httpStatus, action.errorText);
   }
 
@@ -1952,15 +1994,7 @@ async function handleProxyRequest(
     return;
   }
   const apiKeyHash = auth.key?.tokenHash || (auth.rawKey ? hashKey(auth.rawKey) : null);
-  const clientController = new AbortController();
-  const abortClient = (): void => clientController.abort();
-  const removeAbortListeners = (): void => {
-    req.off("aborted", abortClient);
-    res.off("close", abortClient);
-  };
-  req.once("aborted", abortClient);
-  res.once("close", abortClient);
-  res.once("finish", removeAbortListeners);
+  const { controller: clientController } = attachClientAbortController(req, res);
 
   const proxyLog = (
     msg: string,
@@ -2491,15 +2525,7 @@ async function handleCodeAssistPassthrough(
     return;
   }
 
-  const clientController = new AbortController();
-  const abortClient = (): void => clientController.abort();
-  const removeAbortListeners = (): void => {
-    req.off("aborted", abortClient);
-    res.off("close", abortClient);
-  };
-  req.once("aborted", abortClient);
-  res.once("close", abortClient);
-  res.once("finish", removeAbortListeners);
+  const { controller: clientController } = attachClientAbortController(req, res);
 
   const maxRetries = getStreamRecoveryMaxRetries(rotator);
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -3335,6 +3361,9 @@ export function startProxy(
     }
     socket.destroy();
   });
+
+  // Node's 300s default requestTimeout aborts valid 600s streams and 240s retry sleeps with 499.
+  server.requestTimeout = 0;
 
   const originalClose = server.close.bind(server);
   server.close = ((callback?: (err?: Error) => void) => {
