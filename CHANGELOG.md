@@ -2,9 +2,13 @@
 
 ## Unreleased
 
+## [4.4.9] - 2026-11-24
+
 ### Fixed
 
-- **OpenCode discovery plugin resilience**: Keep `ctx.provider.transform` registered and retry automatically (`retryMs`, default 5s) when the rotator is temporarily unreachable at OpenCode startup instead of giving up permanently, and preserve the last known good catalog whenever a refresh returns an empty list or transient error.
+- **Paid Claude kickstart fallback**: Select account-aware Claude kickstart models for paid Pro, Ultra, Plus, Max, and Team tiers, preferring advertised Sonnet 5.5 candidates while retaining the historical primary as a compatibility fallback. Retry model-specific 400/404/403 and 5xx failures with per-model backoff without counting them as consecutive account errors; quota-exhaustion 429s do not switch models, and an explicit Free tier takes precedence over legacy Pro metadata. Gemini keeps its existing primary model.
+- **Telemetry receiver account and install aggregation**: Detect paid tiers in `proDetected`/`wasProAccount`, accept larger model catalogs and heartbeat payloads, preserve install state when processing flag events, and aggregate per-model token maxima consistently.
+- **OpenCode discovery recovery**: Keep `ctx.provider.transform` registered and retry automatically (`retryMs`, default 5s) when the rotator is temporarily unreachable at startup; preserve the last known-good model catalog when refreshes return an empty list or transient error.
 
 ## [4.4.8] - 2026-11-23
 
