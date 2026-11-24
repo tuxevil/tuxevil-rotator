@@ -478,6 +478,127 @@ describe("telemetry receiver", () => {
 		});
 		assert.equal(delRes.status, 200);
 	});
+
+	it("preserves install profile across later flag events and aggregates per-model max tokens consistently", async () => {
+		const iid = "flag-state-preserve-install";
+		// 1. Primary heartbeat with 12 accounts and high token usage
+		const hb1 = await fetch(`http://127.0.0.1:${port}/v1/events`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				event: "heartbeat",
+				installId: iid,
+				version: "4.4.8",
+				nodeVersion: "v24.0.0",
+				os: "linux",
+				arch: "x64",
+				ts: "2026-11-23T10:00:00.000Z",
+				accountCount: 12,
+				proCount: 4,
+				freeCount: 8,
+				modelsUsed: ["gemini-3.8-flash-high"],
+				totalRequests: 500,
+				uptimeSeconds: 3600,
+				routingHealthState: "healthy",
+				tokensByModel: {
+					"gemini-3.8-flash-high": { input: 2_000_000, output: 200_000, requests: 20 },
+				},
+			}),
+		});
+		assert.equal(hb1.status, 202);
+
+		// 2. Cloned/restarted heartbeat with LOWER tokens for model A plus a second model B
+		const hb2 = await fetch(`http://127.0.0.1:${port}/v1/events`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				event: "heartbeat",
+				installId: iid,
+				version: "4.4.8",
+				nodeVersion: "v24.0.0",
+				os: "linux",
+				arch: "x64",
+				ts: "2026-11-23T11:00:00.000Z",
+				accountCount: 12,
+				proCount: 4,
+				freeCount: 8,
+				modelsUsed: ["gemini-3.8-flash-high", "claude-sonnet-4-6"],
+				totalRequests: 120,
+				uptimeSeconds: 900,
+				routingHealthState: "healthy",
+				tokensByModel: {
+					"gemini-3.8-flash-high": { input: 100_000, output: 10_000, requests: 1 },
+					"claude-sonnet-4-6": { input: 1_000_000, output: 100_000, requests: 5 },
+				},
+			}),
+		});
+		assert.equal(hb2.status, 202);
+
+		// 3. Later flag event (lacks os, accountCount, tokensByModel) must NOT wipe install profile
+		const fl = await fetch(`http://127.0.0.1:${port}/v1/events`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				event: "flag",
+				installId: iid,
+				version: "4.4.8",
+				ts: "2026-11-23T12:00:00.000Z",
+				flag: {
+					flagHttpStatus: 403,
+					flagReasonCode: "TOS_VIOLATION",
+					flagPatternsMatched: ["violat"],
+					model: "gemini-3.8-flash-high",
+					timerType: "5h",
+					accountQuotaPercent: 50,
+					wasProAccount: false,
+					accountTotalRequests: 10,
+					accountRequestsLastHour: 2,
+					accountConcurrentAtFlag: 1,
+					poolSize: 12,
+					poolHealthyCount: 11,
+					protectivePauseTriggered: false,
+					uptimeSeconds: 1800,
+					timeSinceLastFlagSeconds: -1,
+				},
+			}),
+		});
+		assert.equal(fl.status, 202);
+
+		const [installsRes, statsRes] = await Promise.all([
+			fetch(`http://127.0.0.1:${port}/v1/installs?installId=${iid}`, {
+				headers: { Authorization: "Bearer secret-token" },
+			}),
+			fetch(`http://127.0.0.1:${port}/v1/stats?installId=${iid}`, {
+				headers: { Authorization: "Bearer secret-token" },
+			}),
+		]);
+		assert.equal(installsRes.status, 200);
+		assert.equal(statsRes.status, 200);
+		const installsList = (await installsRes.json()) as any[];
+		const stats = (await statsRes.json()) as any;
+
+		assert.equal(installsList.length, 1);
+		const row = installsList[0];
+		assert.equal(row.accountCount, 12);
+		assert.equal(row.proCount, 4);
+		assert.equal(row.freeCount, 8);
+		assert.equal(row.os, "linux");
+		assert.equal(row.routingHealthState, "healthy");
+		assert.equal(row.totalRequests, 500);
+		assert.equal(row.flagEvents, 1);
+		assert.equal(row.lastSeen, "2026-11-23T12:00:00.000Z");
+		assert.equal(row.tokensByModel["gemini-3.8-flash-high"].input, 2_000_000);
+		assert.equal(row.tokensByModel["claude-sonnet-4-6"].input, 1_000_000);
+
+		// Overview stats and installs view must match exactly on fleet & savings
+		assert.equal(stats.fleet.totalAccounts, 12);
+		assert.equal(stats.fleet.avgAccounts, 12);
+		assert.equal(stats.fleet.medianAccounts, 12);
+		assert.equal(stats.avgAccountsPerInstall, 12);
+		assert.equal(stats.fleet.osByInstall.linux, 1);
+		assert.equal(stats.os.undefined, undefined);
+		assert.equal(row.savingsUsd, stats.savings.totalUsd);
+	});
 });
 
 describe("telemetry receiver security hardening", () => {

@@ -320,9 +320,14 @@ function safeNonNegInt(val, max) {
 	return Math.floor(val);
 }
 
+const INSTALL_ID_RE = /^[a-zA-Z0-9._-]{4,64}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const REQUIRE_UUID_INSTALL_ID = process.env.REQUIRE_UUID_INSTALL_ID === "1";
+
 function isCorePayload(data) {
 	if (typeof data !== "object" || data === null) return false;
-	if (typeof data.installId !== "string" || data.installId.length === 0 || data.installId.length > 64) return false;
+	if (typeof data.installId !== "string" || !INSTALL_ID_RE.test(data.installId)) return false;
+	if (REQUIRE_UUID_INSTALL_ID && !UUID_RE.test(data.installId)) return false;
 	if (typeof data.version !== "string" || data.version.length > MAX_STRING_LEN) return false;
 	if (typeof data.ts !== "string" || data.ts.length > 30) return false;
 
@@ -750,9 +755,28 @@ function buildFilterOptions(events, flagEvents) {
 }
 
 
+// Merge cumulative tokensByModel snapshots per install using per-model maxima so
+// cloned .telemetry-id machines, restarts, or empty/flag events never drop historical usage.
+function mergeMaxTokens(target, tokensByModel) {
+	if (!tokensByModel || typeof tokensByModel !== "object" || Array.isArray(tokensByModel)) return;
+	for (const [model, data] of Object.entries(tokensByModel)) {
+		if (!model || FORBIDDEN_KEYS.has(model) || !data || typeof data !== "object") continue;
+		const inp = safeNonNegInt(data.input, MAX_TOKENS_CAP);
+		const out = safeNonNegInt(data.output, MAX_TOKENS_CAP);
+		const req = safeNonNegInt(data.requests, MAX_REQUESTS_CAP);
+		if (!target[model]) {
+			target[model] = { input: inp, output: out, requests: req };
+		} else {
+			if (inp > target[model].input) target[model].input = inp;
+			if (out > target[model].output) target[model].output = out;
+			if (req > target[model].requests) target[model].requests = req;
+		}
+	}
+}
+
 // ── Per-install list ─────────────────────────────────────────────────
 // Returns one summary row per unique installId based on their latest
-// heartbeat/boot event + flag count over the same filtered window.
+// non-flag heartbeat/boot/shutdown event + flag count over the same filtered window.
 function computeInstallList(filters = {}) {
 	const { events: allEvents, flagEvents: allFlagEvents } = loadAllEvents();
 
@@ -776,18 +800,32 @@ function computeInstallList(filters = {}) {
 		return true;
 	});
 
-	// Latest heartbeat snapshot per install
-	const latest = Object.create(null); // installId -> ev
-	for (const { ev } of events) {
-		const prev = latest[ev.installId];
-		if (!prev || ev.ts >= prev.ts) latest[ev.installId] = ev;
-	}
-
-	// First seen per install
+	// Latest non-flag state snapshot + latest overall timestamp per install.
+	// Excluding flag events from state prevents a recent flag (which lacks accountCount,
+	// OS, health, and tokensByModel) from overwriting the install's real profile with zeros.
+	const latestState = Object.create(null); // installId -> latest non-flag ev
+	const latestAny = Object.create(null);   // installId -> latest ev (for lastSeen & fallback)
 	const firstSeen = Object.create(null);
+	const maxRequests = Object.create(null);
+	const maxTokensByInstall = Object.create(null); // installId -> { [model]: { input, output, requests } }
+
 	for (const { ev } of events) {
-		if (!firstSeen[ev.installId] || ev.ts < firstSeen[ev.installId])
-			firstSeen[ev.installId] = ev.ts;
+		const id = ev.installId;
+		if (!id) continue;
+		const prevAny = latestAny[id];
+		if (!prevAny || (ev.ts || '') >= (prevAny.ts || '')) latestAny[id] = ev;
+		if (!firstSeen[id] || (ev.ts || '') < firstSeen[id]) firstSeen[id] = ev.ts;
+
+		if (ev.event !== 'flag') {
+			const prevState = latestState[id];
+			if (!prevState || (ev.ts || '') >= (prevState.ts || '')) latestState[id] = ev;
+			const reqVal = safeNonNegInt(ev.totalRequests, MAX_REQUESTS_CAP);
+			if (reqVal > (maxRequests[id] || 0)) maxRequests[id] = reqVal;
+			if (ev.tokensByModel && typeof ev.tokensByModel === 'object') {
+				if (!maxTokensByInstall[id]) maxTokensByInstall[id] = Object.create(null);
+				mergeMaxTokens(maxTokensByInstall[id], ev.tokensByModel);
+			}
+		}
 	}
 
 	// Flag counts per install
@@ -796,24 +834,18 @@ function computeInstallList(filters = {}) {
 		flagsByInstall[fl.installId] = (flagsByInstall[fl.installId] || 0) + 1;
 	}
 
-	// Total requests per install (max across all events — it's cumulative)
-	const maxRequests = Object.create(null);
-	for (const { ev } of events) {
-		const cur = maxRequests[ev.installId] || 0;
-		if ((ev.totalRequests || 0) > cur) maxRequests[ev.installId] = ev.totalRequests || 0;
-	}
-
-	const list = Object.values(latest).map((ev) => {
-		const tokens = ev.tokensByModel && typeof ev.tokensByModel === 'object'
-			? ev.tokensByModel : {};
+	const list = Object.keys(latestAny).map((id) => {
+		const ev = latestState[id] || latestAny[id];
+		const anyEv = latestAny[id];
+		const tokens = maxTokensByInstall[id] || {};
 		const savings = calculateSavings(tokens);
 		return {
-			installId:          ev.installId,
-			version:            ev.version || '?',
+			installId:          id,
+			version:            ev.version || anyEv.version || '?',
 			os:                 ev.os || '?',
 			arch:               ev.arch || '?',
 			accountCount:       safeNonNegInt(ev.accountCount, 1000),
-			totalRequests:      maxRequests[ev.installId] || 0,
+			totalRequests:      maxRequests[id] || 0,
 			routingHealthState: ev.routingHealthState || 'unknown',
 			flaggedCount:       safeNonNegInt(ev.flaggedCount, 1000),
 			disabledCount:      safeNonNegInt(ev.disabledCount, 1000),
@@ -821,9 +853,9 @@ function computeInstallList(filters = {}) {
 			freeCount:          safeNonNegInt(ev.freeCount, 1000),
 			tokensByModel:      tokens,
 			savingsUsd:         savings.totalUsd,
-			flagEvents:         flagsByInstall[ev.installId] || 0,
-			lastSeen:           ev.ts,
-			firstSeen:          firstSeen[ev.installId] || ev.ts,
+			flagEvents:         flagsByInstall[id] || 0,
+			lastSeen:           anyEv.ts || ev.ts,
+			firstSeen:          firstSeen[id] || ev.ts,
 			featuresUsed:       ev.featuresUsed || {},
 		};
 	});
@@ -860,6 +892,7 @@ function computeStats(filters = {}) {
 
 	const uniqueInstalls = new Set();
 	let totalEvents = 0;
+	let nonFlagEvents = 0;
 	let totalBoots = 0;
 	let totalFlags = 0;
 	const versionCounts = Object.create(null);
@@ -871,10 +904,11 @@ function computeStats(filters = {}) {
 	const maxRequestsByInstall = Object.create(null); // installId -> max cumulative totalRequests
 	let featuresCount = { dashboard: 0, proAdvisor: 0, freshWindowToggle: 0, hostedLogin: 0 };
 
-	// tokensByModel is CUMULATIVE per install (each heartbeat sends total-since-boot).
-	// To avoid multi-counting, track the LATEST snapshot per installId and sum those.
-	const latestTokenSnapshotByInstall = Object.create(null); // installId → { ts, tokensByModel }
-	const latestEventByInstall = Object.create(null); // installId → ev
+	// tokensByModel is CUMULATIVE per install; track per-model max per installId so cloned
+	// .telemetry-id machines, restarts, or flag events never erase prior usage.
+	const maxTokensByInstall = Object.create(null); // installId → { [model]: { input, output, requests } }
+	const latestStateByInstall = Object.create(null); // installId → latest non-flag ev
+	const latestSeenByInstall = Object.create(null); // installId → latest ev (any type, for activity)
 	const dailyMap = Object.create(null); // YYYY-MM-DD → { date, events, installs: Set, boots, mainFlags, detailFlags }
 
 	function ensureDay(date) {
@@ -889,15 +923,7 @@ function computeStats(filters = {}) {
 		uniqueInstalls.add(ev.installId);
 		if (ev.event === "boot") totalBoots++;
 		if (ev.event === "flag") totalFlags++;
-		versionCounts[ev.version] = (versionCounts[ev.version] || 0) + 1;
-		osCounts[ev.os] = (osCounts[ev.os] || 0) + 1;
-		archCounts[ev.arch] = (archCounts[ev.arch] || 0) + 1;
-		healthCounts[ev.routingHealthState] = (healthCounts[ev.routingHealthState] || 0) + 1;
-		totalAccounts += safeNonNegInt(ev.accountCount, 1000);
-		const reqVal = safeNonNegInt(ev.totalRequests, MAX_REQUESTS_CAP);
-		if (ev.installId && reqVal > (maxRequestsByInstall[ev.installId] || 0)) {
-			maxRequestsByInstall[ev.installId] = reqVal;
-		}
+		if (ev.version) versionCounts[ev.version] = (versionCounts[ev.version] || 0) + 1;
 
 		const day = ensureDay(file.replace(".jsonl", ""));
 		day.events++;
@@ -905,33 +931,49 @@ function computeStats(filters = {}) {
 		if (ev.event === "boot") day.boots++;
 		if (ev.event === "flag") day.mainFlags++;
 
-		const prevEv = latestEventByInstall[ev.installId];
-		if (!prevEv || (ev.ts || "") >= (prevEv.ts || "")) {
-			latestEventByInstall[ev.installId] = ev;
+		const prevSeen = latestSeenByInstall[ev.installId];
+		if (!prevSeen || (ev.ts || "") >= (prevSeen.ts || "")) {
+			latestSeenByInstall[ev.installId] = ev;
 		}
 
-		// Keep only the most recent token snapshot per install
-		if (ev.tokensByModel && typeof ev.tokensByModel === "object") {
-			const prev = latestTokenSnapshotByInstall[ev.installId];
-			if (!prev || ev.ts >= prev.ts) {
-				latestTokenSnapshotByInstall[ev.installId] = { ts: ev.ts, tokensByModel: ev.tokensByModel };
+		if (ev.event !== "flag") {
+			nonFlagEvents++;
+			if (ev.os) osCounts[ev.os] = (osCounts[ev.os] || 0) + 1;
+			if (ev.arch) archCounts[ev.arch] = (archCounts[ev.arch] || 0) + 1;
+			if (ev.routingHealthState) healthCounts[ev.routingHealthState] = (healthCounts[ev.routingHealthState] || 0) + 1;
+			totalAccounts += safeNonNegInt(ev.accountCount, 1000);
+			const reqVal = safeNonNegInt(ev.totalRequests, MAX_REQUESTS_CAP);
+			if (ev.installId && reqVal > (maxRequestsByInstall[ev.installId] || 0)) {
+				maxRequestsByInstall[ev.installId] = reqVal;
 			}
-		}
-		for (const m of ev.modelsUsed || []) modelCounts[m] = (modelCounts[m] || 0) + 1;
-		if (ev.featuresUsed && typeof ev.featuresUsed === "object") {
-			for (const [k, v] of Object.entries(ev.featuresUsed)) {
-				if (v === true && Object.hasOwn(featuresCount, k)) featuresCount[k]++;
+
+			const prevState = latestStateByInstall[ev.installId];
+			if (!prevState || (ev.ts || "") >= (prevState.ts || "")) {
+				latestStateByInstall[ev.installId] = ev;
+			}
+
+			if (ev.installId && ev.tokensByModel && typeof ev.tokensByModel === "object") {
+				if (!maxTokensByInstall[ev.installId]) maxTokensByInstall[ev.installId] = Object.create(null);
+				mergeMaxTokens(maxTokensByInstall[ev.installId], ev.tokensByModel);
+			}
+			for (const m of ev.modelsUsed || []) modelCounts[m] = (modelCounts[m] || 0) + 1;
+			if (ev.featuresUsed && typeof ev.featuresUsed === "object") {
+				for (const [k, v] of Object.entries(ev.featuresUsed)) {
+					if (v === true && Object.hasOwn(featuresCount, k)) featuresCount[k]++;
+				}
 			}
 		}
 	}
 
-	// Fleet summary from latest snapshot per unique install
+	// Fleet summary from latest non-flag state snapshot per unique install
 	const nowMs = Date.now();
 	const DAY_MS = 24 * 60 * 60 * 1000;
 	const fleet = {
 		active24h: 0,
 		active7d: 0,
 		totalAccounts: 0,
+		avgAccounts: 0,
+		medianAccounts: 0,
 		proAccounts: 0,
 		freeAccounts: 0,
 		flaggedAccounts: 0,
@@ -940,13 +982,18 @@ function computeStats(filters = {}) {
 		osByInstall: Object.create(null),
 		versionByInstall: Object.create(null),
 	};
-	for (const ev of Object.values(latestEventByInstall)) {
-		const tsMs = Date.parse(ev.ts || ev.receivedAt || "");
+	const accountCountsPerInstall = [];
+	for (const id of Object.keys(latestSeenByInstall)) {
+		const seenEv = latestSeenByInstall[id];
+		const ev = latestStateByInstall[id] || seenEv;
+		const tsMs = Date.parse(seenEv.ts || seenEv.receivedAt || "");
 		if (Number.isFinite(tsMs)) {
 			if (nowMs - tsMs <= DAY_MS) fleet.active24h++;
 			if (nowMs - tsMs <= 7 * DAY_MS) fleet.active7d++;
 		}
-		fleet.totalAccounts += safeNonNegInt(ev.accountCount, 1000);
+		const accCount = safeNonNegInt(ev.accountCount, 1000);
+		accountCountsPerInstall.push(accCount);
+		fleet.totalAccounts += accCount;
 		fleet.proAccounts += safeNonNegInt(ev.proCount, 1000);
 		fleet.freeAccounts += safeNonNegInt(ev.freeCount, 1000);
 		fleet.flaggedAccounts += safeNonNegInt(ev.flaggedCount, 1000);
@@ -955,16 +1002,24 @@ function computeStats(filters = {}) {
 		fleet.healthByInstall[health] = (fleet.healthByInstall[health] || 0) + 1;
 		const osKey = ev.os || "unknown";
 		fleet.osByInstall[osKey] = (fleet.osByInstall[osKey] || 0) + 1;
-		const verKey = ev.version || "unknown";
+		const verKey = ev.version || seenEv.version || "unknown";
 		fleet.versionByInstall[verKey] = (fleet.versionByInstall[verKey] || 0) + 1;
 	}
+	if (accountCountsPerInstall.length > 0) {
+		accountCountsPerInstall.sort((a, b) => a - b);
+		const mid = Math.floor(accountCountsPerInstall.length / 2);
+		fleet.medianAccounts = accountCountsPerInstall.length % 2 === 1
+			? accountCountsPerInstall[mid]
+			: Math.round(((accountCountsPerInstall[mid - 1] + accountCountsPerInstall[mid]) / 2) * 10) / 10;
+		fleet.avgAccounts = Math.round((fleet.totalAccounts / accountCountsPerInstall.length) * 10) / 10;
+	}
 
-	// Aggregate latest token snapshot per install into global totals
+	// Aggregate per-model max tokens per install into global totals
 	const globalTokensByModel = Object.create(null);
 	let totalInputTokens = 0;
 	let totalOutputTokens = 0;
 	let totalTokenRequests = 0;
-	for (const { tokensByModel } of Object.values(latestTokenSnapshotByInstall)) {
+	for (const tokensByModel of Object.values(maxTokensByInstall)) {
 		for (const [model, data] of Object.entries(tokensByModel)) {
 			if (!globalTokensByModel[model]) globalTokensByModel[model] = { input: 0, output: 0, requests: 0 };
 			globalTokensByModel[model].input += data.input || 0;
@@ -1077,7 +1132,8 @@ function computeStats(filters = {}) {
 		uniqueInstalls: uniqueInstalls.size,
 		totalEvents,
 		totalBoots,
-		avgAccountsPerEvent: totalEvents > 0 ? Math.round(totalAccounts / totalEvents * 10) / 10 : 0,
+		avgAccountsPerEvent: nonFlagEvents > 0 ? Math.round(totalAccounts / nonFlagEvents * 10) / 10 : 0,
+		avgAccountsPerInstall: fleet.avgAccounts,
 		totalRequestsAcrossAll,
 		fleet,
 		daily,
@@ -2757,7 +2813,7 @@ function render(d){
     {l:'Requests Routed',v:fmtCompact(d.totalRequestsAcrossAll),sub:fmt(d.totalRequestsAcrossAll)+' total | '+fmt(d.totalEvents)+' ev',c:'c-amber'},
     {l:'Estimated Savings',v:usd(sv.totalUsd),sub:Object.keys(sv.byModel||{}).length+' priced models',c:'c-green'},
     {l:'Token Volume',v:fmtCompact((tok.totalInput||0)+(tok.totalOutput||0)),sub:'IN '+fmtCompact(tok.totalInput)+' / OUT '+fmtCompact(tok.totalOutput),c:'c-violet'},
-    {l:'Fleet Accounts',v:fmt(fleet.totalAccounts||0),sub:'P:'+fmt(fleet.proAccounts||0)+' F:'+fmt(fleet.freeAccounts||0)+(fleet.flaggedAccounts?' | FLG:'+fleet.flaggedAccounts:''),c:fleet.flaggedAccounts?'c-amber':'c-cyan'},
+    {l:'Fleet Accounts',v:fmt(fleet.totalAccounts||0),sub:'P:'+fmt(fleet.proAccounts||0)+' F:'+fmt(fleet.freeAccounts||0)+(fleet.flaggedAccounts?' | FLG:'+fleet.flaggedAccounts:'')+' | med '+fmt(fleet.medianAccounts||0),c:fleet.flaggedAccounts?'c-amber':'c-cyan'},
     {l:'Flag Signals',v:fmt(totalFlags),sub:fmt(fl.uniqueIncidents||0)+' unique | avg '+fmt(fl.avgRequestsBeforeFlag||0)+' req',c:totalFlags>0?'c-red':'c-green'}
   ].map(function(k){
     return '<article class="kpi '+k.c+'"><div class="kpi-label">'+esc(k.l)+'</div><div class="kpi-value">'+esc(k.v)+'</div><div class="kpi-sub">'+esc(k.sub)+'</div></article>';
