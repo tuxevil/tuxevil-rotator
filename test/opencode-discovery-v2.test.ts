@@ -494,3 +494,147 @@ it("merges discovered reasoning efforts into existing models that only declared 
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
+
+it("recovers automatically via retryMs when the rotator is temporarily unavailable at startup", async () => {
+  let available = false;
+  let reloads = 0;
+  const holder: { transformCallback: ((editor: FakeEditor) => void) | null } = {
+    transformCallback: null,
+  };
+  const server = http.createServer((_req, res) => {
+    if (!available) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "restarting" }));
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        data: [
+          {
+            id: "gemini-4-neon",
+            meta: { thinking: true, reasoning_efforts: ["low", "medium", "high", "xhigh"] },
+          },
+        ],
+      }),
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  let cleanup: (() => void) | undefined;
+  try {
+    const added: Array<{ models: Array<Record<string, unknown>> }> = [];
+    const ctx: FakeCtx = {
+      options: {
+        baseURL: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+        providerID: "tuxevil-rotator",
+        refreshMs: 5000,
+        retryMs: 15,
+      },
+      provider: {
+        list: async () => [],
+        transform: async (callback) => {
+          holder.transformCallback = callback;
+          callback({ get: () => undefined, add: (record) => added.push(record as any) });
+          return { dispose: async () => {} };
+        },
+        reload: async () => {
+          reloads++;
+          holder.transformCallback?.({
+            get: () => undefined,
+            add: (record: unknown) => added.push(record as any),
+          });
+        },
+      },
+    };
+
+    cleanup = await discoveryPlugin.setup(ctx);
+    assert.equal(typeof cleanup, "function");
+    assert.equal(added.length, 0, "initial failed fetch must not overwrite provider");
+
+    available = true;
+    for (let i = 0; i < 100 && reloads === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(reloads > 0, "plugin should reload once rotator becomes reachable");
+    assert.equal(added.length, 1);
+    assert.equal(added[0].models[0]?.id, "gemini-4-neon");
+  } finally {
+    cleanup?.();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+it("keeps the last known model inventory if a later refresh returns an empty catalog or error", async () => {
+  let mode: "ok" | "empty" | "error" = "ok";
+  let requests = 0;
+  let reloads = 0;
+  const holder: { transformCallback: ((editor: FakeEditor) => void) | null } = {
+    transformCallback: null,
+  };
+  const server = http.createServer((_req, res) => {
+    requests++;
+    if (mode === "error") {
+      res.writeHead(502);
+      res.end("bad gateway");
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        data: mode === "empty" ? [] : [{ id: "gemini-4-hydrogen", meta: { thinking: true } }],
+      }),
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  let cleanup: (() => void) | undefined;
+  try {
+    const added: Array<{ models: Array<Record<string, unknown>> }> = [];
+    const ctx: FakeCtx = {
+      options: {
+        baseURL: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+        providerID: "tuxevil-rotator",
+        refreshMs: 15,
+      },
+      provider: {
+        list: async () => [],
+        transform: async (callback) => {
+          holder.transformCallback = callback;
+          callback({ get: () => undefined, add: (record) => added.push(record as any) });
+          return { dispose: async () => {} };
+        },
+        reload: async () => {
+          reloads++;
+        },
+      },
+    };
+
+    cleanup = await discoveryPlugin.setup(ctx);
+    assert.equal(added.length, 1);
+
+    mode = "empty";
+    const beforeEmpty = requests;
+    for (let i = 0; i < 50 && requests < beforeEmpty + 2; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    mode = "error";
+    const beforeError = requests;
+    for (let i = 0; i < 50 && requests < beforeError + 2; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    assert.equal(reloads, 0, "transient empty/error refresh must not trigger reload");
+    const afterRefresh: Array<{ models: Array<Record<string, unknown>> }> = [];
+    holder.transformCallback?.({
+      get: () => undefined,
+      add: (record: unknown) => afterRefresh.push(record as any),
+    });
+    assert.equal(afterRefresh.length, 1);
+    assert.equal(afterRefresh[0].models[0]?.id, "gemini-4-hydrogen");
+  } finally {
+    cleanup?.();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});

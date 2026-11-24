@@ -1366,6 +1366,22 @@ export const KICKSTART_MODEL_FOR_QUOTA_POOL: Record<string, string> = {
   "gemini": "gemini-3.8-flash-tiered",
 };
 
+// Ordered fallback candidates per Antigravity quota pool (cheapest first; never Opus).
+export const KICKSTART_FALLBACK_MODELS_FOR_QUOTA_POOL: Record<string, readonly string[]> = {
+  claude: ["gpt-oss-120b-medium", "claude-sonnet-4-6"],
+};
+
+// Paid (Pro/Ultra) Antigravity accounts advertise Claude 5.5 models and can hit
+// 503 on gpt-oss-120b-medium; prefer the cheapest low-effort Sonnet 5.5 model first.
+export const KICKSTART_PRO_MODELS_FOR_QUOTA_POOL: Record<string, readonly string[]> = {
+  claude: [
+    "claude-sonnet-5-5-low",
+    "claude-sonnet-5-5-medium",
+    "claude-sonnet-4-6",
+    "gpt-oss-120b-medium",
+  ],
+};
+
 export const QUOTA_API_URL =
   "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
 export const QUOTA_SUMMARY_API_URL =

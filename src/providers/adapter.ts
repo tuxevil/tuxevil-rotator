@@ -171,6 +171,11 @@ export interface ProviderAdapter {
   getPoolKey?(model: string): string;
   /** Cheap upstream model that warms a quota pool during kickstart. */
   getKickstartModelForPool(quotaModelKey: string): string | undefined;
+  /** Ordered kickstart candidate models for a quota pool (primary + fallbacks), optionally tailored to an account. */
+  getKickstartModelsForPool?(
+    quotaModelKey: string,
+    account?: AccountRuntime,
+  ): string[];
   /** Benchmark request used to measure account latency/health. */
   getBenchmark(account: AccountRuntime): {
     body: RequestBody;
