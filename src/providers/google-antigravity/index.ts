@@ -34,10 +34,16 @@ import {
 import {
   TOKEN_URL,
   KICKSTART_MODEL_FOR_QUOTA_POOL,
+  KICKSTART_FALLBACK_MODELS_FOR_QUOTA_POOL,
+  KICKSTART_PRO_MODELS_FOR_QUOTA_POOL,
   applyModelAlias,
   resolveQuotaModelKey,
 } from "../../types.js";
 import type { AccountRuntime } from "../../types.js";
+import {
+  getAccountIdentity,
+  getCredentialGeneration,
+} from "../../account-identity.js";
 import { fetchWithRetry } from "../../fetch-with-retry.js";
 import { logger } from "../../logger.js";
 import { getAccountProxyDispatcher } from "../proxy-dispatcher.js";
@@ -173,6 +179,57 @@ export const googleAntigravityAdapter: ProviderAdapter = {
       KICKSTART_MODEL_FOR_QUOTA_POOL[quotaModelKey] ??
       KICKSTART_MODEL_FOR_QUOTA_POOL[resolveQuotaModelKey(quotaModelKey) ?? ""]
     );
+  },
+
+  getKickstartModelsForPool(
+    quotaModelKey: string,
+    account?: AccountRuntime,
+  ): string[] {
+    const pool = KICKSTART_MODEL_FOR_QUOTA_POOL[quotaModelKey]
+      ? quotaModelKey
+      : resolveQuotaModelKey(quotaModelKey) ?? "";
+    const primary = KICKSTART_MODEL_FOR_QUOTA_POOL[pool];
+    if (!pool || !primary) return [];
+
+    const snapshot = account
+      ? dynamicCatalog.getAccountSnapshot(
+          getAccountIdentity(account),
+          getCredentialGeneration(account.config, "google-antigravity"),
+        )
+      : undefined;
+    const snapshotSet = snapshot
+      ? new Set(snapshot.models.map((model) => model.toLowerCase()))
+      : null;
+
+    const tier = account?.config.tier;
+    const isExplicitlyFree = tier === "free";
+    const isProOrHigher = isExplicitlyFree
+      ? false
+      : tier === "pro" || tier === "ultra" || tier === "plus" ||
+        tier === "max" || tier === "team" || account?.config.type === "pro";
+    const snapshotHasSonnet55 = Boolean(
+      snapshotSet &&
+        (snapshotSet.has("claude-sonnet-5-5-low") ||
+          snapshotSet.has("claude-sonnet-5-5-medium")),
+    );
+    const useProOrder = pool === "claude" && !isExplicitlyFree &&
+      (isProOrHigher || snapshotHasSonnet55);
+    const preferred =
+      (useProOrder
+        ? KICKSTART_PRO_MODELS_FOR_QUOTA_POOL[pool]
+        : KICKSTART_FALLBACK_MODELS_FOR_QUOTA_POOL[pool]) ?? [primary];
+
+    if (snapshotSet) {
+      const inSnapshot = preferred.filter((model) =>
+        snapshotSet.has(model.toLowerCase()),
+      );
+      if (inSnapshot.length > 0) return inSnapshot;
+      return [primary];
+    }
+
+    // Without a per-account catalog, preserve only the existing primary.
+    if (pool === "gemini") return [primary];
+    return [...preferred];
   },
 
   listModels(): ProviderModel[] {

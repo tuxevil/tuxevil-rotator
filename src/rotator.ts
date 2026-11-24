@@ -236,6 +236,9 @@ interface AccountRequestWaiter {
 // Reverse map: upstream model → the quota pool key it primarily represents (for deduplication).
 const QUOTA_POOL_FOR_KICKSTART_MODEL: Record<string, string> = {
   "gpt-oss-120b-medium": "claude",
+  "claude-sonnet-5-5-low": "claude",
+  "claude-sonnet-5-5-medium": "claude",
+  "claude-sonnet-4-6": "claude",
   "gemini-3-flash": "gemini",
   "gpt-5.6-luna": CODEX_QUOTA_MODEL_KEY,
   // Legacy manual kickstart compatibility. New Ollama quota polling/routes
@@ -536,7 +539,10 @@ export class AccountRotator {
   private routingWarningLastLoggedAt = new Map<string, number>();
   private static readonly ROUTING_WARNING_DEDUP_MS = 60_000;
   private autoWarmupEnabled = false;
-  private readonly kickstartDeniedUntil = new Map<string, number>();
+  private readonly kickstartDeniedUntil = new Map<
+    string,
+    { until: number; status: number; reason: string }
+  >();
   // Debounced state writer: batches multiple saveState() calls within a 1s window
   // to a single disk write. Hot paths (markError, recordRequest, etc.) call
   // scheduleStateSave() instead of saveState() to avoid blocking the event loop.
@@ -1351,6 +1357,7 @@ export class AccountRotator {
     providerId: string;
     adapter: ReturnType<typeof getProviderAdapter>;
     upstreamModel: string;
+    upstreamModels: string[];
   } | null {
     const poolKey = this.resolveAccountPoolKey(account, quotaModelKey);
     const quota = account.quota.find((candidate) => candidate.modelKey === poolKey);
@@ -1360,9 +1367,20 @@ export class AccountRotator {
     if (!hasCredential(account.config, providerId)) return null;
 
     const adapter = getProviderAdapter(providerId);
-    const upstreamModel = adapter.getKickstartModelForPool(poolKey);
-    if (!upstreamModel) return null;
-    return { poolKey, providerId, adapter, upstreamModel };
+    const candidates = adapter.getKickstartModelsForPool
+      ? adapter.getKickstartModelsForPool(poolKey, account)
+      : (() => {
+          const single = adapter.getKickstartModelForPool(poolKey);
+          return single ? [single] : [];
+        })();
+    if (candidates.length === 0) return null;
+    return {
+      poolKey,
+      providerId,
+      adapter,
+      upstreamModel: candidates[0],
+      upstreamModels: candidates,
+    };
   }
 
   // Timer priority for a specific model:
@@ -5128,7 +5146,10 @@ export class AccountRotator {
         error: `${target.providerId} credential requires re-authentication`,
       };
     }
-    if (isProviderModelOff(this, target.providerId, target.upstreamModel)) {
+    const enabledCandidates = target.upstreamModels.filter(
+      (model) => !isProviderModelOff(this, target.providerId, model),
+    );
+    if (enabledCandidates.length === 0) {
       return {
         ok: false,
         status: 409,
@@ -5137,13 +5158,23 @@ export class AccountRotator {
       };
     }
 
-    const denialKey = `${email}\0${target.upstreamModel}`;
-    if ((this.kickstartDeniedUntil.get(denialKey) ?? 0) > Date.now()) {
+    const now = Date.now();
+    const runnableCandidates: string[] = [];
+    let activeDenial: { until: number; status: number; reason: string } | undefined;
+    for (const model of enabledCandidates) {
+      const denial = this.kickstartDeniedUntil.get(`${email}\0${model}`);
+      if (!denial || denial.until <= now) {
+        runnableCandidates.push(model);
+      } else {
+        activeDenial ??= denial;
+      }
+    }
+    if (runnableCandidates.length === 0) {
       return {
         ok: false,
-        status: 403,
-        upstreamModel: target.upstreamModel,
-        error: "kickstart temporarily skipped after model-specific 403",
+        status: activeDenial?.status ?? 403,
+        upstreamModel: enabledCandidates[0],
+        error: activeDenial?.reason ?? "kickstart temporarily skipped after model-specific failure",
       };
     }
 
@@ -5165,7 +5196,6 @@ export class AccountRotator {
       return { ok: false, status: 401, upstreamModel: "", error: "no access token" };
     }
 
-    const upstreamModel = target.upstreamModel;
     const poolKey = target.poolKey;
 
     const activeCooldown = Math.max(
@@ -5176,180 +5206,217 @@ export class AccountRotator {
       return {
         ok: false,
         status: 429,
-        upstreamModel,
+        upstreamModel: runnableCandidates[0],
         error: `quota cooldown active for ${Math.ceil((activeCooldown - Date.now()) / 1000)}s`,
       };
     }
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15_000);
-
-    let response: Response;
-    if (kickstartAdapter.forwardKickstartRequest) {
-      try {
-        const forwarded = await kickstartAdapter.forwardKickstartRequest(
-          account,
-          upstreamModel,
-          controller.signal,
-        );
-        response = forwarded.response;
-      } catch (err) {
-        clearTimeout(timeout);
-        const msg = `kickstart network error: ${err instanceof Error ? err.message : String(err)}`;
-        this.markError(account, msg);
-        return { ok: false, status: 0, upstreamModel, error: msg };
-      }
-      clearTimeout(timeout);
-    } else if (isOllamaAccount) {
-      const ollamaBody: RequestBody = {
-        project: "",
-        model: upstreamModel,
-        request: {
-          messages: [{ role: "user", content: "." }],
-          options: { num_predict: 1 },
-          stream: false,
-        },
-      };
-      try {
-        const forwarded = await kickstartAdapter.forwardRequest(
-          account,
-          ollamaBody,
-          {},
-          controller.signal,
-        );
-        response = forwarded.response;
-      } catch (err) {
-        clearTimeout(timeout);
-        const msg = `kickstart network error: ${err instanceof Error ? err.message : String(err)}`;
-        this.markError(account, msg);
-        return { ok: false, status: 0, upstreamModel, error: msg };
-      }
-      clearTimeout(timeout);
-    } else {
-      const body = JSON.stringify({
-        project: this.getProjectIdForModel(account, poolKey),
-        model: upstreamModel,
-        request: {
-          contents: [{ role: "user", parts: [{ text: "." }] }],
-          generationConfig: { maxOutputTokens: 1 },
-        },
-      });
-
-      const endpoint = ANTIGRAVITY_ENDPOINTS[ANTIGRAVITY_ENDPOINTS.length - 1];
-      const url = `${endpoint}/v1internal:streamGenerateContent?alt=sse`;
-
-      try {
-        response = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${account.accessToken}`,
-            "User-Agent": QUOTA_USER_AGENT,
-            "X-Goog-Api-Client": REQUEST_GOOG_API_CLIENT,
-            "Client-Metadata": REQUEST_CLIENT_METADATA,
-          },
-          body,
-          signal: controller.signal,
-          dispatcher: getAccountProxyDispatcher(account, "google-antigravity"),
-        } as RequestInitWithDispatcher);
-      } catch (err) {
-        clearTimeout(timeout);
-        const msg = `kickstart network error: ${err instanceof Error ? err.message : String(err)}`;
-        this.markError(account, msg);
-        return { ok: false, status: 0, upstreamModel, error: msg };
-      }
-      clearTimeout(timeout);
-    }
-
-    let errorText = "";
-    if (response.status === 429 || response.status === 401 || response.status === 403) {
-      errorText = await response.text().catch(() => "");
-    } else {
-      // Consume and discard the response body to free the connection.
-      try {
-        await response.body?.cancel();
-      } catch {
-        // ignore
-      }
-    }
-
     const label = account.config.label || account.config.email;
+    let failedFrom: string | null = null;
+    for (let index = 0; index < runnableCandidates.length; index++) {
+      const upstreamModel = runnableCandidates[index];
+      const denialKey = `${email}\0${upstreamModel}`;
+      const nextCandidate = runnableCandidates[index + 1];
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15_000);
 
-    if (response.status === 429) {
-      const providerResourceExhausted =
-        classifyRateLimitReason(errorText, response.status) === "quota-exhausted";
-      const cooldownMs = providerResourceExhausted
-        ? target.providerId === DEFAULT_PROVIDER || target.providerId === "openai-codex"
-          ? parseRetryAfterMs(
-              errorText,
-              response.headers,
-              RESOURCE_EXHAUSTED_FALLBACK_MS,
-            )
-          : RESOURCE_EXHAUSTED_FALLBACK_MS
-        : Math.min(
-            parseRetryAfterMs(errorText, response.headers),
-            RESOURCE_EXHAUSTED_FALLBACK_MS,
-          );
-      this.markExhausted(
-        account,
-        poolKey,
-        cooldownMs,
-        errorText || "kickstart 429",
-      );
-      this.recordProvider429(
-        account,
-        poolKey,
-        cooldownMs,
-        providerResourceExhausted,
-      );
-      this.log(
-        `${label} [${poolKey}]: kickstart 429 — cooldown ${cooldownMs / 1000}s`,
-        "warn",
-      );
-      return { ok: false, status: 429, upstreamModel };
-    }
-
-    if (response.status === 401 || response.status === 403) {
-      const failure = describeKickstartAuthFailure(response.status, upstreamModel, errorText);
-      if (target.providerId === "openai-codex") {
-        this.markProviderInvalid(account, target.providerId, failure.description);
-      } else if (failure.accountEnforcement) {
-        // Provider-scoped invalidation: even with account-enforcement language
-        // in the response, only the specific provider credential is invalidated.
-        // Sibling providers on the same account remain routable.
-        this.reportQuotaPollFlag(account, response.status, errorText, upstreamModel, target.providerId);
-        this.markProviderInvalid(account, target.providerId, failure.description);
-      } else {
-        account.lastError = failure.description;
-        this.kickstartDeniedUntil.set(denialKey, Date.now() + 30 * 60 * 1000);
-        this.log(`${label}: ${failure.description}; retrying kickstart after 30 minutes`, "warn");
-      }
-      return { ok: false, status: response.status, upstreamModel, error: failure.description };
-    }
-
-    if (response.status >= 500) {
-      this.markError(account, `kickstart ${response.status} on ${upstreamModel}`);
-      return { ok: false, status: response.status, upstreamModel };
-    }
-
-    if (response.ok) {
-      this.recordRequest(account, poolKey);
-      target.adapter.clearQuotaCache?.(account);
-      this.log(
-        `${label} [${poolKey}]: kickstart sent via ${upstreamModel} — ${refreshQuota ? "refreshing quota" : "bulk quota refresh pending"}`,
-      );
-      // Immediately re-poll the account quota so newly started resetTime and timerType
-      // are captured and exposed without waiting for the background polling cycle.
-      if (refreshQuota) {
+      let response: Response;
+      if (kickstartAdapter.forwardKickstartRequest) {
         try {
-          await this.pollAccountQuota(account);
+          const forwarded = await kickstartAdapter.forwardKickstartRequest(
+            account,
+            upstreamModel,
+            controller.signal,
+          );
+          response = forwarded.response;
+        } catch (err) {
+          clearTimeout(timeout);
+          const msg = `kickstart network error: ${err instanceof Error ? err.message : String(err)}`;
+          this.markError(account, msg);
+          return { ok: false, status: 0, upstreamModel, error: msg };
+        }
+        clearTimeout(timeout);
+      } else if (isOllamaAccount) {
+        const ollamaBody: RequestBody = {
+          project: "",
+          model: upstreamModel,
+          request: {
+            messages: [{ role: "user", content: "." }],
+            options: { num_predict: 1 },
+            stream: false,
+          },
+        };
+        try {
+          const forwarded = await kickstartAdapter.forwardRequest(
+            account,
+            ollamaBody,
+            {},
+            controller.signal,
+          );
+          response = forwarded.response;
+        } catch (err) {
+          clearTimeout(timeout);
+          const msg = `kickstart network error: ${err instanceof Error ? err.message : String(err)}`;
+          this.markError(account, msg);
+          return { ok: false, status: 0, upstreamModel, error: msg };
+        }
+        clearTimeout(timeout);
+      } else {
+        const body = JSON.stringify({
+          project: this.getProjectIdForModel(account, poolKey),
+          model: upstreamModel,
+          request: {
+            contents: [{ role: "user", parts: [{ text: "." }] }],
+            generationConfig: { maxOutputTokens: 1 },
+          },
+        });
+
+        const endpoint = ANTIGRAVITY_ENDPOINTS[ANTIGRAVITY_ENDPOINTS.length - 1];
+        const url = `${endpoint}/v1internal:streamGenerateContent?alt=sse`;
+        try {
+          response = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${account.accessToken}`,
+              "User-Agent": QUOTA_USER_AGENT,
+              "X-Goog-Api-Client": REQUEST_GOOG_API_CLIENT,
+              "Client-Metadata": REQUEST_CLIENT_METADATA,
+            },
+            body,
+            signal: controller.signal,
+            dispatcher: getAccountProxyDispatcher(account, "google-antigravity"),
+          } as RequestInitWithDispatcher);
+        } catch (err) {
+          clearTimeout(timeout);
+          const msg = `kickstart network error: ${err instanceof Error ? err.message : String(err)}`;
+          this.markError(account, msg);
+          return { ok: false, status: 0, upstreamModel, error: msg };
+        }
+        clearTimeout(timeout);
+      }
+
+      let errorText = "";
+      if (response.status === 429 || response.status === 401 || response.status === 403) {
+        errorText = await response.text().catch(() => "");
+      } else {
+        try {
+          await response.body?.cancel();
         } catch {
-          // non-fatal
+          // ignore
         }
       }
+
+      if (response.status === 429) {
+        this.kickstartDeniedUntil.delete(denialKey);
+        const providerResourceExhausted =
+          classifyRateLimitReason(errorText, response.status) === "quota-exhausted";
+        const cooldownMs = providerResourceExhausted
+          ? target.providerId === DEFAULT_PROVIDER || target.providerId === "openai-codex"
+            ? parseRetryAfterMs(
+                errorText,
+                response.headers,
+                RESOURCE_EXHAUSTED_FALLBACK_MS,
+              )
+            : RESOURCE_EXHAUSTED_FALLBACK_MS
+          : Math.min(
+              parseRetryAfterMs(errorText, response.headers),
+              RESOURCE_EXHAUSTED_FALLBACK_MS,
+            );
+        this.markExhausted(account, poolKey, cooldownMs, errorText || "kickstart 429");
+        this.recordProvider429(account, poolKey, cooldownMs, providerResourceExhausted);
+        this.log(
+          `${label} [${poolKey}]: kickstart 429 — cooldown ${cooldownMs / 1000}s`,
+          "warn",
+        );
+        return { ok: false, status: 429, upstreamModel };
+      }
+
+      if (response.status === 401 || response.status === 403) {
+        const failure = describeKickstartAuthFailure(response.status, upstreamModel, errorText);
+        if (target.providerId === "openai-codex") {
+          this.markProviderInvalid(account, target.providerId, failure.description);
+          return { ok: false, status: response.status, upstreamModel, error: failure.description };
+        }
+        if (failure.accountEnforcement) {
+          this.kickstartDeniedUntil.delete(denialKey);
+          // Enforcement errors invalidate the provider credential, not sibling providers.
+          this.reportQuotaPollFlag(account, response.status, errorText, upstreamModel, target.providerId);
+          this.markProviderInvalid(account, target.providerId, failure.description);
+          return { ok: false, status: response.status, upstreamModel, error: failure.description };
+        }
+        const reason = `kickstart temporarily skipped after model-specific ${response.status}`;
+        this.kickstartDeniedUntil.set(denialKey, {
+          until: Date.now() + 30 * 60 * 1000,
+          status: response.status,
+          reason,
+        });
+        if (nextCandidate) {
+          failedFrom ??= `${response.status} on ${upstreamModel}`;
+          this.log(
+            `${label} [${poolKey}]: ${failure.description}; trying fallback ${nextCandidate}`,
+            "warn",
+          );
+          continue;
+        }
+        account.lastError = failure.description;
+        this.scheduleStateSave();
+        this.log(`${label}: ${failure.description}; retrying kickstart after 30 minutes`, "warn");
+        return { ok: false, status: response.status, upstreamModel, error: failure.description };
+      }
+
+      this.kickstartDeniedUntil.delete(denialKey);
+
+      if (response.status === 400 || response.status === 404 || response.status >= 500) {
+        const backoffMs = response.status >= 500 ? 15 * 60 * 1000 : 30 * 60 * 1000;
+        const message = `kickstart ${response.status} on ${upstreamModel}`;
+        this.kickstartDeniedUntil.set(denialKey, {
+          until: Date.now() + backoffMs,
+          status: response.status,
+          reason: `kickstart temporarily skipped after ${response.status} on ${upstreamModel}`,
+        });
+        if (nextCandidate) {
+          failedFrom ??= `${response.status} on ${upstreamModel}`;
+          this.log(
+            `${label} [${poolKey}]: ${message}; trying fallback ${nextCandidate}`,
+            "warn",
+          );
+          continue;
+        }
+        // Model-specific upstream failures must not count toward disabling a healthy account.
+        account.lastError = message;
+        this.scheduleStateSave();
+        this.log(
+          `${label} [${poolKey}]: ${message}; retrying kickstart after ${backoffMs / 60_000} minutes`,
+          "warn",
+        );
+        return { ok: false, status: response.status, upstreamModel, error: message };
+      }
+
+      if (response.ok) {
+        this.recordRequest(account, poolKey);
+        target.adapter.clearQuotaCache?.(account);
+        const fallbackNote = failedFrom ? ` (fallback after ${failedFrom})` : "";
+        this.log(
+          `${label} [${poolKey}]: kickstart sent via ${upstreamModel}${fallbackNote} — ${refreshQuota ? "refreshing quota" : "bulk quota refresh pending"}`,
+        );
+        if (refreshQuota) {
+          try {
+            await this.pollAccountQuota(account);
+          } catch {
+            // non-fatal
+          }
+        }
+      }
+      return { ok: response.ok, status: response.status, upstreamModel };
     }
 
-    return { ok: response.ok, status: response.status, upstreamModel };
+    return {
+      ok: false,
+      status: 503,
+      upstreamModel: target.upstreamModel,
+      error: `kickstart failed on all candidates for ${poolKey}`,
+    };
   }
 
   /**
@@ -5411,7 +5478,12 @@ export class AccountRotator {
         primaryQuotaKey,
         false,
       );
-      results.push({ quotaPools, upstreamModel, ok: result.ok, status: result.status });
+      results.push({
+        quotaPools,
+        upstreamModel: result.upstreamModel || upstreamModel,
+        ok: result.ok,
+        status: result.status,
+      });
     }
 
     if (results.some((result) => result.ok)) {

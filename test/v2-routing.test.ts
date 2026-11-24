@@ -402,6 +402,185 @@ describe("v2 routing and status", () => {
     }
   });
 
+  it("uses an advertised Pro Claude kickstart model and falls back after a 503", async () => {
+    const originalFetch = globalThis.fetch;
+    const requestedModels: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { model?: string };
+      requestedModels.push(body.model ?? "");
+      return requestedModels.length === 1
+        ? new Response("model temporarily unavailable", { status: 503 })
+        : new Response("", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const config = makeConfig();
+      config.accounts![1].tier = "pro";
+      const rotator = new AccountRotator(config) as any;
+      rotator.stopQuotaPolling();
+      const account = rotator.accounts[1];
+      account.accessToken = "test-access-token";
+      account.tokenExpires = Date.now() + 60_000;
+      setAntigravityModelsForTest(
+        ["claude-sonnet-5-5-low", "claude-sonnet-5-5-medium"],
+        rotator.accounts.map((candidate: any) => getAccountIdentity(candidate)),
+      );
+
+      const result = await rotator.kickstartTimerForAccount("b@example.com", "claude", false);
+
+      assert.deepEqual(requestedModels, ["claude-sonnet-5-5-low", "claude-sonnet-5-5-medium"]);
+      assert.equal(result.ok, true);
+      assert.equal(result.status, 200);
+      assert.equal(result.upstreamModel, "claude-sonnet-5-5-medium");
+      assert.equal(account.consecutiveErrors, 0, "model-specific 503s must not penalize the account");
+      assert.equal(account.disabled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("respects explicit Free tier when selecting Claude kickstart candidates", () => {
+    const config = makeConfig();
+    config.accounts![1].tier = "pro";
+    const rotator = new AccountRotator(config) as any;
+    rotator.stopQuotaPolling();
+    // Explicit free tier wins over a stale legacy `type: pro` declaration.
+    rotator.accounts[0].config.type = "pro";
+    setAntigravityModelsForTest(
+      ["gpt-oss-120b-medium", "claude-sonnet-5-5-low", "claude-sonnet-5-5-medium"],
+      rotator.accounts.map((candidate: any) => getAccountIdentity(candidate)),
+    );
+    const adapter = getProviderAdapter("google-antigravity");
+
+    assert.deepEqual(
+      adapter.getKickstartModelsForPool?.("claude", rotator.accounts[0]),
+      ["gpt-oss-120b-medium"],
+    );
+    const proCandidates = adapter.getKickstartModelsForPool?.("claude", rotator.accounts[1]);
+    assert.deepEqual(
+      proCandidates,
+      ["claude-sonnet-5-5-low", "claude-sonnet-5-5-medium", "gpt-oss-120b-medium"],
+      "advertised paid models lead, with the historical primary last for compatibility",
+    );
+  });
+
+  it("falls back after a model-specific Claude 403 without invalidating the account", async () => {
+    const originalFetch = globalThis.fetch;
+    const requestedModels: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { model?: string };
+      requestedModels.push(body.model ?? "");
+      return requestedModels.length === 1
+        ? new Response(JSON.stringify({
+            error: {
+              status: "PERMISSION_DENIED",
+              message: "Model not available for this account.",
+            },
+          }), { status: 403 })
+        : new Response("", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const config = makeConfig();
+      config.accounts![1].tier = "pro";
+      const rotator = new AccountRotator(config) as any;
+      rotator.stopQuotaPolling();
+      const account = rotator.accounts[1];
+      account.accessToken = "test-access-token";
+      account.tokenExpires = Date.now() + 60_000;
+      setAntigravityModelsForTest(
+        ["claude-sonnet-5-5-low", "claude-sonnet-5-5-medium"],
+        rotator.accounts.map((candidate: any) => getAccountIdentity(candidate)),
+      );
+
+      const result = await rotator.kickstartTimerForAccount("b@example.com", "claude", false);
+
+      assert.deepEqual(requestedModels, ["claude-sonnet-5-5-low", "claude-sonnet-5-5-medium"]);
+      assert.equal(result.ok, true);
+      assert.equal(result.upstreamModel, "claude-sonnet-5-5-medium");
+      assert.equal(account.invalidProviders?.["google-antigravity"], undefined);
+      assert.equal(account.flagged, false);
+      assert.equal(account.disabled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not fall back to another Claude model on 429 quota exhaustion", async () => {
+    const originalFetch = globalThis.fetch;
+    const requestedModels: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { model?: string };
+      requestedModels.push(body.model ?? "");
+      return new Response(JSON.stringify({
+        error: {
+          status: "RESOURCE_EXHAUSTED",
+          message: "quota exceeded. Resets in 30m",
+        },
+      }), { status: 429 });
+    }) as typeof fetch;
+
+    try {
+      const config = makeConfig();
+      config.accounts![1].tier = "pro";
+      const rotator = new AccountRotator(config) as any;
+      rotator.stopQuotaPolling();
+      const account = rotator.accounts[1];
+      account.accessToken = "test-access-token";
+      account.tokenExpires = Date.now() + 60_000;
+      setAntigravityModelsForTest(
+        ["claude-sonnet-5-5-low", "claude-sonnet-5-5-medium"],
+        rotator.accounts.map((candidate: any) => getAccountIdentity(candidate)),
+      );
+
+      const result = await rotator.kickstartTimerForAccount("b@example.com", "claude", false);
+
+      assert.deepEqual(requestedModels, ["claude-sonnet-5-5-low"]);
+      assert.equal(result.ok, false);
+      assert.equal(result.status, 429);
+      assert.equal(result.upstreamModel, "claude-sonnet-5-5-low");
+      assert.equal(account.disabled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("backs off failing Claude kickstart candidates without counting them as account errors", async () => {
+    const originalFetch = globalThis.fetch;
+    let requests = 0;
+    globalThis.fetch = (async () => {
+      requests++;
+      return new Response("temporarily unavailable", { status: 503 });
+    }) as typeof fetch;
+
+    try {
+      const config = makeConfig();
+      config.accounts![1].tier = "pro";
+      const rotator = new AccountRotator(config) as any;
+      rotator.stopQuotaPolling();
+      const account = rotator.accounts[1];
+      account.accessToken = "test-access-token";
+      account.tokenExpires = Date.now() + 60_000;
+      setAntigravityModelsForTest(
+        ["claude-sonnet-5-5-low", "claude-sonnet-5-5-medium"],
+        rotator.accounts.map((candidate: any) => getAccountIdentity(candidate)),
+      );
+
+      const first = await rotator.kickstartTimerForAccount("b@example.com", "claude", false);
+      const second = await rotator.kickstartTimerForAccount("b@example.com", "claude", false);
+
+      assert.equal(first.ok, false);
+      assert.equal(first.status, 503);
+      assert.equal(second.ok, false);
+      assert.equal(second.status, 503);
+      assert.equal(requests, 2, "each advertised paid candidate should be attempted once");
+      assert.equal(account.consecutiveErrors, 0);
+      assert.equal(account.disabled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("kickstarts family pool keys (gemini, claude) and kickstartAllFreshTimers", async () => {
     const originalFetch = globalThis.fetch;
     const requestedModels: string[] = [];
