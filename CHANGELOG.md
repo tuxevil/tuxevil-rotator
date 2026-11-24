@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## [4.4.9] - 2026-11-24
+
+### Fixed
+
+- **Paid Claude kickstart fallback**: Select account-aware Claude kickstart models for paid Pro, Ultra, Plus, Max, and Team tiers, preferring advertised Sonnet 5.5 candidates while retaining the historical primary as a compatibility fallback. Retry model-specific 400/404/403 and 5xx failures with per-model backoff without counting them as consecutive account errors; quota-exhaustion 429s do not switch models, and an explicit Free tier takes precedence over legacy Pro metadata. Gemini keeps its existing primary model.
+- **Telemetry receiver account and install aggregation**: Detect paid tiers in `proDetected`/`wasProAccount`, accept larger model catalogs and heartbeat payloads, preserve install state when processing flag events, and aggregate per-model token maxima consistently.
+- **OpenCode discovery recovery**: Keep `ctx.provider.transform` registered and retry automatically (`retryMs`, default 5s) when the rotator is temporarily unreachable at startup; preserve the last known-good model catalog when refreshes return an empty list or transient error.
+
+## [4.4.8] - 2026-11-23
+
+### Fixed
+
+- **Invalid-provider polling & kickstart flag loop**: Stop `pollAccountQuotaOnce()`, `kickstartAllFreshTimers()`, and `kickstartTimerForAccount()` from repeatedly hitting providers already marked invalid or disabled on an account, emit `reportQuotaPollFlag()` only on valid-to-invalid transitions, and clear `invalidProviders` across all providers when updated credentials are saved via `addOrUpdateAccount()`.
+- **Telemetry receiver aggregation & live flag deduplication**: Fix double-counting of `flags.totalFlags` / `daily[].flags` (using `-flags.jsonl` as the canonical source), compute `totalRequestsAcrossAll` by summing each unique install's cumulative maximum instead of summing repeated hourly heartbeats, and deduplicate repeating flag loops within a 24-hour sliding window (`FLAG_DEDUP_WINDOW_MS`) with startup warm-up.
+
+### Changed
+
+- **Telemetry receiver UX**: Redesign `/dashboard`, `/notifications`, and `/stats` in a unified cyberpunk/retro-console UI with tabbed views (`Overview`, `Flags & Forensics`, `Models & USD`, `Installs`), interactive incident/node inspector drawers, concentration alerts, semver notification targeting simulator, quick templates/expiry presets, shared token SSO, keyboard shortcuts, and enriched `/v1/stats` & `/v1/public-stats` payloads.
+
+### Security
+
+- **Telemetry receiver hardening**: Fix unauthenticated Stored XSS in `/dashboard` (`proCount`/`freeCount`/`flaggedCount`/`disabledCount` validation + escaping), prevent `NaN` savings poisoning via prototype keys in `MODEL_PRICING` and `featuresCount`, enforce constant-time `timingSafeEqual` token comparison with `401` brute-force lockout, restrict `X-Forwarded-For` parsing to `TRUSTED_PROXIES` with bounded rate-limit maps and daily JSONL size caps, add CSP/XFO/nosniff/SRI headers and scoped CORS, add HTTP/body anti-Slowloris timeouts, enforce absolute `http(s)` notification URLs, write `notifications.json` atomically, and add incremental JSONL file caching.
+
 ## [4.4.7] - 2026-11-23
 
 ### Changed

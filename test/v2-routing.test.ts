@@ -402,6 +402,185 @@ describe("v2 routing and status", () => {
     }
   });
 
+  it("uses an advertised Pro Claude kickstart model and falls back after a 503", async () => {
+    const originalFetch = globalThis.fetch;
+    const requestedModels: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { model?: string };
+      requestedModels.push(body.model ?? "");
+      return requestedModels.length === 1
+        ? new Response("model temporarily unavailable", { status: 503 })
+        : new Response("", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const config = makeConfig();
+      config.accounts![1].tier = "pro";
+      const rotator = new AccountRotator(config) as any;
+      rotator.stopQuotaPolling();
+      const account = rotator.accounts[1];
+      account.accessToken = "test-access-token";
+      account.tokenExpires = Date.now() + 60_000;
+      setAntigravityModelsForTest(
+        ["claude-sonnet-5-5-low", "claude-sonnet-5-5-medium"],
+        rotator.accounts.map((candidate: any) => getAccountIdentity(candidate)),
+      );
+
+      const result = await rotator.kickstartTimerForAccount("b@example.com", "claude", false);
+
+      assert.deepEqual(requestedModels, ["claude-sonnet-5-5-low", "claude-sonnet-5-5-medium"]);
+      assert.equal(result.ok, true);
+      assert.equal(result.status, 200);
+      assert.equal(result.upstreamModel, "claude-sonnet-5-5-medium");
+      assert.equal(account.consecutiveErrors, 0, "model-specific 503s must not penalize the account");
+      assert.equal(account.disabled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("respects explicit Free tier when selecting Claude kickstart candidates", () => {
+    const config = makeConfig();
+    config.accounts![1].tier = "pro";
+    const rotator = new AccountRotator(config) as any;
+    rotator.stopQuotaPolling();
+    // Explicit free tier wins over a stale legacy `type: pro` declaration.
+    rotator.accounts[0].config.type = "pro";
+    setAntigravityModelsForTest(
+      ["gpt-oss-120b-medium", "claude-sonnet-5-5-low", "claude-sonnet-5-5-medium"],
+      rotator.accounts.map((candidate: any) => getAccountIdentity(candidate)),
+    );
+    const adapter = getProviderAdapter("google-antigravity");
+
+    assert.deepEqual(
+      adapter.getKickstartModelsForPool?.("claude", rotator.accounts[0]),
+      ["gpt-oss-120b-medium"],
+    );
+    const proCandidates = adapter.getKickstartModelsForPool?.("claude", rotator.accounts[1]);
+    assert.deepEqual(
+      proCandidates,
+      ["claude-sonnet-5-5-low", "claude-sonnet-5-5-medium", "gpt-oss-120b-medium"],
+      "advertised paid models lead, with the historical primary last for compatibility",
+    );
+  });
+
+  it("falls back after a model-specific Claude 403 without invalidating the account", async () => {
+    const originalFetch = globalThis.fetch;
+    const requestedModels: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { model?: string };
+      requestedModels.push(body.model ?? "");
+      return requestedModels.length === 1
+        ? new Response(JSON.stringify({
+            error: {
+              status: "PERMISSION_DENIED",
+              message: "Model not available for this account.",
+            },
+          }), { status: 403 })
+        : new Response("", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const config = makeConfig();
+      config.accounts![1].tier = "pro";
+      const rotator = new AccountRotator(config) as any;
+      rotator.stopQuotaPolling();
+      const account = rotator.accounts[1];
+      account.accessToken = "test-access-token";
+      account.tokenExpires = Date.now() + 60_000;
+      setAntigravityModelsForTest(
+        ["claude-sonnet-5-5-low", "claude-sonnet-5-5-medium"],
+        rotator.accounts.map((candidate: any) => getAccountIdentity(candidate)),
+      );
+
+      const result = await rotator.kickstartTimerForAccount("b@example.com", "claude", false);
+
+      assert.deepEqual(requestedModels, ["claude-sonnet-5-5-low", "claude-sonnet-5-5-medium"]);
+      assert.equal(result.ok, true);
+      assert.equal(result.upstreamModel, "claude-sonnet-5-5-medium");
+      assert.equal(account.invalidProviders?.["google-antigravity"], undefined);
+      assert.equal(account.flagged, false);
+      assert.equal(account.disabled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not fall back to another Claude model on 429 quota exhaustion", async () => {
+    const originalFetch = globalThis.fetch;
+    const requestedModels: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { model?: string };
+      requestedModels.push(body.model ?? "");
+      return new Response(JSON.stringify({
+        error: {
+          status: "RESOURCE_EXHAUSTED",
+          message: "quota exceeded. Resets in 30m",
+        },
+      }), { status: 429 });
+    }) as typeof fetch;
+
+    try {
+      const config = makeConfig();
+      config.accounts![1].tier = "pro";
+      const rotator = new AccountRotator(config) as any;
+      rotator.stopQuotaPolling();
+      const account = rotator.accounts[1];
+      account.accessToken = "test-access-token";
+      account.tokenExpires = Date.now() + 60_000;
+      setAntigravityModelsForTest(
+        ["claude-sonnet-5-5-low", "claude-sonnet-5-5-medium"],
+        rotator.accounts.map((candidate: any) => getAccountIdentity(candidate)),
+      );
+
+      const result = await rotator.kickstartTimerForAccount("b@example.com", "claude", false);
+
+      assert.deepEqual(requestedModels, ["claude-sonnet-5-5-low"]);
+      assert.equal(result.ok, false);
+      assert.equal(result.status, 429);
+      assert.equal(result.upstreamModel, "claude-sonnet-5-5-low");
+      assert.equal(account.disabled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("backs off failing Claude kickstart candidates without counting them as account errors", async () => {
+    const originalFetch = globalThis.fetch;
+    let requests = 0;
+    globalThis.fetch = (async () => {
+      requests++;
+      return new Response("temporarily unavailable", { status: 503 });
+    }) as typeof fetch;
+
+    try {
+      const config = makeConfig();
+      config.accounts![1].tier = "pro";
+      const rotator = new AccountRotator(config) as any;
+      rotator.stopQuotaPolling();
+      const account = rotator.accounts[1];
+      account.accessToken = "test-access-token";
+      account.tokenExpires = Date.now() + 60_000;
+      setAntigravityModelsForTest(
+        ["claude-sonnet-5-5-low", "claude-sonnet-5-5-medium"],
+        rotator.accounts.map((candidate: any) => getAccountIdentity(candidate)),
+      );
+
+      const first = await rotator.kickstartTimerForAccount("b@example.com", "claude", false);
+      const second = await rotator.kickstartTimerForAccount("b@example.com", "claude", false);
+
+      assert.equal(first.ok, false);
+      assert.equal(first.status, 503);
+      assert.equal(second.ok, false);
+      assert.equal(second.status, 503);
+      assert.equal(requests, 2, "each advertised paid candidate should be attempted once");
+      assert.equal(account.consecutiveErrors, 0);
+      assert.equal(account.disabled, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("kickstarts family pool keys (gemini, claude) and kickstartAllFreshTimers", async () => {
     const originalFetch = globalThis.fetch;
     const requestedModels: string[] = [];
@@ -1972,5 +2151,149 @@ describe("v2 routing and status", () => {
       account?.credentials?.find((credential) => credential.provider === "opencode-zen")?.apiKey,
       "zen-secret",
     );
+  });
+
+  it("skips invalidated providers during quota polling and auto-warmup kickstart until re-authenticated", async () => {
+    const config = makeConfig();
+    config.accounts = [
+      {
+        email: "loop-guard@example.com",
+        refreshToken: "google-refresh",
+        projectId: "proj-loop",
+        credentials: [
+          {
+            provider: "google-antigravity",
+            refreshToken: "google-refresh",
+            projectId: "proj-loop",
+          },
+          { provider: "ollama", apiKey: "ollama-bad-key" },
+        ],
+      },
+    ];
+    const rotator = new AccountRotator(config);
+    rotator.stopQuotaPolling();
+    const account = rotator["accounts"][0];
+    account.accessToken = "valid-google-token";
+    account.tokenExpires = Date.now() + 60 * 60_000;
+    account.providerTokens = {
+      "google-antigravity": { accessToken: "valid-google-token", tokenExpires: Date.now() + 60 * 60_000 },
+    };
+    account.quota = [
+      {
+        modelKey: "claude",
+        displayName: "Claude",
+        providerId: "google-antigravity",
+        percentRemaining: 100,
+        resetTime: null,
+        timerType: "fresh",
+      },
+    ];
+
+    const calls: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      calls.push(url);
+      if (url.includes("ollama.com")) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      if (url.includes("generateContent") || url.includes("streamGenerateContent")) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              code: 403,
+              status: "PERMISSION_DENIED",
+              message: "Verify your account to continue.",
+              details: [{ reason: "VALIDATION_REQUIRED" }],
+            },
+          }),
+          { status: 403, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ models: {} }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      // First quota poll hits Ollama 401 -> marks ollama invalid
+      await rotator.pollAccountQuota(account);
+      assert.ok(account.invalidProviders?.ollama, "ollama should be marked invalid after 401");
+      const ollamaCallsAfterFirstPoll = calls.filter((u) => u.includes("ollama.com")).length;
+      assert.equal(ollamaCallsAfterFirstPoll, 1);
+
+      // Second quota poll must NOT hit Ollama again
+      await rotator.pollAccountQuota(account);
+      assert.equal(
+        calls.filter((u) => u.includes("ollama.com")).length,
+        1,
+        "invalidated ollama credential must not be re-polled every cycle",
+      );
+
+      // First kickstart hits Google 403 VALIDATION_REQUIRED -> marks google-antigravity invalid
+      const ks1 = await rotator.kickstartAllFreshTimers(account.config.email);
+      assert.equal(ks1.results.length, 1);
+      assert.equal(ks1.results[0].status, 403);
+      assert.ok(
+        account.invalidProviders?.["google-antigravity"],
+        "google-antigravity should be marked invalid after 403 enforcement",
+      );
+
+      // Second kickstartAllFreshTimers and direct kickstartTimerForAccount must skip without upstream calls
+      const callsBeforeSecondKickstart = calls.length;
+      const ks2 = await rotator.kickstartAllFreshTimers(account.config.email);
+      assert.equal(ks2.results.length, 0, "invalidated provider pools must be skipped by kickstartAllFreshTimers");
+      const ksDirect = await rotator.kickstartTimerForAccount(account.config.email, "claude", false);
+      assert.equal(ksDirect.ok, false);
+      assert.equal(ksDirect.status, 409);
+      assert.equal(calls.length, callsBeforeSecondKickstart, "no upstream kickstart call when provider is invalid");
+
+      // Re-authenticating via addOrUpdateAccount clears invalidProviders for the updated provider
+      await rotator.addOrUpdateAccount({
+        email: account.config.email,
+        refreshToken: "new-google-refresh",
+        projectId: "proj-loop",
+        credentials: [{ provider: "ollama", apiKey: "ollama-new-key" }],
+      });
+      assert.equal(account.invalidProviders?.ollama, undefined);
+      assert.equal(account.invalidProviders?.["google-antigravity"], undefined);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("derives proDetected and wasProAccount from paid account tiers as well as legacy type", () => {
+    const config = makeConfig();
+    config.accounts = [
+      { email: "pro-tier@example.com", refreshToken: "rt1", projectId: "p1", tier: "pro" },
+      { email: "ultra-tier@example.com", refreshToken: "rt2", projectId: "p2", tier: "ultra" },
+      { email: "plus-tier@example.com", refreshToken: "rt3", projectId: "p3", tier: "plus" },
+      { email: "free-override@example.com", refreshToken: "rt4", projectId: "p4", type: "pro", tier: "free" },
+      { email: "legacy-pro@example.com", refreshToken: "rt5", projectId: "p5", type: "pro" },
+      { email: "unknown-tier@example.com", refreshToken: "rt6", projectId: "p6", tier: "unknown" },
+    ];
+    const rotator = new AccountRotator(config);
+    try {
+      const status = rotator.getStatus();
+      const byEmail = new Map(status.accounts.map((a) => [a.email, a]));
+
+      assert.equal(byEmail.get("pro-tier@example.com")?.proDetected, true);
+      assert.equal(byEmail.get("ultra-tier@example.com")?.proDetected, true);
+      assert.equal(byEmail.get("plus-tier@example.com")?.proDetected, true);
+      assert.equal(byEmail.get("free-override@example.com")?.proDetected, false);
+      assert.equal(byEmail.get("legacy-pro@example.com")?.proDetected, true);
+      assert.equal(byEmail.get("unknown-tier@example.com")?.proDetected, false);
+
+      const runtimes = (rotator as unknown as { accounts: Parameters<typeof rotator.getFlagContext>[0][] }).accounts;
+      const proCtx = rotator.getFlagContext(runtimes[0], "gemini");
+      const freeCtx = rotator.getFlagContext(runtimes[3], "gemini");
+      const legacyCtx = rotator.getFlagContext(runtimes[4], "gemini");
+      assert.equal(proCtx.wasProAccount, true);
+      assert.equal(freeCtx.wasProAccount, false);
+      assert.equal(legacyCtx.wasProAccount, true);
+    } finally {
+      rotator.stopQuotaPolling();
+    }
   });
 });

@@ -15,6 +15,7 @@
  *   - providerName display name (default "Antigravity (rotator)")
  *   - timeoutMs    fetch timeout (default 3500)
  *   - refreshMs    background re-discovery interval (default 600000; 0 disables)
+ *   - retryMs      retry interval while initial discovery has not succeeded yet (default 5000)
  */
 
 import { openCodeReasoning, openCodeVariants } from "./capabilities.mjs"
@@ -138,12 +139,19 @@ export function resolvePluginOptions(options = {}, providerEntries = []) {
   let end = baseURLText.length
   while (end > 0 && baseURLText.charCodeAt(end - 1) === 47) end--
 
+  const refreshMs = options.refreshMs === 0 ? 0 : Number(options.refreshMs) || 600_000
+  const retryMs =
+    refreshMs <= 0
+      ? 0
+      : Math.min(refreshMs, Math.max(1, Number(options.retryMs) || 5_000))
+
   return {
     baseURL: baseURLText.slice(0, end),
     providerID: providerID || "antigravity",
     providerName: providerName || "Antigravity (rotator)",
     timeoutMs: Number(options.timeoutMs) || 3500,
-    refreshMs: options.refreshMs === 0 ? 0 : Number(options.refreshMs) || 600_000,
+    refreshMs,
+    retryMs,
   }
 }
 
@@ -274,20 +282,29 @@ export default {
     async function load() {
       try {
         const models = await fetchRotatorModels(resolved.baseURL, resolved.timeoutMs)
-        const list = Array.isArray(models) ? models : []
-        const changed = lastSignature !== null && modelSignature(list) !== lastSignature
+        const list = Array.isArray(models) ? models.filter((m) => typeof m?.id === "string" && m.id.length > 0) : []
+        if (list.length === 0) {
+          // Never wipe the last known good catalog on a transient empty response
+          console.warn("[opencode-discovery] model discovery returned an empty catalog; keeping previous inventory")
+          return { ok: false, changed: false, invalidUrl: false }
+        }
+        const sig = modelSignature(list)
+        const changed = lastSignature !== sig
         source.models = list
-        lastSignature = modelSignature(list)
-        return { ok: true, changed }
+        lastSignature = sig
+        return { ok: true, changed, invalidUrl: false }
       } catch (err) {
+        const msg = err?.message ?? String(err)
+        const invalidUrl = msg.includes("fetch() URL is invalid") || msg.includes("Unsupported URL protocol")
         // Safe degrade: never fail OpenCode startup when the rotator is unreachable
-        console.warn(`[opencode-discovery] model discovery skipped: ${err?.message ?? err}`)
-        return { ok: false, changed: false }
+        console.warn(`[opencode-discovery] model discovery skipped: ${msg}`)
+        return { ok: false, changed: false, invalidUrl }
       }
     }
 
     const first = await load()
-    if (!first.ok || !source.models?.length) return undefined
+    if (first.invalidUrl) return undefined
+    if (!first.ok && resolved.refreshMs <= 0) return undefined
 
     const toModelInfo = (raw, existingModel) => {
       const { id, modelDef } = mapModelToOpenCode(raw)
@@ -324,20 +341,32 @@ export default {
 
     if (resolved.refreshMs <= 0) return undefined
 
-    const timer = setInterval(() => {
-      void (async () => {
-        const result = await load()
-        if (!result.changed) return
-        try {
-          await ctx.provider.reload()
-        } catch {
-          // Registry reload unavailable; keep the last known inventory
-        }
-      })()
-    }, resolved.refreshMs)
-    if (typeof timer.unref === "function") timer.unref()
+    let stopped = false
+    let timer = null
+    const scheduleNext = () => {
+      if (stopped) return
+      const delayMs = source.models?.length ? resolved.refreshMs : resolved.retryMs
+      timer = setTimeout(() => {
+        void (async () => {
+          const result = await load()
+          if (!stopped && result.ok && result.changed) {
+            try {
+              await ctx.provider.reload()
+            } catch {
+              // Registry reload unavailable; keep the last known inventory
+            }
+          }
+          scheduleNext()
+        })()
+      }, delayMs)
+      if (typeof timer.unref === "function") timer.unref()
+    }
+    scheduleNext()
 
-    return () => clearInterval(timer)
+    return () => {
+      stopped = true
+      if (timer) clearTimeout(timer)
+    }
   },
 }
 
