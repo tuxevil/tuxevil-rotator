@@ -341,6 +341,7 @@ const MODEL_PRICING = {
 	"gemini-3.1-pro": { inputPer1M: 2.0, outputPer1M: 12.0 },
 	"gemini-3.1-pro-low": { inputPer1M: 2.0, outputPer1M: 12.0 },
 	"gemini-3.1-pro-high": { inputPer1M: 2.0, outputPer1M: 12.0 },
+	"gemini-3.1-pro-preview-customtools": { inputPer1M: 2.0, outputPer1M: 12.0 },
 	"gemini-3-flash": { inputPer1M: 0.5, outputPer1M: 3.0 },
 	"gemini-3.6-flash": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
 	"gemini-3.6-flash-high": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
@@ -348,6 +349,10 @@ const MODEL_PRICING = {
 	"gemini-3.6-flash-low": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
 	"gemini-3.6-flash-tiered": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
 	// Gemini introductory pricing: see docs/model-pricing.md (2026-11-23).
+	"gemini-3.7-flash": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
+	"gemini-3.7-flash-low": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
+	"gemini-3.7-flash-medium": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
+	"gemini-3.7-flash-high": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
 	"gemini-3.7-flash-tiered": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
 	// Gemini 3.8 Flash uses the same introductory window and doubles on 2027-01-01.
 	"gemini-3.8-flash": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },

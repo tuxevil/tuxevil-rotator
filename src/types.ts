@@ -914,6 +914,7 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
   "gemini-3.1-pro": { inputPer1M: 2.0, outputPer1M: 12.0 },
   "gemini-3.1-pro-low": { inputPer1M: 2.0, outputPer1M: 12.0 },
   "gemini-3.1-pro-high": { inputPer1M: 2.0, outputPer1M: 12.0 },
+  "gemini-3.1-pro-preview-customtools": { inputPer1M: 2.0, outputPer1M: 12.0 },
   "gemini-3-flash": { inputPer1M: 0.5, outputPer1M: 3.0 },
   // Standard introductory rates verified 2026-10-25; double on 2027-01-01.
   // https://ai.google.dev/gemini-api/docs/pricing
@@ -953,6 +954,10 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
   // these double to: input 1.50, output 7.50, cached input 0.15, cache
   // storage 1.00 (USD per 1M tokens / per 1M tokens/hour) — update this
   // static entry when the introductory period ends.
+  "gemini-3.7-flash": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
+  "gemini-3.7-flash-low": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
+  "gemini-3.7-flash-medium": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
+  "gemini-3.7-flash-high": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
   "gemini-3.7-flash-tiered": {
     inputPer1M: 0.75,
     outputPer1M: 3.75,
@@ -1341,14 +1346,16 @@ export const TAGS_CACHE_TTL_MS = 5 * 60 * 1000;
 export const ANTIGRAVITY_VERSION =
   rotatorEnv("ANTIGRAVITY_VERSION") ||
   process.env.PI_AI_ANTIGRAVITY_VERSION ||
-  "2.32.2";
+  "2.34.0";
+export const ANTIGRAVITY_BUILD_CL =
+  rotatorEnv("ANTIGRAVITY_BUILD_CL") || "1026637980";
 const ANTIGRAVITY_OS_TYPE =
   process.platform === "win32" ? "windows" : process.platform;
 const ANTIGRAVITY_ARCH =
   process.arch === "x64" ? "amd64" : process.arch;
 export const DEFAULT_ANTIGRAVITY_USER_AGENT =
   rotatorEnv("ANTIGRAVITY_USER_AGENT") ||
-  `antigravity/hub/${ANTIGRAVITY_VERSION} (aidev_client; os_type=${ANTIGRAVITY_OS_TYPE}; arch=${ANTIGRAVITY_ARCH})`;
+  `antigravity/hub/${ANTIGRAVITY_VERSION} (os_type=${ANTIGRAVITY_OS_TYPE}; arch=${ANTIGRAVITY_ARCH}; aidev_client; cl=${ANTIGRAVITY_BUILD_CL})`;
 export const QUOTA_USER_AGENT =
   rotatorEnv("QUOTA_USER_AGENT") ||
   DEFAULT_ANTIGRAVITY_USER_AGENT;
