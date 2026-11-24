@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- **OpenCode discovery plugin resilience**: Keep `ctx.provider.transform` registered and retry automatically (`retryMs`, default 5s) when the rotator is temporarily unreachable at OpenCode startup instead of giving up permanently, and preserve the last known good catalog whenever a refresh returns an empty list or transient error.
+
 ## [4.4.8] - 2026-11-23
 
 ### Fixed
