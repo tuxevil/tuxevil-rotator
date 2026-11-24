@@ -183,6 +183,21 @@ export function areAccountIdentitiesCompatible(
 const rotatorLogger = logger.child("rotator");
 const IN_CONTAINER = isRunningInContainer();
 
+const PAID_ACCOUNT_TIERS: ReadonlySet<AccountTier> = new Set([
+  "ultra",
+  "pro",
+  "plus",
+  "max",
+  "team",
+]);
+
+function isPaidAccountConfig(config: AccountConfig): boolean {
+  if (config.tier && config.tier !== "unknown") {
+    return PAID_ACCOUNT_TIERS.has(config.tier);
+  }
+  return config.type === "pro";
+}
+
 function currentUtcDay(now = Date.now()): string {
   return new Date(now).toISOString().slice(0, 10);
 }
@@ -4419,7 +4434,7 @@ export class AccountRotator {
         quota: a.quota,
         inFlightRequests: a.inFlightRequests,
         inFlightByModel: a.inFlightByModel,
-        proDetected: a.config.type === "pro",
+        proDetected: isPaidAccountConfig(a.config),
         tier: a.config.tier || "unknown",
         healthScore: a.healthScore,
         tokenBucket,
@@ -4675,7 +4690,7 @@ export class AccountRotator {
     ).length;
 
     return {
-      wasProAccount: account.config.type === "pro",
+      wasProAccount: isPaidAccountConfig(account.config),
       accountQuotaPercent: quota,
       timerType,
       poolSize: this.accounts.length,

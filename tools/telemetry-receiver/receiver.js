@@ -299,9 +299,9 @@ function getActiveNotifications(clientVersion) {
 const ALLOWED_EVENTS = new Set(["boot", "heartbeat", "shutdown", "flag"]);
 const ALLOWED_FEATURE_KEYS = new Set(["dashboard", "proAdvisor", "freshWindowToggle", "hostedLogin"]);
 const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
-const MAX_BODY_BYTES = 4096;
+const MAX_BODY_BYTES = 32_768;
 const MAX_ADMIN_BODY_BYTES = 16_384;
-const MAX_MODELS = 20;
+const MAX_MODELS = 200;
 const MAX_STRING_LEN = 128;
 const MAX_REQUESTS_CAP = 1_000_000_000;
 const MAX_TOKENS_CAP = 10_000_000_000_000;
@@ -341,7 +341,7 @@ function isHeartbeatPayload(data) {
 	if (typeof data.arch !== "string" || data.arch.length > MAX_STRING_LEN) return false;
 	if (!isFiniteInRange(data.accountCount, 0, 1000)) return false;
 	if (!Array.isArray(data.modelsUsed) || data.modelsUsed.length > MAX_MODELS) return false;
-	if (!data.modelsUsed.every((m) => typeof m === "string" && m.length > 0 && m.length <= 64)) return false;
+	if (!data.modelsUsed.every((m) => typeof m === "string" && m.length > 0 && m.length <= MAX_STRING_LEN)) return false;
 	if (!isFiniteInRange(data.totalRequests, 0, MAX_REQUESTS_CAP)) return false;
 	if (!isFiniteInRange(data.uptimeSeconds, 0, MAX_UPTIME_CAP)) return false;
 	if (typeof data.routingHealthState !== "string" || data.routingHealthState.length > 30) return false;
@@ -443,7 +443,7 @@ function storeEvent(payload) {
 		receivedAt: new Date().toISOString(),
 		accountCount: safeNonNegInt(payload.accountCount, 1000),
 		modelsUsed: Array.isArray(payload.modelsUsed)
-			? payload.modelsUsed.filter((m) => typeof m === "string" && m.length > 0 && m.length <= 64).slice(0, MAX_MODELS)
+			? payload.modelsUsed.filter((m) => typeof m === "string" && m.length > 0 && m.length <= MAX_STRING_LEN).slice(0, MAX_MODELS)
 			: [],
 		totalRequests: safeNonNegInt(payload.totalRequests, MAX_REQUESTS_CAP),
 		uptimeSeconds: safeNonNegInt(payload.uptimeSeconds, MAX_UPTIME_CAP),
@@ -508,7 +508,7 @@ function sanitizeTokensByModel(raw) {
 	let count = 0;
 	for (const [model, data] of Object.entries(raw)) {
 		if (count >= MAX_MODELS) break;
-		if (typeof model !== "string" || model.length === 0 || model.length > 64 || FORBIDDEN_KEYS.has(model)) continue;
+		if (typeof model !== "string" || model.length === 0 || model.length > MAX_STRING_LEN || FORBIDDEN_KEYS.has(model)) continue;
 		if (typeof data !== "object" || data === null) continue;
 		clean[model] = {
 			input: safeNonNegInt(data.input, MAX_TOKENS_CAP),

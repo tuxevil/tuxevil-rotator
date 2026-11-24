@@ -599,6 +599,49 @@ describe("telemetry receiver", () => {
 		assert.equal(stats.os.undefined, undefined);
 		assert.equal(row.savingsUsd, stats.savings.totalUsd);
 	});
+
+	it("accepts multi-provider heartbeats with >20 models and >4KB payloads without truncating tokensByModel", async () => {
+		const iid = "large-catalog-install";
+		const modelsUsed = Array.from({ length: 45 }, (_, i) => `provider-catalog:model-variant-${String(i + 1).padStart(2, "0")}`);
+		const tokensByModel: Record<string, { input: number; output: number; requests: number }> = {};
+		for (const m of modelsUsed) {
+			tokensByModel[m] = { input: 100_000, output: 10_000, requests: 2 };
+		}
+		const body = JSON.stringify({
+			event: "heartbeat",
+			installId: iid,
+			version: "4.4.8",
+			nodeVersion: "v24.0.0",
+			os: "linux",
+			arch: "x64",
+			ts: "2026-11-23T13:00:00.000Z",
+			accountCount: 48,
+			proCount: 10,
+			freeCount: 38,
+			modelsUsed,
+			totalRequests: 5000,
+			uptimeSeconds: 7200,
+			routingHealthState: "healthy",
+			tokensByModel,
+		});
+		assert.ok(Buffer.byteLength(body) > 4096, "payload should exceed legacy 4KB body cap");
+
+		const res = await fetch(`http://127.0.0.1:${port}/v1/events`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", "X-Forwarded-For": "203.0.113.45" },
+			body,
+		});
+		assert.equal(res.status, 202);
+
+		const listRes = await fetch(`http://127.0.0.1:${port}/v1/installs?installId=${iid}`, {
+			headers: { Authorization: "Bearer secret-token" },
+		});
+		assert.equal(listRes.status, 200);
+		const rows = (await listRes.json()) as any[];
+		assert.equal(rows.length, 1);
+		assert.equal(Object.keys(rows[0].tokensByModel).length, 45);
+		assert.equal(rows[0].proCount, 10);
+	});
 });
 
 describe("telemetry receiver security hardening", () => {

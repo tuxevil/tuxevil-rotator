@@ -2083,4 +2083,38 @@ describe("v2 routing and status", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it("derives proDetected and wasProAccount from paid account tiers as well as legacy type", () => {
+    const config = makeConfig();
+    config.accounts = [
+      { email: "pro-tier@example.com", refreshToken: "rt1", projectId: "p1", tier: "pro" },
+      { email: "ultra-tier@example.com", refreshToken: "rt2", projectId: "p2", tier: "ultra" },
+      { email: "plus-tier@example.com", refreshToken: "rt3", projectId: "p3", tier: "plus" },
+      { email: "free-override@example.com", refreshToken: "rt4", projectId: "p4", type: "pro", tier: "free" },
+      { email: "legacy-pro@example.com", refreshToken: "rt5", projectId: "p5", type: "pro" },
+      { email: "unknown-tier@example.com", refreshToken: "rt6", projectId: "p6", tier: "unknown" },
+    ];
+    const rotator = new AccountRotator(config);
+    try {
+      const status = rotator.getStatus();
+      const byEmail = new Map(status.accounts.map((a) => [a.email, a]));
+
+      assert.equal(byEmail.get("pro-tier@example.com")?.proDetected, true);
+      assert.equal(byEmail.get("ultra-tier@example.com")?.proDetected, true);
+      assert.equal(byEmail.get("plus-tier@example.com")?.proDetected, true);
+      assert.equal(byEmail.get("free-override@example.com")?.proDetected, false);
+      assert.equal(byEmail.get("legacy-pro@example.com")?.proDetected, true);
+      assert.equal(byEmail.get("unknown-tier@example.com")?.proDetected, false);
+
+      const runtimes = (rotator as unknown as { accounts: Parameters<typeof rotator.getFlagContext>[0][] }).accounts;
+      const proCtx = rotator.getFlagContext(runtimes[0], "gemini");
+      const freeCtx = rotator.getFlagContext(runtimes[3], "gemini");
+      const legacyCtx = rotator.getFlagContext(runtimes[4], "gemini");
+      assert.equal(proCtx.wasProAccount, true);
+      assert.equal(freeCtx.wasProAccount, false);
+      assert.equal(legacyCtx.wasProAccount, true);
+    } finally {
+      rotator.stopQuotaPolling();
+    }
+  });
 });
