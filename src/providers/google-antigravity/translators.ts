@@ -1,11 +1,17 @@
-import { randomUUID } from "node:crypto";
-import { rotatorEnv } from "../../env.js";
 import { logger, redactSensitive } from "../../logger.js";
 import {
-  ANTIGRAVITY_IDENTITY_PROMPT,
   applyModelAlias,
   getEffortRoutingRule,
 } from "../../types.js";
+import {
+  applyAntigravityTwinPayload,
+  composeAntigravitySystemInstruction,
+  computeAntigravityRequestId,
+  computeAntigravitySessionId,
+  getAntigravitySystemPromptMode,
+  wrapAntigravityUserRequest,
+  type AntigravitySystemPromptMode,
+} from "./twin-payload.js";
 import {
   CLAUDE_THINKING_BUDGET_EFFORTS,
   CLAUDE_THINKING_DISABLED_EFFORT,
@@ -1456,26 +1462,6 @@ export function openAIToAntigravityBody(
     ...(thinkingConfigObj ? { thinkingConfig: thinkingConfigObj } : {}),
   };
 
-  const promptMode = getAntigravitySystemPromptMode();
-  if (promptMode === "twin") {
-    const searchEnd =
-      appendedContinueTurn && contents.length > 1
-        ? contents.length - 2
-        : contents.length - 1;
-    for (let idx = searchEnd; idx >= 0; idx--) {
-      const turn = contents[idx];
-      if (turn?.role === "user" && Array.isArray(turn.parts)) {
-        for (const part of turn.parts) {
-          if (isRecord(part) && typeof part.text === "string" && part.text.trim()) {
-            part.text = wrapAntigravityUserRequest(part.text);
-            idx = -1;
-            break;
-          }
-        }
-      }
-    }
-  }
-
   const sessionSeed =
     (typeof input.user === "string" && input.user.trim()) ||
     JSON.stringify(contents[0]?.parts ?? "antigravity");
@@ -1487,14 +1473,10 @@ export function openAIToAntigravityBody(
 
   // Antigravity ALWAYS carries system instructions in request.systemInstruction
   // (never rewritten into fake user/model turns in contents).
-  const systemText = composeAntigravitySystemInstruction(
-    systemParts.join("\n\n"),
-    promptMode,
-  );
-  if (systemText) {
+  const rawSystemText = systemParts.join("\n\n").trim();
+  if (rawSystemText) {
     request.systemInstruction = {
-      role: "system",
-      parts: [{ text: systemText }],
+      parts: [{ text: rawSystemText }],
     };
   }
 
@@ -1502,96 +1484,31 @@ export function openAIToAntigravityBody(
   if (geminiToolConfig) request.toolConfig = geminiToolConfig;
 
   const mappedModel = applyModelAlias(effortTarget);
-  const requestId = computeAntigravityRequestId("agent");
-  const userPromptId = randomUUID();
 
-  return {
-    project: "compat-placeholder",
-    requestId,
-    userPromptId,
-    model: mappedModel,
-    displayModel: requestedModel,
-    requestedModel,
-    // The catalog id after effort routing, before upstream aliasing, so the
-    // Models page switches can be checked against it.
-    catalogModel: effortTarget,
-    userAgent: "antigravity",
-    requestType: "agent",
-    request,
-  };
+  return applyAntigravityTwinPayload(
+    {
+      project: "compat-placeholder",
+      model: mappedModel,
+      displayModel: requestedModel,
+      requestedModel,
+      // The catalog id after effort routing, before upstream aliasing, so the
+      // Models page switches can be checked against it.
+      catalogModel: effortTarget,
+      request,
+    },
+    { skipTrailingContinueWrap: appendedContinueTurn },
+  );
 }
 
-export type AntigravitySystemPromptMode =
-  | "default-identity"
-  | "prepend"
-  | "twin"
-  | "passthrough";
-
-export function getAntigravitySystemPromptMode(): AntigravitySystemPromptMode {
-  const raw = (rotatorEnv("ANTIGRAVITY_SYSTEM_PROMPT_MODE") || "")
-    .trim()
-    .toLowerCase();
-  if (
-    raw === "default-identity" ||
-    raw === "prepend" ||
-    raw === "passthrough" ||
-    raw === "twin"
-  ) {
-    return raw;
-  }
-  return "twin";
-}
-
-/**
- * Matches Antigravity ccpa.HashSessionID (64-bit FNV-1a signed decimal string).
- */
-export function computeAntigravitySessionId(seed: string): string {
-  const FNV_OFFSET = 0xcbf29ce484222325n;
-  const FNV_PRIME = 0x100000001b3n;
-  const MASK_64 = 0xffffffffffffffffn;
-  let hash = FNV_OFFSET;
-  const bytes = Buffer.from(seed, "utf8");
-  for (const byte of bytes) {
-    hash ^= BigInt(byte);
-    hash = (hash * FNV_PRIME) & MASK_64;
-  }
-  return BigInt.asIntN(64, hash).toString(10);
-}
-
-/**
- * Matches Antigravity ccpa.ComputeRequestID (`prefix/uuid`).
- */
-export function computeAntigravityRequestId(prefix = "agent"): string {
-  const cleanPrefix = prefix.trim() || "unknown";
-  return `${cleanPrefix}/${randomUUID()}`;
-}
-
-/**
- * Wraps a user prompt with Antigravity's <USER_REQUEST> tag convention.
- */
-export function wrapAntigravityUserRequest(text: string): string {
-  if (!text || text.includes("<USER_REQUEST>")) return text;
-  return `<USER_REQUEST>\n${text}\n</USER_REQUEST>`;
-}
-
-export function composeAntigravitySystemInstruction(
-  callerSystemText: string,
-  mode: AntigravitySystemPromptMode = getAntigravitySystemPromptMode(),
-): string | null {
-  const trimmed = callerSystemText.trim();
-  if (mode === "passthrough") {
-    return trimmed || null;
-  }
-  if (!trimmed) {
-    return ANTIGRAVITY_IDENTITY_PROMPT;
-  }
-  if (mode === "prepend" || mode === "twin") {
-    return trimmed.includes(ANTIGRAVITY_IDENTITY_PROMPT)
-      ? trimmed
-      : `${ANTIGRAVITY_IDENTITY_PROMPT}\n\n${trimmed}`;
-  }
-  return trimmed;
-}
+export {
+  applyAntigravityTwinPayload,
+  composeAntigravitySystemInstruction,
+  computeAntigravityRequestId,
+  computeAntigravitySessionId,
+  getAntigravitySystemPromptMode,
+  wrapAntigravityUserRequest,
+  type AntigravitySystemPromptMode,
+};
 
 export function convertAnthropicToolsToOpenAI(
   tools: unknown,

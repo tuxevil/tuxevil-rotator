@@ -118,7 +118,10 @@ export async function exchangeAuthorizationCode(code: string, verifier: string):
 	const oauth = getOAuthClientConfig();
 	const tokenResponse = await fetchWithRetry(TOKEN_URL, {
 		method: "POST",
-		headers: { "Content-Type": "application/x-www-form-urlencoded" },
+		headers: {
+			"Content-Type": "application/x-www-form-urlencoded",
+			"User-Agent": REQUEST_USER_AGENT,
+		},
 		body: new URLSearchParams({
 			client_id: oauth.clientId,
 			client_secret: oauth.clientSecret,
@@ -302,7 +305,10 @@ export async function discoverProject(accessToken: string): Promise<ProjectDisco
 export async function getUserEmail(accessToken: string): Promise<string | undefined> {
 	try {
 		const response = await fetchWithRetry("https://www.googleapis.com/oauth2/v1/userinfo?alt=json", {
-			headers: { Authorization: `Bearer ${accessToken}` },
+			headers: {
+				Authorization: `Bearer ${accessToken}`,
+				"User-Agent": REQUEST_USER_AGENT,
+			},
 		});
 		if (response.ok) {
 			const data = (await response.json()) as { email?: string };

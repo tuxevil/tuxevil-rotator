@@ -34,12 +34,14 @@ import {
 import {
   TOKEN_URL,
   KICKSTART_MODEL_FOR_QUOTA_POOL,
+  REQUEST_USER_AGENT,
   applyModelAlias,
   resolveQuotaModelKey,
 } from "../../types.js";
 import type { AccountRuntime } from "../../types.js";
 import { fetchWithRetry } from "../../fetch-with-retry.js";
 import { logger } from "../../logger.js";
+import { DEFAULT_PROVIDER, getProviderProjectId } from "../credential-helpers.js";
 import { getAccountProxyDispatcher } from "../proxy-dispatcher.js";
 
 const providerLog = logger.child("provider/google");
@@ -66,7 +68,10 @@ async function ensureGoogleToken(account: AccountRuntime): Promise<void> {
   const oauth = getOAuthClientConfig();
   const response = await fetchWithRetry(TOKEN_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": REQUEST_USER_AGENT,
+    },
       body: new URLSearchParams({
       client_id: oauth.clientId,
       client_secret: oauth.clientSecret,
@@ -167,6 +172,27 @@ export const googleAntigravityAdapter: ProviderAdapter = {
     );
   },
   createStreamAccumulator: createGoogleStreamAccumulator,
+
+  async forwardKickstartRequest(
+    account: AccountRuntime,
+    model: string,
+    signal?: AbortSignal,
+  ) {
+    return forwardRequest(
+      account,
+      {
+        project: getProviderProjectId(account.config, DEFAULT_PROVIDER),
+        model,
+        request: {
+          contents: [{ role: "user", parts: [{ text: "." }] }],
+          generationConfig: { maxOutputTokens: 1 },
+        },
+      },
+      {},
+      signal,
+      { apiRetry: false },
+    );
+  },
 
   getKickstartModelForPool(quotaModelKey: string): string | undefined {
     return (

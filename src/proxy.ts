@@ -361,6 +361,8 @@ export interface RequestBody {
   selectionMode?: "typesafe" | "deterministic" | "shadow" | "disabled";
   selectionConfidence?: number;
   selectionReason?: string;
+  /** Internal flag: skip adding coding-assistant system prompt or <USER_REQUEST> wrapping (e.g. dedicated audio transcription). */
+  preservePrompt?: boolean;
   [key: string]: unknown;
 }
 

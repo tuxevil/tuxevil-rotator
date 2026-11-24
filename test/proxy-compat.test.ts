@@ -874,6 +874,13 @@ describe("effort-based routing endpoint e2e", () => {
 			assert.equal(upstreamCaptures.length, 1);
 			const upstreamBody = JSON.parse(upstreamCaptures[0].body);
 			assert.equal(upstreamBody.model, "gemini-3.8-flash-medium");
+			assert.match(String(upstreamBody.requestId), /^agent\/[0-9a-f-]{36}$/);
+			assert.match(String(upstreamBody.userPromptId), /^[0-9a-f-]{36}$/);
+			assert.equal(upstreamBody.userAgent, "antigravity");
+			assert.equal(upstreamBody.requestType, "agent");
+			assert.match(String(upstreamBody.request?.sessionId), /^-?\d+$/);
+			assert.equal("role" in (upstreamBody.request?.systemInstruction ?? {}), false);
+			assert.equal(upstreamBody.request?.contents?.[0]?.parts?.[0]?.text, "<USER_REQUEST>\nping\n</USER_REQUEST>");
 		} finally {
 			proxy.closeAllConnections?.();
 			await closeServer(proxy);
@@ -1318,6 +1325,13 @@ describe("effort-based routing endpoint e2e", () => {
 			assert.equal(upstreamCaptures.length, 1);
 			const upstreamBody = JSON.parse(upstreamCaptures[0].body);
 			assert.equal(upstreamBody.model, "gemini-3.8-flash-medium");
+			assert.match(String(upstreamBody.requestId), /^agent\/[0-9a-f-]{36}$/);
+			assert.match(String(upstreamBody.userPromptId), /^[0-9a-f-]{36}$/);
+			assert.equal(upstreamBody.userAgent, "antigravity");
+			assert.equal(upstreamBody.requestType, "agent");
+			assert.match(String(upstreamBody.request?.sessionId), /^-?\d+$/);
+			assert.equal("role" in (upstreamBody.request?.systemInstruction ?? {}), false);
+			assert.equal(upstreamBody.request?.contents?.[0]?.parts?.[0]?.text, "<USER_REQUEST>\nping\n</USER_REQUEST>");
 		} finally {
 			proxy.closeAllConnections?.();
 			await closeServer(proxy);

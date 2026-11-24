@@ -278,6 +278,7 @@ export async function transcribeAudioWithRotator(
     model: targetModel,
     catalogModel: options.catalogModel,
     project: "",
+    preservePrompt: true,
     request: {
       contents: [
         {

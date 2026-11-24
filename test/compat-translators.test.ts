@@ -49,7 +49,6 @@ describe("translators component", () => {
 		assert.equal(body.userAgent, "antigravity");
 		assert.equal(body.requestType, "agent");
 		assert.deepEqual(body.request.systemInstruction, {
-			role: "system",
 			parts: [{ text: `${ANTIGRAVITY_IDENTITY_PROMPT}\n\nbe terse` }],
 		});
 		assert.deepEqual(body.request.contents, [
@@ -67,7 +66,6 @@ describe("translators component", () => {
 		}) as AntigravityBodyWithRequest;
 		assert.equal(body.model, "claude-sonnet-4-6");
 		assert.deepEqual(body.request.systemInstruction, {
-			role: "system",
 			parts: [{ text: `${ANTIGRAVITY_IDENTITY_PROMPT}\n\nbe polite` }],
 		});
 		assert.deepEqual(body.request.contents, [
