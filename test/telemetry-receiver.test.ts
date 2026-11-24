@@ -111,6 +111,15 @@ describe("telemetry receiver", () => {
 			method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(legacy),
 		});
 		assert.equal(legacyRes.status, 202);
+
+		// Identical repeating loop echo within the 24h sliding window is accepted (202) and deduplicated
+		const echoRes = await fetch(`http://127.0.0.1:${port}/v1/events`, {
+			method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+		});
+		assert.equal(echoRes.status, 202);
+		const echoBody = (await echoRes.json()) as any;
+		assert.equal(echoBody.accepted, true);
+		assert.equal(echoBody.deduplicated, true);
 	});
 
 	it("does not expose historical notifications without the admin token", async () => {

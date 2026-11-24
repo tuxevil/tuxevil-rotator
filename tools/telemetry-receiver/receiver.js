@@ -42,6 +42,7 @@ const STATS_TOKEN = process.env.STATS_TOKEN || "";
 const TRUSTED_PROXIES_RAW = (process.env.TRUSTED_PROXIES || "loopback,private").trim();
 const REQUIRE_HTTPS_ADMIN = process.env.REQUIRE_HTTPS_ADMIN === "1" || process.env.REQUIRE_HTTPS_ADMIN === "true";
 const MAX_DAILY_FILE_BYTES = parseInt(process.env.MAX_DAILY_FILE_BYTES || String(50 * 1024 * 1024), 10);
+const FLAG_DEDUP_WINDOW_MS = parseInt(process.env.FLAG_DEDUP_WINDOW_MS || String(24 * 60 * 60 * 1000), 10);
 const MAX_NOTIFICATIONS = 200;
 
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
@@ -2032,6 +2033,60 @@ function isPublicReadRateLimited(ip) {
 	return checkBucketLimit(publicReadRateMap, ip, PUBLIC_READ_LIMIT_MAX);
 }
 
+const recentFlagMap = new Map(); // dedupKey -> lastSeenMs (sliding window)
+
+function buildFlagDedupKey(installId, flag) {
+	const patterns = Array.isArray(flag?.flagPatternsMatched)
+		? [...flag.flagPatternsMatched].sort().join(",")
+		: "";
+	return [
+		installId || "",
+		safeNonNegInt(flag?.flagHttpStatus, 599),
+		typeof flag?.flagReasonCode === "string" ? flag.flagReasonCode : "",
+		typeof flag?.model === "string" ? flag.model.slice(0, 64) : "unknown",
+		patterns,
+		flag?.wasProAccount ? "1" : "0",
+	].join("\0");
+}
+
+function isDuplicateFlagLoop(installId, flag) {
+	if (FLAG_DEDUP_WINDOW_MS <= 0) return false;
+	const key = buildFlagDedupKey(installId, flag);
+	const now = Date.now();
+	const prev = recentFlagMap.get(key);
+	if (prev !== undefined && now - prev < FLAG_DEDUP_WINDOW_MS) {
+		recentFlagMap.set(key, now); // sliding window suppresses unbroken polling loops
+		return true;
+	}
+	enforceMapCap(recentFlagMap, MAX_RATE_LIMIT_ENTRIES);
+	recentFlagMap.set(key, now);
+	return false;
+}
+
+function warmFlagDedupCache() {
+	if (FLAG_DEDUP_WINDOW_MS <= 0) return;
+	try {
+		const cutoff = Date.now() - FLAG_DEDUP_WINDOW_MS;
+		const flagFiles = readdirSync(DATA_DIR).filter((f) => f.endsWith("-flags.jsonl")).sort().slice(-2);
+		for (const file of flagFiles) {
+			const lines = readFileSync(join(DATA_DIR, file), "utf-8").split("\n").filter(Boolean);
+			for (const line of lines) {
+				try {
+					const fl = JSON.parse(line);
+					const ts = Date.parse(fl.receivedAt || fl.ts || "");
+					if (!Number.isFinite(ts) || ts < cutoff) continue;
+					const key = buildFlagDedupKey(fl.installId, fl);
+					const prev = recentFlagMap.get(key) ?? 0;
+					if (ts > prev) {
+						enforceMapCap(recentFlagMap, MAX_RATE_LIMIT_ENTRIES);
+						recentFlagMap.set(key, ts);
+					}
+				} catch { /* skip */ }
+			}
+		}
+	} catch { /* non-fatal */ }
+}
+
 // Cleanup stale entries every 5 minutes
 setInterval(() => {
 	const now = Date.now();
@@ -2043,6 +2098,9 @@ setInterval(() => {
 	}
 	for (const [ip, entry] of authFailMap) {
 		if (now - entry.windowStart > AUTH_FAIL_WINDOW_MS * 2) authFailMap.delete(ip);
+	}
+	for (const [key, lastMs] of recentFlagMap) {
+		if (now - lastMs > FLAG_DEDUP_WINDOW_MS) recentFlagMap.delete(key);
 	}
 }, 5 * 60_000).unref();
 
@@ -4472,6 +4530,12 @@ const server = createServer(async (req, res) => {
 				return;
 			}
 
+			if (data.event === "flag" && isDuplicateFlagLoop(data.installId, data.flag)) {
+				res.writeHead(202, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ accepted: true, deduplicated: true }));
+				return;
+			}
+
 			storeEvent(data);
 			res.writeHead(202, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ accepted: true }));
@@ -4502,6 +4566,7 @@ server.requestTimeout = 10_000;
 server.keepAliveTimeout = 5_000;
 server.maxHeadersCount = 50;
 
+warmFlagDedupCache();
 server.listen(PORT, "0.0.0.0", () => {
 	console.log(`Telemetry receiver listening on 0.0.0.0:${PORT}`);
 	console.log(`Data dir: ${DATA_DIR}`);
