@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## [4.4.8] - 2026-11-23
+
+### Fixed
+
+- **Invalid-provider polling & kickstart flag loop**: Stop `pollAccountQuotaOnce()`, `kickstartAllFreshTimers()`, and `kickstartTimerForAccount()` from repeatedly hitting providers already marked invalid or disabled on an account, emit `reportQuotaPollFlag()` only on valid-to-invalid transitions, and clear `invalidProviders` across all providers when updated credentials are saved via `addOrUpdateAccount()`.
+- **Telemetry receiver aggregation & live flag deduplication**: Fix double-counting of `flags.totalFlags` / `daily[].flags` (using `-flags.jsonl` as the canonical source), compute `totalRequestsAcrossAll` by summing each unique install's cumulative maximum instead of summing repeated hourly heartbeats, and deduplicate repeating flag loops within a 24-hour sliding window (`FLAG_DEDUP_WINDOW_MS`) with startup warm-up.
+
+### Changed
+
+- **Telemetry receiver UX**: Redesign `/dashboard`, `/notifications`, and `/stats` in a unified cyberpunk/retro-console UI with tabbed views (`Overview`, `Flags & Forensics`, `Models & USD`, `Installs`), interactive incident/node inspector drawers, concentration alerts, semver notification targeting simulator, quick templates/expiry presets, shared token SSO, keyboard shortcuts, and enriched `/v1/stats` & `/v1/public-stats` payloads.
+
+### Security
+
+- **Telemetry receiver hardening**: Fix unauthenticated Stored XSS in `/dashboard` (`proCount`/`freeCount`/`flaggedCount`/`disabledCount` validation + escaping), prevent `NaN` savings poisoning via prototype keys in `MODEL_PRICING` and `featuresCount`, enforce constant-time `timingSafeEqual` token comparison with `401` brute-force lockout, restrict `X-Forwarded-For` parsing to `TRUSTED_PROXIES` with bounded rate-limit maps and daily JSONL size caps, add CSP/XFO/nosniff/SRI headers and scoped CORS, add HTTP/body anti-Slowloris timeouts, enforce absolute `http(s)` notification URLs, write `notifications.json` atomically, and add incremental JSONL file caching.
+
 ## [4.4.7] - 2026-11-23
 
 ### Changed
