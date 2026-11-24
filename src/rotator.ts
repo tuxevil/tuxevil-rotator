@@ -1091,16 +1091,23 @@ export class AccountRotator {
         setProviderCooldown: (acc, providerId, durationMs) =>
           this.setProviderCooldown(acc, providerId, durationMs),
       };
-      // Parent-account model: poll quota for every provider credential
+      // Parent-account model: poll quota for every active, valid provider credential
       // the account holds (Google OAuth pools + Ollama usage pools).
       const providerIds = new Set<string>(
         (account.config.credentials ?? []).map((c) => c.provider),
       );
       if (providerIds.size === 0) providerIds.add(primaryProviderId(account.config));
       for (const pid of providerIds) {
+        if (account.invalidProviders?.[pid]) continue;
+        if (this.isProviderOffForAccount(account, pid)) continue;
+        const providerQuotaCtx: QuotaFetchContext = {
+          ...quotaCtx,
+          reportQuotaPollFlag: (acc, statusCode, errorText) =>
+            this.reportQuotaPollFlag(acc, statusCode, errorText, "quota-poll", pid),
+        };
         try {
           await this.ensureValidTokenForProvider(account, pid);
-          await getProviderAdapter(pid).fetchQuota(account, quotaCtx);
+          await getProviderAdapter(pid).fetchQuota(account, providerQuotaCtx);
           if (pid === DEFAULT_PROVIDER) {
             this.migratePersistedQuotaStateKeys();
           }
@@ -1233,7 +1240,11 @@ export class AccountRotator {
     statusCode: number,
     errorText: string,
     model = "quota-poll",
+    providerId?: string,
   ): void {
+    // Only emit flag telemetry on the transition into an invalid state; never
+    // re-emit on repeated polls/kickstarts for an already-invalidated provider.
+    if (providerId && account.invalidProviders?.[providerId]) return;
     const modelKey = model === "quota-poll" ? account.quota[0]?.modelKey ?? model : model;
     const ctx = this.getFlagContext(account, modelKey);
     const lower = errorText.toLowerCase();
@@ -4696,15 +4707,20 @@ export class AccountRotator {
       existing.consecutiveErrors = 0;
       existing.accessToken = null;
       existing.tokenExpires = 0;
-      if (receivesCodexCredential) {
+      const updatedProviders = new Set<string>(
+        (accountConfig.credentials ?? []).map((credential) => credential.provider),
+      );
+      if (accountConfig.refreshToken) updatedProviders.add(DEFAULT_PROVIDER);
+      if (receivesCodexCredential) updatedProviders.add("openai-codex");
+      for (const pid of updatedProviders) {
         if (existing.invalidProviders) {
-          delete existing.invalidProviders["openai-codex"];
+          delete existing.invalidProviders[pid];
           if (Object.keys(existing.invalidProviders).length === 0) {
             delete existing.invalidProviders;
           }
         }
         if (existing.providerTokens) {
-          delete existing.providerTokens["openai-codex"];
+          delete existing.providerTokens[pid];
           if (Object.keys(existing.providerTokens).length === 0) {
             delete existing.providerTokens;
           }
@@ -5089,6 +5105,14 @@ export class AccountRotator {
         error: "provider turned off on the Models page",
       };
     }
+    if (account.invalidProviders?.[target.providerId]) {
+      return {
+        ok: false,
+        status: 409,
+        upstreamModel: target.upstreamModel,
+        error: `${target.providerId} credential requires re-authentication`,
+      };
+    }
     if (isProviderModelOff(this, target.providerId, target.upstreamModel)) {
       return {
         ok: false,
@@ -5278,7 +5302,7 @@ export class AccountRotator {
         // Provider-scoped invalidation: even with account-enforcement language
         // in the response, only the specific provider credential is invalidated.
         // Sibling providers on the same account remain routable.
-        this.reportQuotaPollFlag(account, response.status, errorText, upstreamModel);
+        this.reportQuotaPollFlag(account, response.status, errorText, upstreamModel, target.providerId);
         this.markProviderInvalid(account, target.providerId, failure.description);
       } else {
         account.lastError = failure.description;
@@ -5333,11 +5357,14 @@ export class AccountRotator {
       return { ok: false, error: "account not found", results: [] };
     }
 
-    const idlePools = account.quota.filter(
-      (q) =>
-        this.isQuotaIdleForKickstart(q) &&
-        this.getKickstartTarget(account, q.modelKey) !== null,
-    );
+    const idlePools = account.quota.filter((q) => {
+      if (!this.isQuotaIdleForKickstart(q)) return false;
+      const target = this.getKickstartTarget(account, q.modelKey);
+      if (!target) return false;
+      if (account.invalidProviders?.[target.providerId]) return false;
+      if (this.isProviderOffForAccount(account, target.providerId)) return false;
+      return true;
+    });
     if (idlePools.length === 0) {
       return { ok: true, results: [] };
     }

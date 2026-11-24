@@ -1973,4 +1973,114 @@ describe("v2 routing and status", () => {
       "zen-secret",
     );
   });
+
+  it("skips invalidated providers during quota polling and auto-warmup kickstart until re-authenticated", async () => {
+    const config = makeConfig();
+    config.accounts = [
+      {
+        email: "loop-guard@example.com",
+        refreshToken: "google-refresh",
+        projectId: "proj-loop",
+        credentials: [
+          {
+            provider: "google-antigravity",
+            refreshToken: "google-refresh",
+            projectId: "proj-loop",
+          },
+          { provider: "ollama", apiKey: "ollama-bad-key" },
+        ],
+      },
+    ];
+    const rotator = new AccountRotator(config);
+    rotator.stopQuotaPolling();
+    const account = rotator["accounts"][0];
+    account.accessToken = "valid-google-token";
+    account.tokenExpires = Date.now() + 60 * 60_000;
+    account.providerTokens = {
+      "google-antigravity": { accessToken: "valid-google-token", tokenExpires: Date.now() + 60 * 60_000 },
+    };
+    account.quota = [
+      {
+        modelKey: "claude",
+        displayName: "Claude",
+        providerId: "google-antigravity",
+        percentRemaining: 100,
+        resetTime: null,
+        timerType: "fresh",
+      },
+    ];
+
+    const calls: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      calls.push(url);
+      if (url.includes("ollama.com")) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      if (url.includes("generateContent") || url.includes("streamGenerateContent")) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              code: 403,
+              status: "PERMISSION_DENIED",
+              message: "Verify your account to continue.",
+              details: [{ reason: "VALIDATION_REQUIRED" }],
+            },
+          }),
+          { status: 403, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ models: {} }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      // First quota poll hits Ollama 401 -> marks ollama invalid
+      await rotator.pollAccountQuota(account);
+      assert.ok(account.invalidProviders?.ollama, "ollama should be marked invalid after 401");
+      const ollamaCallsAfterFirstPoll = calls.filter((u) => u.includes("ollama.com")).length;
+      assert.equal(ollamaCallsAfterFirstPoll, 1);
+
+      // Second quota poll must NOT hit Ollama again
+      await rotator.pollAccountQuota(account);
+      assert.equal(
+        calls.filter((u) => u.includes("ollama.com")).length,
+        1,
+        "invalidated ollama credential must not be re-polled every cycle",
+      );
+
+      // First kickstart hits Google 403 VALIDATION_REQUIRED -> marks google-antigravity invalid
+      const ks1 = await rotator.kickstartAllFreshTimers(account.config.email);
+      assert.equal(ks1.results.length, 1);
+      assert.equal(ks1.results[0].status, 403);
+      assert.ok(
+        account.invalidProviders?.["google-antigravity"],
+        "google-antigravity should be marked invalid after 403 enforcement",
+      );
+
+      // Second kickstartAllFreshTimers and direct kickstartTimerForAccount must skip without upstream calls
+      const callsBeforeSecondKickstart = calls.length;
+      const ks2 = await rotator.kickstartAllFreshTimers(account.config.email);
+      assert.equal(ks2.results.length, 0, "invalidated provider pools must be skipped by kickstartAllFreshTimers");
+      const ksDirect = await rotator.kickstartTimerForAccount(account.config.email, "claude", false);
+      assert.equal(ksDirect.ok, false);
+      assert.equal(ksDirect.status, 409);
+      assert.equal(calls.length, callsBeforeSecondKickstart, "no upstream kickstart call when provider is invalid");
+
+      // Re-authenticating via addOrUpdateAccount clears invalidProviders for the updated provider
+      await rotator.addOrUpdateAccount({
+        email: account.config.email,
+        refreshToken: "new-google-refresh",
+        projectId: "proj-loop",
+        credentials: [{ provider: "ollama", apiKey: "ollama-new-key" }],
+      });
+      assert.equal(account.invalidProviders?.ollama, undefined);
+      assert.equal(account.invalidProviders?.["google-antigravity"], undefined);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

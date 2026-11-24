@@ -867,18 +867,18 @@ function computeStats(filters = {}) {
 	const modelCounts = Object.create(null);
 	const healthCounts = Object.create(null);
 	let totalAccounts = 0;
-	let totalRequests = 0;
+	const maxRequestsByInstall = Object.create(null); // installId -> max cumulative totalRequests
 	let featuresCount = { dashboard: 0, proAdvisor: 0, freshWindowToggle: 0, hostedLogin: 0 };
 
 	// tokensByModel is CUMULATIVE per install (each heartbeat sends total-since-boot).
 	// To avoid multi-counting, track the LATEST snapshot per installId and sum those.
 	const latestTokenSnapshotByInstall = Object.create(null); // installId → { ts, tokensByModel }
 	const latestEventByInstall = Object.create(null); // installId → ev
-	const dailyMap = Object.create(null); // YYYY-MM-DD → { date, events, installs: Set, boots, flags }
+	const dailyMap = Object.create(null); // YYYY-MM-DD → { date, events, installs: Set, boots, mainFlags, detailFlags }
 
 	function ensureDay(date) {
 		if (!dailyMap[date]) {
-			dailyMap[date] = { date, events: 0, installs: new Set(), boots: 0, flags: 0 };
+			dailyMap[date] = { date, events: 0, installs: new Set(), boots: 0, mainFlags: 0, detailFlags: 0 };
 		}
 		return dailyMap[date];
 	}
@@ -892,14 +892,17 @@ function computeStats(filters = {}) {
 		osCounts[ev.os] = (osCounts[ev.os] || 0) + 1;
 		archCounts[ev.arch] = (archCounts[ev.arch] || 0) + 1;
 		healthCounts[ev.routingHealthState] = (healthCounts[ev.routingHealthState] || 0) + 1;
-		totalAccounts += ev.accountCount || 0;
-		totalRequests += ev.totalRequests || 0;
+		totalAccounts += safeNonNegInt(ev.accountCount, 1000);
+		const reqVal = safeNonNegInt(ev.totalRequests, MAX_REQUESTS_CAP);
+		if (ev.installId && reqVal > (maxRequestsByInstall[ev.installId] || 0)) {
+			maxRequestsByInstall[ev.installId] = reqVal;
+		}
 
 		const day = ensureDay(file.replace(".jsonl", ""));
 		day.events++;
 		if (ev.installId) day.installs.add(ev.installId);
 		if (ev.event === "boot") day.boots++;
-		if (ev.event === "flag") day.flags++;
+		if (ev.event === "flag") day.mainFlags++;
 
 		const prevEv = latestEventByInstall[ev.installId];
 		if (!prevEv || (ev.ts || "") >= (prevEv.ts || "")) {
@@ -978,6 +981,7 @@ function computeStats(filters = {}) {
 	const flagsByPattern = Object.create(null);
 	const flagsByModel = Object.create(null);
 	const flagsByTimerType = Object.create(null);
+	const flagsByInstall = Object.create(null);
 	let flagsOnProAccounts = 0;
 	let flagsOnFreeAccounts = 0;
 	let flagRequestsTotal = 0;
@@ -987,7 +991,8 @@ function computeStats(filters = {}) {
 	for (const { fl, file } of flagEvents) {
 		flagCount++;
 		const day = ensureDay(file.replace("-flags.jsonl", ""));
-		day.flags++;
+		day.detailFlags++;
+		if (fl.installId) flagsByInstall[fl.installId] = (flagsByInstall[fl.installId] || 0) + 1;
 		flagsByStatus[fl.flagHttpStatus] = (flagsByStatus[fl.flagHttpStatus] || 0) + 1;
 		const reasonCode = fl.flagReasonCode || "UNKNOWN";
 		flagsByReasonCode[reasonCode] = (flagsByReasonCode[reasonCode] || 0) + 1;
@@ -1012,6 +1017,16 @@ function computeStats(filters = {}) {
 
 	const avgRequestsBeforeFlag = flagCount > 0 ? Math.round(flagRequestsTotal / flagCount) : 0;
 	const uniqueFlagIncidents = uniqueFlagSignatures.size;
+	const canonicalFlagTotal = flagCount > 0 ? flagCount : totalFlags;
+	const topFlagInstalls = Object.entries(flagsByInstall)
+		.sort((a, b) => b[1] - a[1])
+		.slice(0, 5)
+		.map(([installId, count]) => ({
+			installId,
+			count,
+			sharePct: canonicalFlagTotal > 0 ? Math.round((count / canonicalFlagTotal) * 1000) / 10 : 0,
+		}));
+	const totalRequestsAcrossAll = Object.values(maxRequestsByInstall).reduce((acc, n) => acc + n, 0);
 	const recentIncidents = flagEvents
 		.map(({ fl }) => ({
 			installId: fl.installId,
@@ -1045,7 +1060,7 @@ function computeStats(filters = {}) {
 			events: d.events,
 			installs: d.installs.size,
 			boots: d.boots,
-			flags: d.flags,
+			flags: d.detailFlags > 0 ? d.detailFlags : d.mainFlags,
 		}));
 
 	// Build filter options from ALL events (unfiltered) for dropdown population
@@ -1062,7 +1077,7 @@ function computeStats(filters = {}) {
 		totalEvents,
 		totalBoots,
 		avgAccountsPerEvent: totalEvents > 0 ? Math.round(totalAccounts / totalEvents * 10) / 10 : 0,
-		totalRequestsAcrossAll: totalRequests,
+		totalRequestsAcrossAll,
 		fleet,
 		daily,
 		tokens: {
@@ -1079,8 +1094,10 @@ function computeStats(filters = {}) {
 		routingHealth: healthCounts,
 		featuresUsed: featuresCount,
 		flags: {
-			totalFlags: totalFlags + flagCount,
+			totalFlags: canonicalFlagTotal,
 			uniqueIncidents: uniqueFlagIncidents,
+			uniqueAffectedInstalls: Object.keys(flagsByInstall).length,
+			topInstalls: topFlagInstalls,
 			byHttpStatus: flagsByStatus,
 			byReasonCode: flagsByReasonCode,
 			recentIncidents,
@@ -2277,6 +2294,7 @@ ${buildSharedCyberCss()}
 
       <!-- VIEW 2: FLAGS & FORENSICS -->
       <section class="pane" id="pane-flags">
+        <div id="flagNoiseBanner" style="display:none;margin-bottom:12px"></div>
         <div class="flag-kpis" id="flagKpis"></div>
         <div class="charts-2">
           <div class="chart-box"><div class="chart-head"><h3>BY PROVIDER REASON</h3></div><div class="chart-canvas-wrap"><canvas id="cFlagReasons"></canvas></div></div>
@@ -2713,13 +2731,26 @@ function render(d){
   mkChart('cVersions','bar',Object.keys(verSrc),[{label:_healthMode==='installs'?'Installs':'Events',data:Object.values(verSrc),backgroundColor:'rgba(0,240,255,0.6)',borderColor:'#00f0ff',borderWidth:1}]);
   mkChart('cOS','doughnut',Object.keys(osSrc),[{data:Object.values(osSrc),backgroundColor:C,borderColor:'#0a111c',borderWidth:2}]);
 
+  const topFlag=(fl.topInstalls&&fl.topInstalls[0])||null;
+  const noiseEl=$('flagNoiseBanner');
+  if(noiseEl&&topFlag&&topFlag.count>=10&&topFlag.sharePct>=50){
+    noiseEl.style.display='block';
+    noiseEl.innerHTML='<div class="panel" style="padding:11px 14px;border-color:rgba(255,184,0,.5);display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">'+
+      '<span class="mono" style="font-size:12px;color:var(--amber)">CONCENTRATION ALERT :: node <strong>'+esc(topFlag.installId.slice(0,8))+'...</strong> accounts for <strong>'+esc(topFlag.sharePct)+'%</strong> ('+fmt(topFlag.count)+'/'+fmt(totalFlags)+') of flags across '+fmt(fl.uniqueAffectedInstalls||0)+' affected installs.</span>'+
+      '<button class="btn btn-amber btn-sm" type="button" data-drill-id="'+esc(topFlag.installId)+'">INSPECT NODE &rarr;</button>'+
+    '</div>';
+  }else if(noiseEl){
+    noiseEl.style.display='none';
+    noiseEl.innerHTML='';
+  }
+
   $('flagKpis').innerHTML=[
-    {l:'Total Flags',v:fmt(totalFlags),c:'c-red'},
-    {l:'Unique Signatures',v:fmt(fl.uniqueIncidents||0),c:'c-amber'},
-    {l:'Pro / Free Split',v:fmt(fl.onProAccounts||0)+' / '+fmt(fl.onFreeAccounts||0),c:'c-violet'},
-    {l:'Avg Req Before Flag',v:fmt(fl.avgRequestsBeforeFlag||0),c:'c-cyan'}
+    {l:'Total Flags',v:fmt(totalFlags),sub:fmt(fl.uniqueAffectedInstalls||0)+' affected installs',c:'c-red'},
+    {l:'Unique Signatures',v:fmt(fl.uniqueIncidents||0),sub:'deduped patterns',c:'c-amber'},
+    {l:'Pro / Free Split',v:fmt(fl.onProAccounts||0)+' / '+fmt(fl.onFreeAccounts||0),sub:'by account tier',c:'c-violet'},
+    {l:'Avg Req Before Flag',v:fmt(fl.avgRequestsBeforeFlag||0),sub:'lifetime avg',c:'c-cyan'}
   ].map(function(k){
-    return '<article class="kpi '+k.c+'"><div class="kpi-label">'+esc(k.l)+'</div><div class="kpi-value">'+esc(k.v)+'</div></article>';
+    return '<article class="kpi '+k.c+'"><div class="kpi-label">'+esc(k.l)+'</div><div class="kpi-value">'+esc(k.v)+'</div><div class="kpi-sub">'+esc(k.sub)+'</div></article>';
   }).join('');
   mkChart('cFlagReasons','bar',Object.keys(fl.byReasonCode||{}),[{label:'Flags',data:Object.values(fl.byReasonCode||{}),backgroundColor:R}]);
   mkChart('cPatterns','bar',Object.keys(fl.byPattern||{}),[{label:'Matches',data:Object.values(fl.byPattern||{}),backgroundColor:R}]);
@@ -3074,6 +3105,10 @@ $('flagSearch').addEventListener('input',renderFlagIncidents);
 $('modelSearch').addEventListener('input',renderModelTables);
 $('installSearch').addEventListener('input',renderInstallList);
 
+$('flagNoiseBanner').addEventListener('click',function(e){
+  const drill=e.target.closest('[data-drill-id]');
+  if(drill)drillDown(drill.getAttribute('data-drill-id'));
+});
 $('flagIncidents').addEventListener('click',function(e){
   const row=e.target.closest('[data-flag-idx]');
   if(row)openFlagDrawer(Number(row.getAttribute('data-flag-idx')));

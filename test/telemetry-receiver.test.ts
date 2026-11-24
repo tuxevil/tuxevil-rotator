@@ -384,6 +384,15 @@ describe("telemetry receiver", () => {
 		assert.ok(stats.fleet && typeof stats.fleet.active24h === "number");
 		assert.ok(stats.tokens && stats.tokens.totalInput > 0 && stats.tokens.totalOutput > 0);
 		assert.ok(stats.flags.recentIncidents.length >= 1);
+		// Exactly 2 flag events were posted in the first test — never double-counted across .jsonl and -flags.jsonl
+		assert.equal(stats.flags.totalFlags, 2);
+		assert.equal(stats.daily[0].flags, 2);
+		assert.equal(stats.flags.uniqueAffectedInstalls, 1);
+		assert.equal(stats.flags.topInstalls[0].installId, "test-install");
+		assert.equal(stats.flags.topInstalls[0].count, 2);
+		assert.equal(stats.flags.topInstalls[0].sharePct, 100);
+		// totalRequestsAcrossAll sums the max cumulative totalRequests per unique install (15 + 10 + 15 + 20 + 15 = 75)
+		assert.equal(stats.totalRequestsAcrossAll, 75);
 		const incident = stats.flags.recentIncidents[0];
 		assert.equal(incident.accountRequestsLastHour, 9);
 		assert.equal(incident.poolSize, 18);
