@@ -372,4 +372,92 @@ describe("telemetry receiver", () => {
 		assert.ok(stats.savings.byModel["gpt-5.6-luna"]);
 		assert.equal(stats.savings.byModel["gpt-5.6-luna"].totalUsd, 1.40);
 	});
+
+	it("exposes enriched fleet, daily, token, and flag forensic fields in /v1/stats and /v1/public-stats", async () => {
+		const statsRes = await fetch(`http://127.0.0.1:${port}/v1/stats`, {
+			headers: { Authorization: "Bearer secret-token" },
+		});
+		assert.equal(statsRes.status, 200);
+		const stats = (await statsRes.json()) as any;
+		assert.ok(Array.isArray(stats.daily) && stats.daily.length >= 1);
+		assert.ok(typeof stats.daily[0].date === "string");
+		assert.ok(stats.fleet && typeof stats.fleet.active24h === "number");
+		assert.ok(stats.tokens && stats.tokens.totalInput > 0 && stats.tokens.totalOutput > 0);
+		assert.ok(stats.flags.recentIncidents.length >= 1);
+		const incident = stats.flags.recentIncidents[0];
+		assert.equal(incident.accountRequestsLastHour, 9);
+		assert.equal(incident.poolSize, 18);
+		assert.equal(incident.poolHealthyCount, 3);
+		assert.equal(incident.wasProAccount, true);
+
+		const pubRes = await fetch(`http://127.0.0.1:${port}/v1/public-stats`);
+		assert.equal(pubRes.status, 200);
+		const pub = (await pubRes.json()) as any;
+		assert.ok(typeof pub.installsFormatted === "string");
+		assert.ok(typeof pub.totalTokensFormatted === "string");
+		assert.ok(Array.isArray(pub.topModels));
+		assert.ok(Array.isArray(pub.dailyTrend));
+		assert.ok(typeof pub.osDistribution === "object");
+		assert.ok(pub.catalogModels > 50);
+	});
+
+	it("serves valid inline JS and cyberpunk console components across /stats, /dashboard, and /notifications", async () => {
+		const [pubHtml, dashHtml, notifHtml] = await Promise.all([
+			fetch(`http://127.0.0.1:${port}/stats`).then((r) => r.text()),
+			fetch(`http://127.0.0.1:${port}/dashboard`).then((r) => r.text()),
+			fetch(`http://127.0.0.1:${port}/notifications`).then((r) => r.text()),
+		]);
+
+		const pubScript = pubHtml.match(/<script>\n([\s\S]*?)\n<\/script>/)?.[1];
+		assert.ok(pubScript);
+		assert.doesNotThrow(() => new Function(pubScript));
+		assert.match(pubHtml, /id="topModelsList"/);
+		assert.match(pubHtml, /id="pulseChartWrap"/);
+
+		assert.match(dashHtml, /id="cTimeline"/);
+		assert.match(dashHtml, /id="detailDrawerWrap"/);
+		assert.match(dashHtml, /id="kbdModal"/);
+
+		assert.match(notifHtml, /id="simVersion"/);
+		assert.match(notifHtml, /id="sevGroup"/);
+		assert.match(notifHtml, /localStorage\.getItem\('st'\)/);
+	});
+
+	it("preserves createdAt when editing an existing notification", async () => {
+		const createRes = await fetch(`http://127.0.0.1:${port}/v1/notifications`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Authorization: "Bearer secret-token" },
+			body: JSON.stringify({
+				type: "warning",
+				title: "Initial notice",
+				message: "Original body",
+				createdAt: "2026-10-01T00:00:00.000Z",
+			}),
+		});
+		assert.equal(createRes.status, 200);
+		const created = (await createRes.json()) as any;
+		assert.equal(created.ok, true);
+		const id = created.notification.id;
+
+		const updateRes = await fetch(`http://127.0.0.1:${port}/v1/notifications`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Authorization: "Bearer secret-token" },
+			body: JSON.stringify({
+				id,
+				type: "critical",
+				title: "Updated notice",
+				message: "Edited body",
+			}),
+		});
+		assert.equal(updateRes.status, 200);
+		const updated = (await updateRes.json()) as any;
+		assert.equal(updated.notification.createdAt, "2026-10-01T00:00:00.000Z");
+		assert.equal(updated.notification.type, "critical");
+
+		const delRes = await fetch(`http://127.0.0.1:${port}/v1/notifications/${encodeURIComponent(id)}`, {
+			method: "DELETE",
+			headers: { Authorization: "Bearer secret-token" },
+		});
+		assert.equal(delRes.status, 200);
+	});
 });
