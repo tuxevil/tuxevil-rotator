@@ -2,7 +2,6 @@
 // request with credential swapping + endpoint cascade, and parse the SSE
 // stream events (usage + visible text).
 
-import { randomUUID } from "node:crypto";
 import {
   ANTIGRAVITY_ENDPOINTS,
   REQUEST_USER_AGENT,
@@ -25,6 +24,7 @@ import {
   extractRetryDelayMs,
   isAntigravityRetryableError,
 } from "../../rate-limit-parser.js";
+import { applyAntigravityTwinPayload } from "./twin-payload.js";
 
 const forwardLogger = logger.child("google-forward");
 
@@ -267,7 +267,7 @@ const BENCHMARK_MAX_OUTPUT_TOKENS = 16;
 const BENCHMARK_TIMEOUT_MS = 30_000;
 
 function benchmarkRequestBody(account: AccountRuntime): RequestBody {
-  return {
+  return applyAntigravityTwinPayload({
     project: getProviderProjectId(account.config, DEFAULT_PROVIDER),
     model: BENCHMARK_MODEL,
     request: {
@@ -281,7 +281,7 @@ function benchmarkRequestBody(account: AccountRuntime): RequestBody {
         maxOutputTokens: BENCHMARK_MAX_OUTPUT_TOKENS,
       },
     },
-  };
+  });
 }
 
 function benchmarkUsage(raw: string): { outputTokens: number } | null {
@@ -477,20 +477,12 @@ export async function forwardRequest(
     selectionMode: _selectionMode,
     selectionConfidence: _selectionConfidence,
     selectionReason: _selectionReason,
-    ...bodyToForward
+    preservePrompt,
+    ...strippedBody
   } = body;
-  if (typeof bodyToForward.requestId !== "string" || !bodyToForward.requestId) {
-    bodyToForward.requestId = `agent/${randomUUID()}`;
-  }
-  if (typeof bodyToForward.userPromptId !== "string" || !bodyToForward.userPromptId) {
-    bodyToForward.userPromptId = randomUUID();
-  }
-  if (typeof bodyToForward.userAgent !== "string" || !bodyToForward.userAgent) {
-    bodyToForward.userAgent = "antigravity";
-  }
-  if (typeof bodyToForward.requestType !== "string" || !bodyToForward.requestType) {
-    bodyToForward.requestType = "agent";
-  }
+  const bodyToForward = applyAntigravityTwinPayload(strippedBody, {
+    skipPromptInjection: preservePrompt === true,
+  });
   const requestBody = JSON.stringify(bodyToForward);
   const forwardHeaders = buildAntigravityWireHeaders(account, originalHeaders);
 

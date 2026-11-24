@@ -25,7 +25,7 @@ describe("OpenAI Compat Tool Calling", () => {
 		assert.strictEqual(result.model, "claude-sonnet-4-6");
 		
 		const request = result.request as any;
-		assert.strictEqual(request.systemInstruction.role, "system");
+		assert.strictEqual(request.systemInstruction.role, undefined);
 		assert.strictEqual(
 			request.systemInstruction.parts[0].text,
 			`${ANTIGRAVITY_IDENTITY_PROMPT}\n\nYou are a helpful assistant`,

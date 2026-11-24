@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import { afterEach, describe, it } from "node:test";
 import { forwardCodeAssistRequest, validateCodeAssistPayload } from "../src/providers/google-antigravity/code-assist.js";
-import { forwardRequest } from "../src/providers/google-antigravity/forward.js";
+import { forwardRequest, getBenchmarkSpec } from "../src/providers/google-antigravity/forward.js";
+import { getProviderAdapter } from "../src/providers/registry.js";
 import {
 	computeAntigravityRequestId,
 	computeAntigravitySessionId,
@@ -183,8 +184,8 @@ describe("Antigravity IDE/CLI twin parity", () => {
 		assert.match(String(geminiBody.requestId), /^agent\/[0-9a-f-]{36}$/);
 		assert.match(String(geminiBody.userPromptId), /^[0-9a-f-]{36}$/);
 		assert.match(String(geminiRequest.sessionId), /^-?\d+$/);
+		assert.equal("role" in (geminiRequest.systemInstruction ?? {}), false);
 		assert.deepEqual(geminiRequest.systemInstruction, {
-			role: "system",
 			parts: [{ text: `${ANTIGRAVITY_IDENTITY_PROMPT}\n\nFollow project rules.` }],
 		});
 		assert.deepEqual(geminiRequest.contents, [
@@ -274,6 +275,19 @@ describe("Antigravity IDE/CLI twin parity", () => {
 			assert.match(String(wireBody.userPromptId), /^[0-9a-f-]{36}$/);
 			assert.equal(wireBody.userAgent, "antigravity");
 			assert.equal(wireBody.requestType, "agent");
+			const wireReq = wireBody.request as {
+				sessionId?: string;
+				systemInstruction?: { role?: string; parts?: Array<{ text?: string }> };
+				contents?: Array<{ role?: string; parts?: Array<{ text?: string }> }>;
+			};
+			assert.match(String(wireReq.sessionId), /^-?\d+$/);
+			assert.equal("role" in (wireReq.systemInstruction ?? {}), false);
+			assert.deepEqual(wireReq.systemInstruction, {
+				parts: [{ text: ANTIGRAVITY_IDENTITY_PROMPT }],
+			});
+			assert.deepEqual(wireReq.contents, [
+				{ role: "user", parts: [{ text: "<USER_REQUEST>\nping\n</USER_REQUEST>" }] },
+			]);
 			assert.deepEqual(rawBody.request, callerRequest);
 		} finally {
 			await stopServer(server);
@@ -633,6 +647,85 @@ describe("Antigravity IDE/CLI twin parity", () => {
 		if (action499.kind === "non-retryable-error") {
 			assert.equal(action499.httpStatus, 499);
 			assert.equal(action499.reason, "HTTP_499");
+		}
+	});
+
+	it("normalizes benchmark, kickstart, and OAuth requests as full Antigravity twins", async () => {
+		const account = createTwinAccount();
+		account.config.refreshToken = "twin-refresh-token";
+
+		const spec = getBenchmarkSpec(account);
+		assert.match(String(spec.body.requestId), /^agent\/[0-9a-f-]{36}$/);
+		assert.match(String(spec.body.userPromptId), /^[0-9a-f-]{36}$/);
+		assert.equal(spec.body.userAgent, "antigravity");
+		assert.equal(spec.body.requestType, "agent");
+		const specReq = spec.body.request as {
+			sessionId?: string;
+			systemInstruction?: { role?: string; parts?: Array<{ text?: string }> };
+			contents?: Array<{ role?: string; parts?: Array<{ text?: string }> }>;
+		};
+		assert.match(String(specReq.sessionId), /^-?\d+$/);
+		assert.equal("role" in (specReq.systemInstruction ?? {}), false);
+		assert.deepEqual(specReq.systemInstruction, {
+			parts: [{ text: ANTIGRAVITY_IDENTITY_PROMPT }],
+		});
+		assert.equal(specReq.contents?.[0]?.parts?.[0]?.text, "<USER_REQUEST>\nReply with exactly: OK\n</USER_REQUEST>");
+
+		const { server, url, captures } = await startCaptureServer(() => ({
+			status: 200,
+			headers: { "Content-Type": "text/event-stream" },
+			body: 'data: {"response":{"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}}\n\n',
+		}));
+		endpointOverrides.splice(0, endpointOverrides.length, url);
+
+		try {
+			const googleAdapter = getProviderAdapter("google-antigravity");
+			const res = await googleAdapter.forwardKickstartRequest!(
+				account,
+				"gemini-3.8-flash-tiered",
+			);
+			assert.equal(res.response.status, 200);
+			assert.equal(captures.length, 1);
+			assert.equal(captures[0].headers["user-agent"], DEFAULT_ANTIGRAVITY_USER_AGENT);
+			const kickBody = JSON.parse(captures[0].body) as Record<string, unknown>;
+			assert.match(String(kickBody.requestId), /^agent\/[0-9a-f-]{36}$/);
+			assert.match(String(kickBody.userPromptId), /^[0-9a-f-]{36}$/);
+			assert.equal(kickBody.userAgent, "antigravity");
+			assert.equal(kickBody.requestType, "agent");
+			const kickReq = kickBody.request as {
+				sessionId?: string;
+				systemInstruction?: { role?: string; parts?: Array<{ text?: string }> };
+				contents?: Array<{ role?: string; parts?: Array<{ text?: string }> }>;
+			};
+			assert.match(String(kickReq.sessionId), /^-?\d+$/);
+			assert.equal("role" in (kickReq.systemInstruction ?? {}), false);
+			assert.deepEqual(kickReq.systemInstruction, {
+				parts: [{ text: ANTIGRAVITY_IDENTITY_PROMPT }],
+			});
+			assert.equal(kickReq.contents?.[0]?.parts?.[0]?.text, "<USER_REQUEST>\n.\n</USER_REQUEST>");
+		} finally {
+			await stopServer(server);
+		}
+
+		const originalFetch = globalThis.fetch;
+		const oauthHeaders: Array<Record<string, string>> = [];
+		globalThis.fetch = (async (_input, init) => {
+			const h = new Headers(init?.headers);
+			oauthHeaders.push(Object.fromEntries(h.entries()));
+			return new Response(JSON.stringify({ access_token: "fresh-token", expires_in: 3600 }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}) as typeof fetch;
+
+		try {
+			const googleAdapter = getProviderAdapter("google-antigravity");
+			account.tokenExpires = 0;
+			await googleAdapter.ensureValidToken(account);
+			assert.equal(oauthHeaders.length, 1);
+			assert.equal(oauthHeaders[0]["user-agent"], DEFAULT_ANTIGRAVITY_USER_AGENT);
+		} finally {
+			globalThis.fetch = originalFetch;
 		}
 	});
 });

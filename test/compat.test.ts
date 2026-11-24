@@ -124,7 +124,6 @@ describe("compat adapters", () => {
 			contents?: Array<{ role?: string; parts?: Array<{ text?: string }> }>;
 		};
 		assert.deepEqual(reqObj.systemInstruction, {
-			role: "system",
 			parts: [{ text: `${ANTIGRAVITY_IDENTITY_PROMPT}\n\nbe terse` }],
 		});
 		assert.deepEqual(reqObj.contents, [
@@ -146,7 +145,6 @@ describe("compat adapters", () => {
 			contents?: Array<{ role?: string; parts?: Array<{ text?: string }> }>;
 		};
 		assert.deepEqual(reqObj.systemInstruction, {
-			role: "system",
 			parts: [{ text: `${ANTIGRAVITY_IDENTITY_PROMPT}\n\nbe helpful and coding agent` }],
 		});
 		assert.deepEqual(reqObj.contents, [
@@ -195,7 +193,6 @@ describe("compat adapters", () => {
 			contents?: Array<{ role?: string; parts?: Array<{ text?: string }> }>;
 		};
 		assert.deepEqual(reqObj.systemInstruction, {
-			role: "system",
 			parts: [{ text: `${ANTIGRAVITY_IDENTITY_PROMPT}\n\npolicy` }],
 		});
 		assert.deepEqual(reqObj.contents, [
