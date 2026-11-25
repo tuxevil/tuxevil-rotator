@@ -369,7 +369,7 @@ export class AccountRotator {
     for (const account of this.accounts) {
       if (this.getRoutingRejectionForModel(account, poolKey, now, policy)) continue;
       operationalAccounts++;
-      const access = evaluateAutoModelAccess(account.config, providerId, model);
+      const access = this.evaluateModelAccess(account.config, providerId, model);
       if (access.eligible) return { eligible: true };
       firstReason ??= access.reason;
     }
@@ -1865,7 +1865,7 @@ export class AccountRotator {
     if (account.flagged)
       return { reason: "flagged", detail: "account quarantined or flagged" };
     if (autoScope) {
-      const access = evaluateAutoModelAccess(
+      const access = this.evaluateModelAccess(
         account.config,
         autoScope.providerId,
         autoScope.modelId,
@@ -2947,6 +2947,10 @@ export class AccountRotator {
     return modelKey
       ? this.rotateModel(modelKey, Date.now(), excludeIdx, false, autoScope)
       : this.rotateDefault(Date.now(), false, excludeIdx);
+  }
+
+  private evaluateModelAccess(account: AccountConfig, providerId: string, model: string) {
+    return evaluateAutoModelAccess(account, providerId, model, undefined, undefined, this.config.quotaPollIntervalMs);
   }
 
   private getExplicitAccessScope(model?: string, providerId?: string): AutoAccountScope | undefined {
@@ -4149,7 +4153,7 @@ export class AccountRotator {
     const providerId = getProviderIdForPoolKey(modelKey);
     if (
       autoScope &&
-      !evaluateAutoModelAccess(
+      !this.evaluateModelAccess(
         account.config,
         autoScope.providerId,
         autoScope.modelId,
@@ -4490,7 +4494,7 @@ export class AccountRotator {
       if (this.getProviderEligibilityRejection(account, modelKey, now)?.reason === "provider-ineligible") continue;
       if (
         autoScope &&
-        !evaluateAutoModelAccess(
+        !this.evaluateModelAccess(
           account.config,
           autoScope.providerId,
           autoScope.modelId,

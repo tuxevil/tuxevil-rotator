@@ -1,5 +1,6 @@
 import { accessEvidenceStore, type AccessEvidenceStore } from "./access-evidence.js";
 import { evaluateModelAccess, MODEL_ACCESS_RULES } from "./model-access.js";
+import { antigravityCatalogEvidence, catalogModelState, type CatalogModelState } from "./provider-catalog-evidence.js";
 import type { AccountConfig } from "./types.js";
 
 export interface AutoModelAccessDecision {
@@ -11,6 +12,8 @@ export interface AutoModelAccessDecision {
     | "account-tier"
     | "unknown";
   reason: string;
+  /** Present when the account's live Antigravity catalog decided eligibility. */
+  catalog?: Exclude<CatalogModelState, "unknown">;
 }
 
 export interface AutoAccountScope {
@@ -58,6 +61,7 @@ export function evaluateAutoModelAccess(
   model: string,
   store: AccessEvidenceStore = accessEvidenceStore(),
   now = Date.now(),
+  catalogPollIntervalMs?: number,
 ): AutoModelAccessDecision {
   const evidence = store.forAccount(account, now);
   const declared = evidence.plans
@@ -112,6 +116,20 @@ export function evaluateAutoModelAccess(
       planSource,
       reason: `recent ${latestObservation.kind} rejection for this account and model`,
     };
+  }
+
+  // A fresh account catalog is the provider's own entitlement statement and
+  // outranks the static plan table; without one, fall back to plan rules.
+  if (provider === "google-antigravity") {
+    const catalog = catalogModelState(antigravityCatalogEvidence(account, catalogPollIntervalMs, now), model);
+    if (catalog !== "unknown") {
+      const reason = catalog === "advertised"
+        ? "model is advertised in this account's catalog"
+        : catalog === "disabled"
+          ? "model is disabled in this account's catalog"
+          : "model is not in this account's catalog";
+      return { eligible: catalog === "advertised", plan, planSource, reason, catalog };
+    }
   }
 
   if (plan === "unknown") {

@@ -19,8 +19,25 @@ export function antigravityCatalogEvidence(account: AccountConfig, pollIntervalM
   const expiresAt = snapshot.observedAt + maxAge;
   return { ...base, ...snapshot, expiresAt, freshness: snapshot.observedAt > now ? "unknown" : expiresAt > now ? "fresh" : "stale" };
 }
+function catalogTarget(model: string): string {
+  return applyModelAlias(model).trim().replace(/^models\//i, "").toLowerCase();
+}
 export function advertisedModelState(catalog: ProviderCatalogEvidence, model: string): "advertised" | "not-advertised" | "unknown" {
   if (catalog.freshness !== "fresh") return "unknown";
-  const target = applyModelAlias(model).trim().replace(/^models\//i, "").toLowerCase();
+  const target = catalogTarget(model);
   return catalog.models.some(id => id.toLowerCase() === target) ? "advertised" : "not-advertised";
+}
+export type CatalogModelState = "advertised" | "disabled" | "not-advertised" | "unknown";
+/** Google lists a family it has not enabled for the account as `<family>-disabled`. */
+export function catalogModelState(catalog: ProviderCatalogEvidence, model: string): CatalogModelState {
+  if (catalog.freshness !== "fresh") return "unknown";
+  const target = catalogTarget(model);
+  const ids = catalog.models.map(id => id.toLowerCase());
+  if (!target.endsWith("-disabled") && ids.includes(target)) return "advertised";
+  const disabled = ids.some(id => {
+    if (!id.endsWith("-disabled")) return false;
+    const family = id.slice(0, -"-disabled".length);
+    return target === id || target === family || target.startsWith(`${family}-`);
+  });
+  return disabled ? "disabled" : "not-advertised";
 }

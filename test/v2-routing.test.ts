@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../src/types.js";
-import { setAntigravityModelsForTest } from "./fixtures/antigravity-catalog.js";
+import { setAntigravityAccountCatalogsForTest, setAntigravityModelsForTest } from "./fixtures/antigravity-catalog.js";
 
 const savedEnv = {
   TUXEVIL_ROTATOR_DIR: process.env.TUXEVIL_ROTATOR_DIR,
@@ -91,7 +91,8 @@ describe("v2 routing and status", () => {
     config.accounts![1].tier = "pro";
     const ids = config.accounts!.map(getAccountIdentity);
     const models = ["claude-sonnet-5-5-medium", "claude-opus-5-5-high", "gemini-4-argon-high"];
-    setAntigravityModelsForTest(models, ids);
+    // Live Free catalogs do not advertise paid models; the catalog decides access.
+    setAntigravityAccountCatalogsForTest([[ids[0], ["gemini-3.8-flash-high", "gemini-4-argon-disabled"]], [ids[1], models]]);
     const rotator = new AccountRotator(config) as any;
     rotator.stopQuotaPolling();
     rotator.ensureValidTokenForProvider = async () => {};
@@ -109,7 +110,8 @@ describe("v2 routing and status", () => {
     const rotator = new AccountRotator(config) as any;
     rotator.stopQuotaPolling();
     const model = "claude-sonnet-5-5-medium";
-    setAntigravityModelsForTest([model], rotator.accounts.map((a: any) => getAccountIdentity(a.config)));
+    const [freeId, proId] = rotator.accounts.map((a: any) => getAccountIdentity(a.config));
+    setAntigravityAccountCatalogsForTest([[freeId, ["gemini-3.8-flash-high"]], [proId, [model]]]);
     const poolKey = rotator.resolveRequestPoolKey(model, "google-antigravity");
     const key = rotator.resolveQuotaStateKey(poolKey);
     const now = Date.now();

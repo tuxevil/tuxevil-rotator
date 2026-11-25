@@ -16,3 +16,17 @@ export function setAntigravityModelsForTest(
     dynamicCatalog.updateFromEndpointResponse(response, accountId);
   }
 }
+
+/** Give each account its own advertised catalog, as live polling does. */
+export function setAntigravityAccountCatalogsForTest(
+  catalogs: ReadonlyArray<readonly [accountId: string, modelIds: readonly string[]]>,
+): void {
+  dynamicCatalog.reset();
+  for (const [accountId, modelIds] of catalogs) {
+    dynamicCatalog.updateFromEndpointResponse({
+      models: Object.fromEntries(
+        [...new Set(modelIds)].map((id) => [id, { quotaInfo: { remainingFraction: 1 } }]),
+      ),
+    }, accountId);
+  }
+}

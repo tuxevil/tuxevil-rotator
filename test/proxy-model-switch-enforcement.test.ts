@@ -10,7 +10,7 @@ import type { RequestBody, RotationOutcome } from "../src/proxy.js";
 import type { AccountConfig, AccountRuntime, Config } from "../src/types.js";
 import { getAccountIdentity } from "../src/account-identity.js";
 import { accessEvidenceStore } from "../src/access-evidence.js";
-import { setAntigravityModelsForTest } from "./fixtures/antigravity-catalog.js";
+import { setAntigravityAccountCatalogsForTest, setAntigravityModelsForTest } from "./fixtures/antigravity-catalog.js";
 
 const testDir = mkdtempSync(join(tmpdir(), "proxy-model-switches-"));
 process.env.TUXEVIL_ROTATOR_DIR = testDir;
@@ -384,7 +384,11 @@ describe("Models switch enforcement at request admission and dispatch", () => {
   it("enforces account entitlements for auto requests on non-chat compatibility routes", async () => {
     const { rotator, accounts } = makeRotator({ typesafeRouting: { enabled: false } }, 2);
     accounts[1].config.tier = "pro";
-    setAntigravityModelsForTest(["gemini-4-argon-high"], accounts.map(getAccountIdentity));
+    // Live Free catalogs list paid families only as `-disabled`.
+    setAntigravityAccountCatalogsForTest([
+      [getAccountIdentity(accounts[0]), ["gemini-4-argon-disabled"]],
+      [getAccountIdentity(accounts[1]), ["gemini-4-argon-high"]],
+    ]);
 
     const base = await listenProxy(rotator);
     const response = await post(`${base}/v1/messages`, {
