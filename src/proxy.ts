@@ -259,7 +259,7 @@ import {
 import { authenticateVirtualKey, sendAuthErrorResponse } from "./key-auth.js";
 import { logSpend } from "./spend-logger.js";
 import { hashKey } from "./virtual-keys.js";
-import { STREAM_BACKPRESSURE_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS } from "./stream-guards.js";
+import { STREAM_BACKPRESSURE_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, startSseKeepalive } from "./stream-guards.js";
 
 const proxyLogger = logger.child("proxy");
 const GENERIC_UPSTREAM_ERROR = "Upstream request failed";
@@ -1007,6 +1007,7 @@ async function streamResponseBody(
   responseStatus: number,
   responseHeaders: Record<string, string>,
   accumulator: StreamAccumulator = new SseEventAccumulator(),
+  keepaliveIntervalMs?: number,
 ): Promise<{
   inputTokens: number;
   outputTokens: number;
@@ -1042,8 +1043,10 @@ async function streamResponseBody(
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
     let backpressureTimer: ReturnType<typeof setTimeout> | null = null;
     let waitingForDrain = false;
+    let stopKeepalive = (): void => {};
 
     const cleanup = (): void => {
+      stopKeepalive();
       if (idleTimer) clearTimeout(idleTimer);
       if (backpressureTimer) clearTimeout(backpressureTimer);
       nodeStream.off("data", onData);
@@ -1135,7 +1138,13 @@ async function streamResponseBody(
       resetIdleTimer();
       // Forward to client immediately (real-time streaming preserved)
       if (!res.destroyed && !res.writableEnded) {
-        if (!res.headersSent) res.writeHead(responseStatus, responseHeaders);
+        if (!res.headersSent) {
+          res.writeHead(responseStatus, responseHeaders);
+          const contentType = Object.entries(responseHeaders).find(([key]) => key.toLowerCase() === "content-type")?.[1] ?? "";
+          if (contentType.includes("text/event-stream")) {
+            stopKeepalive = startSseKeepalive(res, keepaliveIntervalMs);
+          }
+        }
         hasForwardedBytes = true;
         if (!res.write(chunk)) pauseForBackpressure();
       }
@@ -2368,6 +2377,7 @@ async function handleProxyRequest(
           response.status,
           responseHeaders,
           provider.createStreamAccumulator(),
+          rotator.getConfig?.()?.sseKeepaliveIntervalMs,
         );
         const totalMs = Date.now() - requestStartMs;
         const ttfbMs = usage?.firstByteMs ?? totalMs;

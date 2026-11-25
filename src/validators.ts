@@ -181,6 +181,9 @@ export function validateConfig(value: unknown): ValidationResult<Config> {
 	if (value.streamRecoveryMaxRetries !== undefined && !isNonNegativeInteger(value.streamRecoveryMaxRetries)) {
 		errors.push("config.streamRecoveryMaxRetries must be a non-negative integer");
 	}
+	if (value.sseKeepaliveIntervalMs !== undefined && !isNonNegativeNumber(value.sseKeepaliveIntervalMs)) {
+		errors.push("config.sseKeepaliveIntervalMs must be a non-negative number (0 disables)");
+	}
 	if (value.modelSpecs !== undefined) {
 		if (!isRecord(value.modelSpecs)) {
 			errors.push("config.modelSpecs must be an object when provided");

@@ -26,6 +26,7 @@ import { PayloadTooLargeError, readLimitedBody } from "./body-limit.js";
 import { logger, redactSensitive } from "./logger.js";
 import {
   createStreamIdleGuard,
+  startSseKeepalive,
   waitForResponseDrain,
 } from "./stream-guards.js";
 import type { AccountRotator } from "./rotator.js";
@@ -344,6 +345,7 @@ const VALIDATION_LOG_MAX_CHARS = 200;
 export interface CompatStreamOptions {
   idleTimeoutMs?: number;
   backpressureTimeoutMs?: number;
+  keepaliveIntervalMs?: number;
 }
 
 export function logValidationFailure(scope: string, payload: unknown): void {
@@ -889,6 +891,10 @@ export async function streamCompatSse(
     "X-Accel-Buffering": "no",
     ...rotatorHeaders,
   });
+  const stopKeepalive = startSseKeepalive(
+    res,
+    options.keepaliveIntervalMs ?? rotator?.getConfig?.()?.sseKeepaliveIntervalMs,
+  );
 
   if (format === "openai") {
     res.write(
@@ -1394,6 +1400,7 @@ export async function streamCompatSse(
     }
   } finally {
     idleGuard.clear();
+    stopKeepalive();
     req.off("close", closeUpstreamForClient);
     responseEvents.off?.("close", closeUpstreamForClient);
   }
@@ -1635,6 +1642,10 @@ export async function streamResponsesSse(
     "X-Accel-Buffering": "no",
     ...rotatorHeaders,
   });
+  const stopKeepalive = startSseKeepalive(
+    res,
+    options.keepaliveIntervalMs ?? rotator?.getConfig?.()?.sseKeepaliveIntervalMs,
+  );
   const emptyCompletion: CompatCompletion = {
     text: "",
     thinkingText: undefined,
@@ -2210,6 +2221,7 @@ export async function streamResponsesSse(
     }
   } finally {
     idleGuard.clear();
+    stopKeepalive();
     req.off("close", closeUpstreamForClient);
     responseEvents.off?.("close", closeUpstreamForClient);
   }

@@ -142,6 +142,8 @@ export interface Config {
   idempotencyWindowMs?: number;
   // Retry upstream failures before any response bytes reach the client. Default: 2.
   streamRecoveryMaxRetries?: number;
+  // Idle interval before writing an SSE `: ping` comment on streaming responses. Default: 15s, 0 disables.
+  sseKeepaliveIntervalMs?: number;
   // Antigravity single-account / non-rotating retry overrides (defaults match
   // Antigravity defaultConversationalCascadeConfig: 8 retries, 4s -> 240s, 0.4 jitter).
   antigravityApiRetry?: {

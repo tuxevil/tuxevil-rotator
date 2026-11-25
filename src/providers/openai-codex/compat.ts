@@ -14,6 +14,7 @@ import { logSpend } from "../../spend-logger.js";
 import { redactSensitive } from "../../logger.js";
 import {
   createStreamIdleGuard,
+  startSseKeepalive,
   waitForResponseDrain,
 } from "../../stream-guards.js";
 import {
@@ -390,12 +391,15 @@ async function pipeNativeResponses(
   res: ServerResponse,
   context: RotationAttemptContext,
   model: string,
+  keepaliveIntervalMs?: number,
 ): Promise<CompatCompletion> {
   res.writeHead(response.status, upstreamHeaders(response, context, model));
   if (!response.body) {
     res.end();
     return { text: "", inputTokens: 0, outputTokens: 0 };
   }
+  const isSse = (response.headers.get("content-type") ?? "").includes("text/event-stream");
+  const stopKeepalive = isSse ? startSseKeepalive(res, keepaliveIntervalMs) : () => {};
   const stream = Readable.fromWeb(response.body as import("node:stream/web").ReadableStream);
   const accumulator = createCodexStreamAccumulator();
   const streamStartMs = Date.now();
@@ -423,6 +427,7 @@ async function pipeNativeResponses(
     }
   } finally {
     idleGuard.clear();
+    stopKeepalive();
     req.off("close", close);
     res.off("close", close);
     if (!res.writableEnded) res.end();
@@ -447,12 +452,15 @@ async function pipeCodexAsChat(
   res: ServerResponse,
   model: string,
   context: RotationAttemptContext,
+  keepaliveIntervalMs?: number,
 ): Promise<CompatCompletion> {
   res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive", ...upstreamHeaders(response, context, model) });
+  const stopKeepalive = startSseKeepalive(res, keepaliveIntervalMs);
   const id = `chatcmpl-${Date.now().toString(36)}`;
   emitChatChunk(res, model, id, { role: "assistant" });
   if (!response.body) {
     emitChatChunk(res, model, id, {}, "stop");
+    stopKeepalive();
     res.end("data: [DONE]\n\n");
     return { text: "", inputTokens: 0, outputTokens: 0 };
   }
@@ -513,6 +521,7 @@ async function pipeCodexAsChat(
     }
   } finally {
     idleGuard.clear();
+    stopKeepalive();
     req.off("close", close);
     res.off("close", close);
   }
@@ -548,7 +557,7 @@ export async function serveCodexResponses(
   try {
     const outcome = await withRotation(rotator, request.model, flattenHeaders(req.headers), body, async (response, context) => {
       if (request.stream) {
-        const completion = await pipeNativeResponses(response, req, res, context, request.model);
+        const completion = await pipeNativeResponses(response, req, res, context, request.model, rotator.getConfig?.()?.sseKeepaliveIntervalMs);
         recordCodexTokenUsage(rotator, request.model, completion);
         recordCodexOutcome(
           rotator,
@@ -604,7 +613,7 @@ export async function serveCodexChat(
   try {
     const outcome = await withRotation(rotator, request.model, flattenHeaders(req.headers), body, async (response, context) => {
       if (request.stream) {
-        const completion = await pipeCodexAsChat(response, req, res, request.model, context);
+        const completion = await pipeCodexAsChat(response, req, res, request.model, context, rotator.getConfig?.()?.sseKeepaliveIntervalMs);
         recordCodexTokenUsage(rotator, request.model, completion);
         recordCodexOutcome(
           rotator,

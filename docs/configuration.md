@@ -156,6 +156,7 @@ The main configuration file. Created automatically by the `login` command, and e
   "idempotencyEnabled": true,
   "idempotencyWindowMs": 2000,
   "streamRecoveryMaxRetries": 2,
+  "sseKeepaliveIntervalMs": 15000,
   "compressionMode": "off",
   "typesafeRouting": {
     "enabled": true,
@@ -204,6 +205,7 @@ The main configuration file. Created automatically by the `login` command, and e
 | `idempotencyEnabled` | `true` | Deduplicate identical in-flight requests and short-window retries |
 | `idempotencyWindowMs` | `2000` | Retention window for completed idempotent request results |
 | `streamRecoveryMaxRetries` | `2` | Maximum account rotations for upstream failures before the response is flushed |
+| `sseKeepaliveIntervalMs` | `15000` | After SSE response headers are sent, write a `: ping` comment whenever the stream has been idle this long, so proxies do not drop slow reasoning streams. `0` disables |
 | `compressionMode` | `off` | Prompt compression mode: `off`, `lite`, `rtk`, or `rtk+lite`. Can be overridden by the `X-Rotator-Compression` request header |
 | `typesafeRouting` | absent | Optional Jev semantic router. When enabled, `model: "auto"` selects among currently routable provider/model candidates |
 | `typesafeRouting.shadowMode` | `false` | Ask Jev for recommendations and log model-only decision metadata while continuing to serve the deterministic route |
