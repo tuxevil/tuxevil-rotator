@@ -2,6 +2,159 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// Keywords Gemini does not support
+const GEMINI_UNSUPPORTED = new Set([
+	"$schema", "$id", "$ref", "$defs", "definitions",
+	"if", "then", "else", "not",
+	"patternProperties", "unevaluatedProperties", "unevaluatedItems",
+	"contentEncoding", "contentMediaType", "examples",
+	"exclusiveMinimum", "exclusiveMaximum", "minimum", "maximum",
+	"multipleOf", "minLength", "maxLength", "pattern",
+	"minItems", "maxItems", "uniqueItems",
+	"minProperties", "maxProperties", "propertyNames", "title", "default",
+	"deprecated",
+]);
+
+// Only remove fields that Gemini's API layer truly rejects at the network level.
+// We keep standard Draft 2020-12 keywords but must strip exclusiveMinimum/exclusiveMaximum
+// as boolean values (Draft 4) — the API layer rejects them even for Claude-bound requests.
+const CLAUDE_VIA_GEMINI_UNSUPPORTED = new Set([
+	"$schema", "$id", "$ref", "$defs", "definitions",
+	"if", "then", "else", "not",
+	"patternProperties", "unevaluatedProperties", "unevaluatedItems",
+	"contentEncoding", "contentMediaType",
+	// Gemini's protobuf layer rejects these regardless of target model
+	"exclusiveMinimum", "exclusiveMaximum", "propertyNames", "uniqueItems", "deprecated",
+]);
+
+/**
+ * Collapse JSON Schema const-literal unions (`[{const: V}, ...]` or
+ * `[{type: T, const: V}, ...]`) into a flat `enum` (+ `type` when typed).
+ */
+function applyConstUnionToSchema(
+	variants: unknown[],
+	out: Record<string, unknown>,
+): boolean {
+	if (variants.length === 0) return false;
+
+	// Case 1: all items are pure {const: value} — JSON Schema way of writing an enum.
+	const allPureConst = variants.every(
+		(item) => isRecord(item) && Object.keys(item).length === 1 && "const" in item,
+	);
+	if (allPureConst) {
+		out["enum"] = variants.map((item) => (item as Record<string, unknown>)["const"]);
+		return true;
+	}
+
+	// Case 2: all items are {type: T, const: V} with the same type.
+	// Merge into a single flat {type: T, enum: [V1, V2, ...]} — avoids
+	// redundant anyOf wrappers that upstream schema validators reject.
+	const allTypeConst = variants.every(
+		(item) =>
+			isRecord(item) &&
+			Object.keys(item).length === 2 &&
+			"type" in item &&
+			"const" in item,
+	);
+	if (allTypeConst) {
+		const firstType = (variants[0] as Record<string, unknown>)["type"];
+		if (
+			typeof firstType === "string" &&
+			variants.every((item) => (item as Record<string, unknown>)["type"] === firstType)
+		) {
+			if (!out["type"]) out["type"] = firstType;
+			out["enum"] = variants.map((item) => (item as Record<string, unknown>)["const"]);
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Inline union type: `type: ["number","null"]`. Gemini's proto `type`
+ * field is a single enum, not repeating — an array value triggers a 400
+ * ('Proto field is not repeating'). Collapse to the first non-null type
+ * and lift nullability into the proto-supported `nullable` flag.
+ */
+function collapseInlineUnionType(
+	value: unknown[],
+	out: Record<string, unknown>,
+): void {
+	const nonNull = value.filter((t) => t !== "null");
+	if (value.includes("null")) out["nullable"] = true;
+	out["type"] = nonNull[0] ?? "string";
+}
+
+function sanitizeSchemaProperties(
+	value: Record<string, unknown>,
+	sanitize: (schema: unknown) => unknown,
+): Record<string, unknown> {
+	return Object.fromEntries(
+		Object.entries(value).map(([k, v]) => [k, sanitize(v)]),
+	);
+}
+
+function sanitizeSchemaItems(
+	value: unknown,
+	sanitize: (schema: unknown) => unknown,
+): unknown {
+	if (Array.isArray(value)) {
+		return value
+			.map(sanitize)
+			.find((item) => isRecord(item) && Object.keys(item).length > 0);
+	}
+	return sanitize(value);
+}
+
+/**
+ * Gemini's Schema proto accepts only string values in `enum` (for string
+ * schemas), even for Claude-bound requests. Preserve primitive type and
+ * nullability when possible, and strip incompatible `enum` entries.
+ */
+function normalizeGeminiSchemaEnum(out: Record<string, unknown>): void {
+	if (!("enum" in out)) return;
+
+	if (!Array.isArray(out.enum) || out.enum.length === 0) {
+		delete out.enum;
+		return;
+	}
+
+	const hasNull = out.enum.some((value) => value === null);
+	const nonNull = out.enum.filter((value) => value !== null);
+	if (nonNull.length === 0) {
+		delete out.enum;
+		return;
+	}
+
+	if (nonNull.every((value) => typeof value === "string")) {
+		if (hasNull) out.nullable = true;
+		if (!out.type) out.type = "string";
+		if (typeof out.type === "string" && out.type.toLowerCase() === "string") {
+			if (hasNull) out.enum = nonNull;
+			return;
+		}
+		delete out.enum;
+		return;
+	}
+
+	if (!out.type) {
+		if (nonNull.every((value) => typeof value === "boolean")) {
+			out.type = "boolean";
+		} else if (
+			nonNull.every((value) => typeof value === "number" && Number.isFinite(value))
+		) {
+			out.type = nonNull.every((value) => Number.isInteger(value))
+				? "integer"
+				: "number";
+		}
+	}
+	if (hasNull && out.type) {
+		out.nullable = true;
+	}
+	delete out.enum;
+}
+
 /**
  * Gemini's function_declarations accept a restricted subset of JSON Schema.
  * Keywords like `const`, `$schema`, `$ref`, `$defs`, `if/then/else`, `not`,
@@ -11,80 +164,55 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 export function sanitizeGeminiSchema(schema: unknown): unknown {
 	if (!isRecord(schema)) return schema;
 
-	// Keywords Gemini does not support
-	const UNSUPPORTED = new Set([
-		"const", "$schema", "$id", "$ref", "$defs", "definitions",
-		"if", "then", "else", "not",
-		"patternProperties", "unevaluatedProperties", "unevaluatedItems",
-		"contentEncoding", "contentMediaType", "examples",
-		"exclusiveMinimum", "exclusiveMaximum", "minimum", "maximum",
-		"multipleOf", "minLength", "maxLength", "pattern",
-		"minItems", "maxItems", "uniqueItems",
-		"minProperties", "maxProperties", "propertyNames", "title", "default",
-		"deprecated",
-	]);
-
 	const out: Record<string, unknown> = {};
 	for (const [key, value] of Object.entries(schema)) {
-		if (UNSUPPORTED.has(key)) continue;
+		if (GEMINI_UNSUPPORTED.has(key)) continue;
 		// Gemini's protobuf layer rejects vendor extensions such as
 		// x-google-enum-descriptions and x-google-identifier.
 		if (key.startsWith("x-")) continue;
 
+		// `const` is not supported by Gemini's API — convert to a single-value enum
+		if (key === "const") {
+			out["enum"] = [value];
+			continue;
+		}
+
 		if (key === "anyOf" || key === "oneOf" || key === "allOf") {
-			if (Array.isArray(value)) {
-				// Special case: all items are pure {const: value} — this is the
-				// JSON Schema way of writing an enum. Convert to Gemini's `enum` array.
-				const allConst = value.every(
-					(item) => isRecord(item) && Object.keys(item).length === 1 && "const" in item,
+			if (Array.isArray(value) && !applyConstUnionToSchema(value, out)) {
+				const cleaned = value.map(sanitizeGeminiSchema).filter(
+					// Drop entries that become empty objects after sanitisation
+					(v) => isRecord(v) && Object.keys(v).length > 0,
 				);
-				if (allConst) {
-					out["enum"] = value.map((item) => (item as Record<string, unknown>)["const"]);
-					// Infer type:string when all const values are strings (covers most tool params)
-					if (value.every((item) => typeof (item as Record<string, unknown>)["const"] === "string")) {
-						if (!out["type"]) out["type"] = "string";
-					}
-				} else {
-					const cleaned = value.map(sanitizeGeminiSchema).filter(
-						// Drop entries that become empty objects after sanitisation
-						(v) => isRecord(v) && Object.keys(v).length > 0,
-					);
-					// If only one variant remains, unwrap it (Gemini prefers flat schemas)
-					if (cleaned.length === 1) {
-						Object.assign(out, cleaned[0]);
-					} else if (cleaned.length > 1) {
-						out[key] = cleaned;
-					}
-					// cleaned.length === 0: skip entirely
+				// If only one variant remains, unwrap it (Gemini prefers flat schemas)
+				if (cleaned.length === 1) {
+					Object.assign(out, cleaned[0]);
+				} else if (cleaned.length > 1) {
+					out[key] = cleaned;
 				}
+				// cleaned.length === 0: skip entirely
 			}
 			continue;
 		}
 
-		// Inline union type: `type: ["number","null"]`. Gemini's proto `type`
-		// field is a single enum, not repeating — collapse to the first non-null
-		// type and lift nullability into the proto-supported `nullable` flag.
 		if (key === "type" && Array.isArray(value)) {
-			const nonNull = (value as unknown[]).filter((t) => t !== "null");
-			if ((value as unknown[]).includes("null")) out["nullable"] = true;
-			out["type"] = (nonNull[0] ?? "string");
+			collapseInlineUnionType(value, out);
 			continue;
 		}
 
 		if (key === "properties" && isRecord(value)) {
-			out[key] = Object.fromEntries(
-				Object.entries(value).map(([k, v]) => [k, sanitizeGeminiSchema(v)]),
-			);
+			out[key] = sanitizeSchemaProperties(value, sanitizeGeminiSchema);
 			continue;
 		}
 
 		if (key === "items") {
-			out[key] = sanitizeGeminiSchema(value);
+			const sanitizedItems = sanitizeSchemaItems(value, sanitizeGeminiSchema);
+			if (sanitizedItems !== undefined) out[key] = sanitizedItems;
 			continue;
 		}
 
 		out[key] = isRecord(value) ? sanitizeGeminiSchema(value) : value;
 	}
+	normalizeGeminiSchemaEnum(out);
 	return out;
 }
 
@@ -99,21 +227,9 @@ export function sanitizeGeminiSchema(schema: unknown): unknown {
 export function sanitizeClaudeViaGeminiSchema(schema: unknown): unknown {
 	if (!isRecord(schema)) return schema;
 
-	// Only remove fields that Gemini's API layer truly rejects at the network level.
-	// We keep standard Draft 2020-12 keywords but must strip exclusiveMinimum/exclusiveMaximum
-	// as boolean values (Draft 4) — the API layer rejects them even for Claude-bound requests.
-	const UNSUPPORTED = new Set([
-		"$schema", "$id", "$ref", "$defs", "definitions",
-		"if", "then", "else", "not",
-		"patternProperties", "unevaluatedProperties", "unevaluatedItems",
-		"contentEncoding", "contentMediaType",
-		// Gemini's protobuf layer rejects these regardless of target model
-		"exclusiveMinimum", "exclusiveMaximum", "propertyNames", "uniqueItems", "deprecated",
-	]);
-
 	const out: Record<string, unknown> = {};
 	for (const [key, value] of Object.entries(schema)) {
-		if (UNSUPPORTED.has(key)) continue;
+		if (CLAUDE_VIA_GEMINI_UNSUPPORTED.has(key)) continue;
 		// Vendor extensions are not understood by Gemini's outer protobuf API,
 		// even when the inner request targets Claude.
 		if (key.startsWith("x-")) continue;
@@ -125,40 +241,7 @@ export function sanitizeClaudeViaGeminiSchema(schema: unknown): unknown {
 		}
 
 		if (key === "anyOf" || key === "oneOf" || key === "allOf") {
-			if (Array.isArray(value)) {
-				// Case 1: all items are pure {const: value} — convert to flat enum.
-				const allPureConst = value.every(
-					(item) => isRecord(item) && Object.keys(item).length === 1 && "const" in item,
-				);
-				if (allPureConst) {
-					out["enum"] = value.map((item) => (item as Record<string, unknown>)["const"]);
-					if (value.every((item) => typeof (item as Record<string, unknown>)["const"] === "string")) {
-						if (!out["type"]) out["type"] = "string";
-					}
-					continue;
-				}
-
-				// Case 2: all items are {type: T, const: V} (same type, each with a const).
-				// e.g. [{type:"string",const:"fact"},{type:"string",const:"lesson"}]
-				// Merge into a single flat {type: T, enum: [V1, V2, ...]} — avoids
-				// the redundant anyOf-with-single-enum pattern that Claude rejects.
-				const allTypeConst = value.every(
-					(item) =>
-						isRecord(item) &&
-						Object.keys(item).length === 2 &&
-						"type" in item &&
-						"const" in item,
-				);
-				if (allTypeConst) {
-					const firstType = (value[0] as Record<string, unknown>)["type"];
-					const allSameType = value.every((item) => (item as Record<string, unknown>)["type"] === firstType);
-					if (allSameType) {
-						if (!out["type"]) out["type"] = firstType;
-						out["enum"] = value.map((item) => (item as Record<string, unknown>)["const"]);
-						continue;
-					}
-				}
-
+			if (Array.isArray(value) && !applyConstUnionToSchema(value, out)) {
 				// Sanitize all variants first.
 				const cleaned = value.map(sanitizeClaudeViaGeminiSchema).filter(
 					(v) => isRecord(v) && Object.keys(v).length > 0,
@@ -255,38 +338,24 @@ export function sanitizeClaudeViaGeminiSchema(schema: unknown): unknown {
 			continue;
 		}
 
-		// Inline union type: `type: ["number","null"]`. Gemini's proto `type`
-		// field is a single enum, not repeating — an array value triggers a 400
-		// ('Proto field is not repeating'). Collapse to the first non-null type
-		// and lift nullability into the proto-supported `nullable` flag.
 		if (key === "type" && Array.isArray(value)) {
-			const nonNull = (value as unknown[]).filter((t) => t !== "null");
-			if ((value as unknown[]).includes("null")) out["nullable"] = true;
-			out["type"] = (nonNull[0] ?? "string");
+			collapseInlineUnionType(value, out);
 			continue;
 		}
 
 		if (key === "properties" && isRecord(value)) {
-			out[key] = Object.fromEntries(
-				Object.entries(value).map(([k, v]) => [k, sanitizeClaudeViaGeminiSchema(v)]),
-			);
+			out[key] = sanitizeSchemaProperties(value, sanitizeClaudeViaGeminiSchema);
 			continue;
 		}
 
 		if (key === "items") {
-			out[key] = sanitizeClaudeViaGeminiSchema(value);
+			const sanitizedItems = sanitizeSchemaItems(value, sanitizeClaudeViaGeminiSchema);
+			if (sanitizedItems !== undefined) out[key] = sanitizedItems;
 			continue;
 		}
 
 		out[key] = isRecord(value) ? sanitizeClaudeViaGeminiSchema(value) : value;
 	}
-	// Gemini's Schema proto accepts only strings in enum, even for Claude-bound
-	// requests. Preserve the primitive type and drop unsupported enum values.
-	if (Array.isArray(out.enum) && !out.enum.every((value) => typeof value === "string")) {
-		if (!out.type && out.enum.length > 0 && out.enum.every((value) => typeof value === "boolean")) {
-			out.type = "boolean";
-		}
-		delete out.enum;
-	}
+	normalizeGeminiSchemaEnum(out);
 	return out;
 }

@@ -202,6 +202,69 @@ describe("OpenAI Compat Tool Calling", () => {
 		}
 	});
 
+	it("sanitizes non-string enum, const, and union tool schemas across Gemini and Claude-via-Gemini models", () => {
+		const schema = {
+			type: "object",
+			properties: {
+				flag: { type: "boolean", enum: [true, false] },
+				inferredFlag: { enum: [true, false] },
+				choice: { anyOf: [{ const: true }, { const: false }] },
+				typedChoice: { anyOf: [{ type: "boolean", const: true }, { type: "boolean", const: false }] },
+				enabled: { const: true },
+				fixedMode: { const: "fast" },
+				typedModes: { anyOf: [{ type: "string", const: "fact" }, { type: "string", const: "lesson" }] },
+				count: { type: "integer", enum: [1, 2, 3] },
+				inferredCount: { enum: [1, 2, 3] },
+				inferredFloat: { enum: [0.5, 1.5] },
+				nullableMode: { type: ["string", "null"], enum: ["fast", "slow", null] },
+				mixedEnum: { type: "string", enum: ["auto", 0, true] },
+				nonStringTypedEnum: { type: "boolean", enum: ["true", "false"] },
+				emptyEnum: { type: "string", enum: [] },
+				emptyUnion: { type: "string", anyOf: [] },
+				tupleItems: { type: "array", items: [{ type: "boolean", enum: [true, false] }] },
+				mode: { type: "string", enum: ["fast", "slow"] },
+			},
+		};
+		const bodies = [
+			openAIToAntigravityBody({
+				model: "gemini-4-neon-high",
+				messages: [{ role: "user", content: "Use the tool" }],
+				tools: [{ type: "function", function: { name: "inspect", parameters: schema } }],
+			}),
+			anthropicToAntigravityBody({
+				model: "gemini-4-neon-high",
+				messages: [{ role: "user", content: "Use the tool" }],
+				tools: [{ name: "inspect", input_schema: schema }],
+			}),
+			openAIToAntigravityBody({
+				model: "claude-opus-4-6-thinking",
+				messages: [{ role: "user", content: "Use the tool" }],
+				tools: [{ type: "function", function: { name: "inspect", parameters: schema } }],
+			}),
+		];
+
+		for (const body of bodies) {
+			const properties = (body.request as any).tools[0].functionDeclarations[0].parameters.properties;
+			assert.deepStrictEqual(properties.flag, { type: "boolean" });
+			assert.deepStrictEqual(properties.inferredFlag, { type: "boolean" });
+			assert.deepStrictEqual(properties.choice, { type: "boolean" });
+			assert.deepStrictEqual(properties.typedChoice, { type: "boolean" });
+			assert.deepStrictEqual(properties.enabled, { type: "boolean" });
+			assert.deepStrictEqual(properties.fixedMode, { type: "string", enum: ["fast"] });
+			assert.deepStrictEqual(properties.typedModes, { type: "string", enum: ["fact", "lesson"] });
+			assert.deepStrictEqual(properties.count, { type: "integer" });
+			assert.deepStrictEqual(properties.inferredCount, { type: "integer" });
+			assert.deepStrictEqual(properties.inferredFloat, { type: "number" });
+			assert.deepStrictEqual(properties.nullableMode, { type: "string", nullable: true, enum: ["fast", "slow"] });
+			assert.deepStrictEqual(properties.mixedEnum, { type: "string" });
+			assert.deepStrictEqual(properties.nonStringTypedEnum, { type: "boolean" });
+			assert.deepStrictEqual(properties.emptyEnum, { type: "string" });
+			assert.deepStrictEqual(properties.emptyUnion, { type: "string" });
+			assert.deepStrictEqual(properties.tupleItems, { type: "array", items: { type: "boolean" } });
+			assert.deepStrictEqual(properties.mode, { type: "string", enum: ["fast", "slow"] });
+		}
+	});
+
 	it("strips Gemini vendor schema extensions recursively", () => {
 		const schema = {
 			type: "object",
