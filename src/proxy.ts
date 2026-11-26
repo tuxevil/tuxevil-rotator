@@ -1,6 +1,6 @@
 import { serveAccessProbe } from "./access-probe.js";
 import { requiresAntigravityAccessPolicy } from "./auto-model-access.js";
-import { observeAccessAttempt, logAccessPolicyShadow } from "./access-evidence.js";
+import { classifyAccessObservation, observeAccessAttempt, logAccessPolicyShadow } from "./access-evidence.js";
 import { serveModelAccessApi, serveProviderPlanApi } from "./model-access-api.js";
 import { createUsageLimitsHandler, USAGE_LIMITS_PATH } from "./usage-limits.js";
 import { carriesUsageReadToken } from "./usage-limits-auth.js";
@@ -690,6 +690,35 @@ function buildNoReplacementDecision(
   );
 }
 
+function isModelScopedForbidden(errorText: string, providerId: string, model: string): boolean {
+  const kind = classifyAccessObservation(403, errorText, false, providerId, model);
+  return kind === "entitlement" || kind === "client-restriction";
+}
+
+/** Any account-level 403 quarantines the whole account at once, then rotates. */
+async function quarantineAfterForbidden(
+  options: UpstreamActionHandlerOptions,
+  cause: "flagged" | "forbidden",
+): Promise<UpstreamActionDecision> {
+  const { action, rotator, account, label, rotateAndRelease } = options;
+  const errorText = "errorText" in action ? action.errorText : "";
+  rotator.quarantineAccountAfterForbidden(
+    account,
+    `Quarantined after 403 (${cause}): ${errorText.slice(0, 300)}`,
+  );
+  if (!options.canRetry) {
+    return buildFailureDecision(options, 403, errorText);
+  }
+  const nextAccount = await rotateAndRelease();
+  if (!nextAccount) {
+    return buildNoReplacementDecision(
+      options,
+      `no replacement account remained after ${label} was quarantined with 403`,
+    );
+  }
+  return { kind: "retry" };
+}
+
 async function handleUpstreamAccountAction(
   options: UpstreamActionHandlerOptions,
 ): Promise<UpstreamActionDecision> {
@@ -848,31 +877,18 @@ async function handleUpstreamAccountAction(
       uptimeSeconds: ctx403.uptimeSeconds,
       timeSinceLastFlagSeconds: -1,
     });
-    // Provider-scoped invalidation: a 403 with flag patterns (suspended,
-    // banned, etc.) indicates the upstream provider rejected this credential.
-    // Only the failing provider is taken out; sibling providers remain active.
-    rotator.markProviderInvalid(
-      account,
-      provider.id,
-      `Provider flagged (403): ${action.errorText.slice(0, 300)}`,
-    );
-    if (!options.canRetry) {
-      return buildFailureDecision(options, 403, action.errorText);
-    }
-    const nextAccount = await rotateAndRelease();
-    if (!nextAccount) {
-      return buildNoReplacementDecision(
-        options,
-        `no replacement account remained after ${label} provider was invalidated with 403`,
-      );
-    }
-    return { kind: "retry" };
+    return quarantineAfterForbidden(options, "flagged");
   }
 
   if (action.kind === "forbidden") {
     writeLog(`[${label}] 403: ${action.errorText.slice(0, 200)}`, "warn");
     logRequestEnd(403, `endpoint=${action.endpoint}`);
-    return buildFailureDecision(options, 403, action.errorText);
+    // Plan/entitlement 403s concern one model, not the account; access
+    // evidence already excludes the account for that model.
+    if (isModelScopedForbidden(action.errorText, provider.id, model)) {
+      return buildFailureDecision(options, 403, action.errorText);
+    }
+    return quarantineAfterForbidden(options, "forbidden");
   }
 
   if (action.kind === "not-found") {

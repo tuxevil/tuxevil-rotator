@@ -1299,7 +1299,7 @@ describe("proxy e2e: 401 unauthorized", () => {
 });
 
 describe("proxy e2e: 403 flagged (infringement)", () => {
-	it("invalidates the provider with the 'infring' pattern and reports telemetry", async () => {
+	it("quarantines the account with the 'infring' pattern and reports telemetry", async () => {
 		const upstream = await listen((req, res) => {
 			res.writeHead(403, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({
@@ -1308,7 +1308,7 @@ describe("proxy e2e: 403 flagged (infringement)", () => {
 		});
 		endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
 
-		const tracking = { markProviderInvalid: 0, finishRequest: 0 };
+		const tracking = { quarantined: 0, finishRequest: 0 };
 		const rotator = {
 			getActiveAccount: async () => makeAccount("flag@example.com"),
 			rotateToNext: async () => null,
@@ -1328,7 +1328,7 @@ describe("proxy e2e: 403 flagged (infringement)", () => {
 				uptimeSeconds: 600,
 			}),
 			markFlagged: () => {},
-			markProviderInvalid: () => { tracking.markProviderInvalid++; },
+			quarantineAccountAfterForbidden: () => { tracking.quarantined++; },
 			markError: () => {},
 			recordRequest: () => false,
 			recordProxyEvent: () => {},
@@ -1348,7 +1348,7 @@ describe("proxy e2e: 403 flagged (infringement)", () => {
 			if (!outcome.ok) {
 				assert.ok([429, 503].includes(outcome.status));
 			}
-			assert.equal(tracking.markProviderInvalid, 1, "flagged 403 should invalidate the provider");
+			assert.equal(tracking.quarantined, 1, "flagged 403 should quarantine the account");
 			assert.equal(tracking.finishRequest, 1, "flagged 403 should release the account once");
 		} finally {
 			await upstream.close();
@@ -1357,34 +1357,43 @@ describe("proxy e2e: 403 flagged (infringement)", () => {
 });
 
 describe("proxy e2e: 403 non-flagged", () => {
-	it("does NOT flag the account and returns 403 to the caller", async () => {
+	async function run403(body: unknown, email: string) {
 		const upstream = await listen((req, res) => {
 			res.writeHead(403, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ error: { status: "PERMISSION_DENIED", message: "Resource not accessible by integration" } }));
+			res.end(JSON.stringify(body));
 		});
 		endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
-
 		const tracking = { markFlagged: 0, markError: 0, finishRequest: 0 };
-		const rotator = makeRotator(makeAccount("forbid@example.com"), tracking);
-
+		let quarantined = 0;
+		const rotator = makeRotator(makeAccount(email), tracking);
+		(rotator as unknown as { quarantineAccountAfterForbidden: () => void }).quarantineAccountAfterForbidden = () => { quarantined++; };
 		try {
-			const outcome = await withRotation(
-				rotator,
-				"gemini-3.1-pro",
-				{},
-				makeBody(),
-				async () => "should-not-reach",
-			);
-
-			assert.equal(outcome.ok, false);
-			if (!outcome.ok) {
-				assert.equal(outcome.status, 403);
-			}
-			assert.equal(tracking.markFlagged, 0, "non-flagging 403 must not mark the account");
-			assert.equal(tracking.finishRequest, 1, "non-flagging 403 should release the account once");
+			const outcome = await withRotation(rotator, "gemini-3.1-pro", {}, makeBody(), async () => "should-not-reach");
+			return { outcome, tracking, quarantined };
 		} finally {
 			await upstream.close();
 		}
+	}
+
+	it("quarantines the account on any account-level 403", async () => {
+		const { outcome, tracking, quarantined } = await run403(
+			{ error: { status: "PERMISSION_DENIED", message: "Resource not accessible by integration" } },
+			"forbid@example.com",
+		);
+		assert.equal(outcome.ok, false);
+		if (!outcome.ok) assert.ok([403, 429, 503].includes(outcome.status));
+		assert.equal(quarantined, 1, "a 403 must quarantine the account immediately");
+		assert.equal(tracking.finishRequest, 1, "403 should release the account once");
+	});
+
+	it("does not quarantine on a model-scoped entitlement 403", async () => {
+		const { outcome, quarantined } = await run403(
+			{ error: { code: "MODEL_NOT_SUPPORTED_FOR_PLAN", message: "Model not available for this plan" } },
+			"entitlement@example.com",
+		);
+		assert.equal(outcome.ok, false);
+		if (!outcome.ok) assert.equal(outcome.status, 403);
+		assert.equal(quarantined, 0, "a plan/entitlement 403 concerns one model, not the account");
 	});
 });
 

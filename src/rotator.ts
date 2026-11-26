@@ -3697,6 +3697,15 @@ export class AccountRotator {
     return true;
   }
 
+  /** Takes an account out of rotation after the provider rejected it with 403. */
+  quarantineAccountAfterForbidden(account: AccountRuntime, reason: string): void {
+    account.flagged = true;
+    account.lastError = reason;
+    this.reconcileDynamicCatalog();
+    this.log(`${account.config.email}: quarantined after 403`, "warn");
+    this.scheduleStateSave();
+  }
+
   async restoreAccount(email: string): Promise<boolean> {
     const account = this.accounts.find((a) => a.config.email === email);
     if (!account) return false;

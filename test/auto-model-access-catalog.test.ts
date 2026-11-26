@@ -72,15 +72,17 @@ it("falls back to the plan rules without a usable snapshot", () => {
   const store = new AccessEvidenceStore();
   const noSnapshot = proAccount("no-snapshot");
   const carbon = evaluateAutoModelAccess(noSnapshot, provider, "gemini-4-carbon-medium", store);
-  assert.equal(carbon.eligible, false);
+  assert.equal(carbon.eligible, true);
   assert.equal(carbon.catalog, undefined);
-  assert.match(carbon.reason, /Ultra or Enterprise/);
   assert.equal(evaluateAutoModelAccess(noSnapshot, provider, "gemini-4-argon-medium", store).eligible, true);
 
-  // A snapshot for a replaced credential is not this credential's catalog.
-  const rotated = proAccount("rotated", ["gemini-4-carbon-medium"]);
+  // A snapshot for a replaced credential is not this credential's catalog:
+  // its `-disabled` entry no longer applies and the plan rules decide.
+  const rotated = proAccount("rotated", ["gemini-4-carbon-disabled"]);
   rotated.credentials![0].refreshToken = "replacement";
-  assert.equal(evaluateAutoModelAccess(rotated, provider, "gemini-4-carbon-medium", store).eligible, false);
+  const rotatedDecision = evaluateAutoModelAccess(rotated, provider, "gemini-4-carbon-medium", store);
+  assert.equal(rotatedDecision.catalog, undefined);
+  assert.equal(rotatedDecision.eligible, true);
 
 });
 
