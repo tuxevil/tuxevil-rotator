@@ -29,8 +29,8 @@ export function advertisedModelState(catalog: ProviderCatalogEvidence, model: st
 }
 export type CatalogModelState = "advertised" | "disabled" | "not-advertised" | "unknown";
 /** Google lists a family it has not enabled for the account as `<family>-disabled`. */
-export function catalogModelState(catalog: ProviderCatalogEvidence, model: string): CatalogModelState {
-  if (catalog.freshness !== "fresh") return "unknown";
+export function catalogModelState(catalog: ProviderCatalogEvidence, model: string, allowStale = false): CatalogModelState {
+  if (catalog.freshness !== "fresh" && !(allowStale && catalog.freshness === "stale")) return "unknown";
   const target = catalogTarget(model);
   const ids = catalog.models.map(id => id.toLowerCase());
   if (!target.endsWith("-disabled") && ids.includes(target)) return "advertised";

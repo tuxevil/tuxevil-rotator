@@ -82,12 +82,21 @@ it("falls back to the plan rules without a usable snapshot", () => {
   rotated.credentials![0].refreshToken = "replacement";
   assert.equal(evaluateAutoModelAccess(rotated, provider, "gemini-4-carbon-medium", store).eligible, false);
 
-  // An expired snapshot no longer speaks for the account.
-  const stale = proAccount("stale", ["gemini-4-carbon-medium"]);
+});
+
+it("keeps using the last known catalog when refreshes stop succeeding", () => {
+  const store = new AccessEvidenceStore();
   const later = Date.now() + 31 * 60_000;
-  const staleDecision = evaluateAutoModelAccess(stale, provider, "gemini-4-carbon-medium", store, later);
-  assert.equal(staleDecision.eligible, false);
-  assert.equal(staleDecision.catalog, undefined);
+  const on = proAccount("stale-on", ["gemini-4-carbon-medium"]);
+  const allowed = evaluateAutoModelAccess(on, provider, "gemini-4-carbon-medium", store, later);
+  assert.equal(allowed.eligible, true);
+  assert.equal(allowed.catalog, "advertised");
+  assert.match(allowed.reason, /last known catalog/);
+
+  const off = proAccount("stale-off", ["gemini-4-carbon-disabled"]);
+  const blocked = evaluateAutoModelAccess(off, provider, "gemini-4-carbon-medium", store, later);
+  assert.equal(blocked.eligible, false);
+  assert.equal(blocked.catalog, "disabled");
 });
 
 it("lets recent provider rejection evidence win over a catalog allow", () => {
