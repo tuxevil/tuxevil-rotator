@@ -432,10 +432,13 @@ function applyActiveCooldown(
   const advertisedReset = quota.resetTime
     ? new Date(quota.resetTime).getTime()
     : 0;
-  const resetAt = Math.max(
-    cooldownUntil,
-    Number.isFinite(advertisedReset) && advertisedReset > now ? advertisedReset : 0,
-  );
+  // Only adopt the upstream reset time if the upstream already reported 0%
+  // quota; a local 429 cooldown on an otherwise healthy pool expires at
+  // cooldownUntil, not at the pool's 5h/weekly refresh boundary.
+  const resetAt =
+    quota.percentRemaining === 0 && Number.isFinite(advertisedReset) && advertisedReset > now
+      ? Math.max(cooldownUntil, advertisedReset)
+      : cooldownUntil;
   const resetIso = new Date(resetAt).toISOString();
   quota.percentRemaining = 0;
   quota.resetTime = resetIso;
@@ -801,17 +804,22 @@ export async function fetchProviderQuota(
       credentialGeneration,
       accountEpoch,
     );
+  const cooldownSnapshotAtStart: Record<string, number> = {
+    ...account.cooldownsByModel,
+  };
 
+  const projectId = getProviderProjectId(account.config, DEFAULT_PROVIDER);
+  const quotaHeaders: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${account.accessToken}`,
+    "User-Agent": QUOTA_USER_AGENT,
+  };
   try {
     const response = await fetchWithRetry(QUOTA_API_URL, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${account.accessToken}`,
-        "User-Agent": QUOTA_USER_AGENT,
-      },
+      headers: quotaHeaders,
       body: JSON.stringify({
-        project: getProviderProjectId(account.config, DEFAULT_PROVIDER),
+        project: projectId,
       }),
       timeoutMs: 8000,
       dispatcher: getAccountProxyDispatcher(account, "google-antigravity"),
@@ -842,18 +850,13 @@ export async function fetchProviderQuota(
     const data = parseGoogleQuotaResponse(rawData);
     if (!data) return;
 
-    const projectId = getProviderProjectId(account.config, DEFAULT_PROVIDER);
     const hasModels = Object.keys(data.models).length > 0;
     let summary: GoogleQuotaSummaryResponse | null = null;
     if (hasModels) {
       try {
         const summaryResponse = await fetchWithRetry(QUOTA_SUMMARY_API_URL, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${account.accessToken}`,
-            "User-Agent": QUOTA_USER_AGENT,
-          },
+          headers: quotaHeaders,
           body: JSON.stringify({ project: projectId }),
           timeoutMs: 8000,
           retries: 0,
@@ -926,6 +929,7 @@ export async function fetchProviderQuota(
         const parentCooldown = account.cooldownsByModel[parentPool];
         if (
           typeof parentCooldown === "number" &&
+          parentCooldown === cooldownSnapshotAtStart[parentPool] &&
           Math.abs(parentCooldown - customResetAt) <= 1000
         ) {
           delete account.cooldownsByModel[parentPool];
@@ -946,7 +950,8 @@ export async function fetchProviderQuota(
         if (
           typeof cooldownUntil !== "number" ||
           !Number.isFinite(cooldownUntil) ||
-          cooldownUntil - now < SIX_HOURS_MS
+          cooldownUntil - now < SIX_HOURS_MS ||
+          cooldownUntil !== cooldownSnapshotAtStart[quota.modelKey]
         ) {
           continue;
         }
@@ -957,18 +962,20 @@ export async function fetchProviderQuota(
               w.window === "7d" ||
               (w.durationMs !== undefined && w.durationMs >= SIX_HOURS_MS)),
         );
-        if (!longWindow || longWindow.percentRemaining <= 0 || !longWindow.resetTime) {
+        if (!longWindow || longWindow.percentRemaining <= 0) {
           continue;
         }
-        const longResetAt = Date.parse(longWindow.resetTime);
-        if (
+        const isResetToFull = longWindow.percentRemaining === 100 && !longWindow.resetTime;
+        const longResetAt = longWindow.resetTime ? Date.parse(longWindow.resetTime) : NaN;
+        const resetMoved =
           Number.isFinite(longResetAt) &&
           longResetAt > now &&
-          Math.abs(longResetAt - cooldownUntil) > 5 * 60_000
-        ) {
+          Math.abs(longResetAt - cooldownUntil) > 5 * 60_000;
+        if (isResetToFull || resetMoved) {
           delete account.cooldownsByModel[quota.modelKey];
           for (const [modelKey, deadline] of Object.entries(account.cooldownsByModel)) {
             if (
+              deadline === cooldownSnapshotAtStart[modelKey] &&
               Math.abs(deadline - cooldownUntil) <= 1000 &&
               dynamicCatalog.resolveQuotaPoolForAccount(accountId, modelKey) === quota.modelKey
             ) {

@@ -212,6 +212,7 @@ export const googleAntigravityAdapter: ProviderAdapter = {
       );
       return (preferred ?? dynamicCandidates[0]).id;
     }
+    if (dynamicCatalog.hasQuotaPool(quotaModelKey)) return undefined;
     return KICKSTART_MODEL_FOR_QUOTA_POOL[resolveQuotaModelKey(quotaModelKey) ?? ""];
   },
 
@@ -219,7 +220,29 @@ export const googleAntigravityAdapter: ProviderAdapter = {
     quotaModelKey: string,
     account?: AccountRuntime,
   ): string[] {
-    const pool = KICKSTART_MODEL_FOR_QUOTA_POOL[quotaModelKey]
+    const directPrimary = KICKSTART_MODEL_FOR_QUOTA_POOL[quotaModelKey];
+    const accountId = account ? getAccountIdentity(account) : undefined;
+    if (!directPrimary) {
+      const dynamicCandidates = dynamicCatalog
+        .getModelsForQuotaPool(quotaModelKey, accountId)
+        .filter((entry) => !entry.id.toLowerCase().endsWith("-disabled"));
+      if (dynamicCandidates.length > 0) {
+        const preferred = dynamicCandidates.filter((entry) =>
+          /(?:^|-)(?:low|lite|flash|medium)$/i.test(entry.id),
+        );
+        const rest = dynamicCandidates.filter(
+          (entry) => !/(?:^|-)(?:low|lite|flash|medium)$/i.test(entry.id),
+        );
+        return [...preferred, ...rest].map((entry) => entry.id);
+      }
+      if (
+        dynamicCatalog.hasQuotaPool(quotaModelKey, accountId) ||
+        account?.quota.some((q) => q.modelKey === quotaModelKey)
+      ) {
+        return [];
+      }
+    }
+    const pool = directPrimary
       ? quotaModelKey
       : resolveQuotaModelKey(quotaModelKey) ?? "";
     const primary = KICKSTART_MODEL_FOR_QUOTA_POOL[pool];

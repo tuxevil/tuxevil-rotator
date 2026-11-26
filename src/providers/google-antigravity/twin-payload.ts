@@ -106,6 +106,8 @@ function buildTwinSystemInstruction(
   };
 }
 
+const trailingContinueSkipped = new WeakSet<object>();
+
 /**
  * Ensures an Antigravity `v1internal` payload carries IDE/CLI twin envelope
  * fields (`requestId`, `userPromptId`, `userAgent`, `requestType`), signed
@@ -155,13 +157,19 @@ export function applyAntigravityTwinPayload<T extends Record<string, unknown>>(
         : turn,
     );
 
+    const shouldSkipTrailingContinueWrap = Boolean(
+      options?.skipTrailingContinueWrap ||
+        trailingContinueSkipped.has(out.request) ||
+        trailingContinueSkipped.has(rawContents),
+    );
+    const lastTurn = clonedContents[clonedContents.length - 1];
+    const endsWithSyntheticContinue =
+      shouldSkipTrailingContinueWrap &&
+      clonedContents.length > 1 &&
+      isRecord(lastTurn) &&
+      lastTurn.role === "user";
+
     if (promptMode === "twin" && !options?.skipPromptInjection) {
-      const lastTurn = clonedContents[clonedContents.length - 1];
-      const endsWithSyntheticContinue =
-        options?.skipTrailingContinueWrap &&
-        clonedContents.length > 1 &&
-        isRecord(lastTurn) &&
-        lastTurn.role === "user";
       const searchEnd = endsWithSyntheticContinue
         ? clonedContents.length - 2
         : clonedContents.length - 1;
@@ -177,6 +185,11 @@ export function applyAntigravityTwinPayload<T extends Record<string, unknown>>(
           }
         }
       }
+    }
+
+    if (endsWithSyntheticContinue) {
+      trailingContinueSkipped.add(reqClone);
+      trailingContinueSkipped.add(clonedContents);
     }
 
     reqClone.contents = clonedContents;

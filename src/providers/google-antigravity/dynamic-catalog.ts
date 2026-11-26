@@ -553,6 +553,10 @@ export class DynamicModelRegistry {
       const models = new Map<string, DynamicModelEntry>();
       let valid = true;
       for (const raw of snapshot.models) {
+        if (!isRecord(raw)) {
+          valid = false;
+          break;
+        }
         const validPool =
           typeof raw.quotaPool === "string" &&
           raw.quotaPool.length > 0 &&
@@ -561,7 +565,7 @@ export class DynamicModelRegistry {
           raw.quotaPool !== "__proto__" &&
           raw.quotaPool !== "constructor" &&
           raw.quotaPool !== "prototype";
-        if (!isRecord(raw) || typeof raw.id !== "string" || !isDiscoverableModelId(raw.id) ||
+        if (typeof raw.id !== "string" || !isDiscoverableModelId(raw.id) ||
           typeof raw.family !== "string" || !isSafeModelId(raw.family) ||
           !validPool ||
           !["ctx", "maxOutputTokens"].every((key) => typeof raw[key] === "number" && Number.isFinite(raw[key]) && raw[key] > 0) ||
