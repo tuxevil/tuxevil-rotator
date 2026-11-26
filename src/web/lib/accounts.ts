@@ -67,6 +67,8 @@ export function matchesQuery(
     masked ? "" : account.label,
     account.status,
     account.tier,
+    account.authWarning?.code ?? "",
+    account.authWarning?.message ?? "",
     ...providerIds(account).flatMap((p) => [p, providerLabel(p)]),
     ...(account.quota || []).map((quota) => quota.displayName),
   ]

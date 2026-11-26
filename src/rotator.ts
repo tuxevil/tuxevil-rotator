@@ -47,6 +47,7 @@ import {
   normalizeAccountConfig,
 } from "./account-store.js";
 import { isHostedOAuthConfigured } from "./providers/google-antigravity/oauth.js";
+import { buildAccountAuthWarning } from "./providers/google-antigravity/aicode-eligibility.js";
 import type { RequestBody } from "./proxy.js";
 import { UsagePredictor, type ExhaustionPrediction } from "./providers/ollama/prediction.js";
 import { fetchWithRetry } from "./fetch-with-retry.js";
@@ -4302,6 +4303,9 @@ export class AccountRotator {
       if (providerId === "google-antigravity" || providerId === DEFAULT_PROVIDER) {
         account.accessToken = snapshotAccount.accessToken;
         account.tokenExpires = snapshotAccount.tokenExpires;
+        if (snapshotAccount.tokenScopes !== undefined) {
+          account.tokenScopes = snapshotAccount.tokenScopes;
+        }
         if (snapshotAccount.config.refreshToken !== undefined) {
           account.config.refreshToken = snapshotAccount.config.refreshToken;
         }
@@ -4880,6 +4884,7 @@ export class AccountRotator {
         allowFreshWindowStartsOverride: a.allowFreshWindowStartsOverride,
         effectiveFreshWindowStartsAllowed:
           this.isEffectiveFreshWindowAllowed(a),
+        authWarning: buildAccountAuthWarning(a),
       };
     });
 
@@ -5199,6 +5204,10 @@ export class AccountRotator {
         (accountConfig.credentials ?? []).map((credential) => credential.provider),
       );
       if (accountConfig.refreshToken) updatedProviders.add(DEFAULT_PROVIDER);
+      if (updatedProviders.has(DEFAULT_PROVIDER)) {
+        delete existing.tokenScopes;
+        delete existing.aicodeEligibility;
+      }
       if (receivesCodexCredential) updatedProviders.add("openai-codex");
       for (const pid of updatedProviders) {
         if (existing.invalidProviders) {

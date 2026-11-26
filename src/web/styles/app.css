@@ -2980,6 +2980,22 @@ a.hero-metric:hover {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bad) 16%, transparent);
 }
 
+.card-status.is-warning {
+  align-items: flex-start;
+  margin-top: 0;
+  padding: 9px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warn-soft) 85%, var(--surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 26%, transparent);
+  color: var(--text);
+}
+
+.card-status.is-warning .icon {
+  color: var(--warn);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
 .card-status-text {
   flex: 1;
   min-width: 0;

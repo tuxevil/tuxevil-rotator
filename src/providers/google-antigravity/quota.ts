@@ -39,6 +39,7 @@ import {
   DynamicModelRegistry,
   parseGoogleQuotaResponse,
 } from "./dynamic-catalog.js";
+import { refreshAicodeEligibilityIfNeeded } from "./aicode-eligibility.js";
 
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -871,6 +872,13 @@ export async function fetchProviderQuota(
       }
       if (!isCurrentGeneration()) return;
     }
+
+    await refreshAicodeEligibilityIfNeeded(
+      account,
+      quotaHeaders,
+      isCurrentGeneration,
+    );
+    if (!isCurrentGeneration()) return;
 
     const oldQuota = account.quota || [];
     const poolOverrides = buildSummaryModelPoolMap(data, summary);

@@ -352,6 +352,11 @@ const AccountRow = memo(function AccountRow({
       <td>
         <StatusPill status={account.status} />
         <StatusDetail account={account} maxConcurrent={maxConcurrent} />
+        {account.authWarning && (
+          <div class="cell-sub tone-text-warn" title={account.authWarning.message}>
+            <Icon name="warning" size={12} /> Re-auth needed (missing aicode scope)
+          </div>
+        )}
       </td>
       <td>
         {pools.length === 0 ? (
@@ -455,6 +460,12 @@ const AccountCard = memo(function AccountCard({
       </div>
 
       <CardStatus account={account} maxConcurrent={maxConcurrent} />
+      {account.authWarning && (
+        <div class="card-status is-warning" role="status" title={account.authWarning.message}>
+          <Icon name="warning" size={14} />
+          <p class="card-status-text">{account.authWarning.message}</p>
+        </div>
+      )}
 
       {pools.length === 0 ? (
         <p class="card-quotas-empty">No quota reported yet.</p>

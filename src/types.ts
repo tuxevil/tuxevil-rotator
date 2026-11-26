@@ -578,6 +578,16 @@ export interface AccountRuntime {
     string,
     { accessToken: string | null; tokenExpires: number }
   >;
+  /** Granted OAuth scopes observed on the latest Google token refresh. */
+  tokenScopes?: string[];
+  /** Cached Google AICode eligibility & experiment check per credential generation. */
+  aicodeEligibility?: {
+    credentialGeneration: string;
+    checkedAt: number;
+    personalConsumer: boolean | null;
+    useAicodeMendel: boolean | null;
+    userTierId?: string | null;
+  };
   /** Provider-local auth failures/cooldowns; Google/Ollama remain routable. */
   invalidProviders?: Record<string, string>;
   providerCooldowns?: Record<string, number>;
@@ -781,6 +791,16 @@ export interface StatusResponse {
   hostedOAuthConfigured?: boolean;
 }
 
+export interface AccountAuthWarning {
+  code: "missing-aicode-scope";
+  message: string;
+  rules: {
+    personalConsumer: boolean;
+    useAicodeMendel: boolean;
+    missingAicodeScope: boolean;
+  };
+}
+
 export interface AccountStatus {
   /** Stable account identity for exact Models-page targets; email is a legacy fallback. */
   id?: string;
@@ -832,6 +852,8 @@ export interface AccountStatus {
   };
   allowFreshWindowStartsOverride: boolean;
   effectiveFreshWindowStartsAllowed: boolean;
+  /** Non-blocking auth warning when all re-auth conditions match (e.g. missing AICode scope). */
+  authWarning?: AccountAuthWarning | null;
 }
 
 export interface HealthScoreBreakdown {
@@ -1384,10 +1406,16 @@ export const KICKSTART_PRO_MODELS_FOR_QUOTA_POOL: Record<string, readonly string
   ],
 };
 
+export const AICODE_SCOPE = "https://www.googleapis.com/auth/aicode";
+
 export const QUOTA_API_URL =
   "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
 export const QUOTA_SUMMARY_API_URL =
   "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
+export const LOAD_CODE_ASSIST_URL =
+  "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
+export const LIST_EXPERIMENTS_URL =
+  "https://daily-cloudcode-pa.googleapis.com/v1internal:listExperiments";
 
 // ── Ollama Cloud endpoints ──────────────────────────────────────────
 export const OLLAMA_API_BASE = "https://ollama.com/api";

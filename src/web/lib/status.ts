@@ -80,12 +80,14 @@ export function isCooling(account: { status: AccountState }): boolean {
 export function needsAttention(account: {
   status: AccountState;
   invalidProviders?: Record<string, string>;
+  authWarning?: { code: string } | null;
 }): boolean {
   return (
     account.status === "error" ||
     account.status === "disabled" ||
     account.status === "flagged" ||
-    Boolean(account.invalidProviders?.["openai-codex"])
+    Boolean(account.invalidProviders?.["openai-codex"]) ||
+    Boolean(account.authWarning)
   );
 }
 

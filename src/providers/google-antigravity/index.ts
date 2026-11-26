@@ -93,9 +93,13 @@ async function ensureGoogleToken(account: AccountRuntime): Promise<void> {
   const data = (await response.json()) as {
     access_token: string;
     expires_in: number;
+    scope?: string;
   };
   account.accessToken = data.access_token;
   account.tokenExpires = now + data.expires_in * 1000 - 5 * 60 * 1000;
+  if (typeof data.scope === "string" && data.scope.trim()) {
+    account.tokenScopes = data.scope.trim().split(/\s+/).filter(Boolean);
+  }
   account.consecutiveErrors = 0;
 }
 

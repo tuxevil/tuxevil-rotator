@@ -328,6 +328,29 @@ describe("attention items", () => {
     assert.equal(noToken.title, "Admin routes are exposed");
     assert.equal(noToken.severity, "warning");
   });
+
+  it("surfaces a warning when accounts match all three AICode re-auth rules", () => {
+    const items = buildAttention(
+      overview({
+        accounts: [
+          account("a@x.dev", {
+            authWarning: {
+              code: "missing-aicode-scope",
+              message: "Re-authenticate required: missing aicode scope.",
+              rules: { personalConsumer: true, useAicodeMendel: true, missingAicodeScope: true },
+            },
+          }),
+          account("b@x.dev"),
+        ],
+      }),
+      NOW,
+    );
+    const item = items.find((i) => i.id === "aicode-reauth");
+    assert.ok(item);
+    assert.equal(item.severity, "warning");
+    assert.deepEqual(item.actions, [{ kind: "open-account", email: "a@x.dev" }]);
+    assert.equal(actionableCount(items), 1);
+  });
 });
 
 describe("token chart math", () => {
@@ -415,6 +438,18 @@ describe("accounts list", () => {
     assert.equal(count("serving"), 1);
     assert.equal(count("cooling"), 1);
     assert.equal(count("attention"), 1);
+    assert.equal(
+      ACCOUNT_FILTERS.find((f) => f.id === "attention")!.match(
+        account("warn@x.dev", {
+          authWarning: {
+            code: "missing-aicode-scope",
+            message: "Re-authenticate required",
+            rules: { personalConsumer: true, useAicodeMendel: true, missingAicodeScope: true },
+          },
+        }),
+      ),
+      true,
+    );
   });
 
   it("searches names, providers and pools, but not hidden emails", () => {

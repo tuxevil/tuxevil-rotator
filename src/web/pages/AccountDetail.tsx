@@ -36,6 +36,7 @@ import {
   StatusPill,
 } from "../components/ui.js";
 import { accountMenuItems } from "./Accounts.js";
+import { openAddAccount } from "./shared.js";
 import { BASE, providerPath } from "../state/router.js";
 
 export function AccountDetail({ email, onClose }: { email: string; onClose: () => void }): JSX.Element {
@@ -103,6 +104,8 @@ export function AccountDetail({ email, onClose }: { email: string; onClose: () =
       </section>
 
       {account.lastError && <ErrorBlock message={account.lastError} />}
+
+      {account.authWarning && <AuthWarningBlock warning={account.authWarning} />}
 
       <ProviderProblems account={account} />
 
@@ -193,6 +196,27 @@ function TierSelect({ account }: { account: DashboardAccount }): JSX.Element {
         ))}
       </select>
     </label>
+  );
+}
+
+function AuthWarningBlock({ warning }: { warning: NonNullable<DashboardAccount["authWarning"]> }): JSX.Element {
+  return (
+    <section class="callout tone-warn" role="status">
+      <Icon name="warning" size={16} />
+      <div>
+        <strong>Re-authentication required</strong>
+        <p>{warning.message}</p>
+        <p class="callout-hint">
+          Matched rules:
+          {warning.rules.personalConsumer ? " personal consumer" : ""}
+          {warning.rules.useAicodeMendel ? " · use-aicode-mendel active" : ""}
+          {warning.rules.missingAicodeScope ? " · missing aicode scope" : ""}.
+        </p>
+        <Button size="sm" variant="primary" onClick={openAddAccount}>
+          Re-authenticate
+        </Button>
+      </div>
+    </section>
   );
 }
 
