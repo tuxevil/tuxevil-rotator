@@ -4627,5 +4627,9 @@ server.listen(PORT, "0.0.0.0", () => {
 	console.log(`Telemetry receiver listening on 0.0.0.0:${PORT}`);
 	console.log(`Data dir: ${DATA_DIR}`);
 	console.log(`Trusted proxies: ${TRUSTED_PROXIES_RAW}`);
-	console.log(`Stats: ${STATS_TOKEN ? "protected by STATS_TOKEN" : "⚠ STATS_TOKEN not set — /v1/stats disabled"}`);
+	if (STATS_TOKEN) {
+		console.log("Stats: protected by STATS_TOKEN");
+	} else {
+		console.log("Stats: ⚠ STATS_TOKEN not set — /v1/stats disabled");
+	}
 });

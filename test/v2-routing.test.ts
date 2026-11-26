@@ -2189,12 +2189,21 @@ describe("v2 routing and status", () => {
       },
     ];
 
+    const isOllamaUrl = (rawUrl: string): boolean => {
+      try {
+        const hostname = new URL(rawUrl).hostname;
+        return hostname === "ollama.com" || hostname.endsWith(".ollama.com");
+      } catch {
+        return false;
+      }
+    };
+
     const calls: string[] = [];
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (input: string | URL | Request) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       calls.push(url);
-      if (url.includes("ollama.com")) {
+      if (isOllamaUrl(url)) {
         return new Response("Unauthorized", { status: 401 });
       }
       if (url.includes("generateContent") || url.includes("streamGenerateContent")) {
@@ -2220,13 +2229,13 @@ describe("v2 routing and status", () => {
       // First quota poll hits Ollama 401 -> marks ollama invalid
       await rotator.pollAccountQuota(account);
       assert.ok(account.invalidProviders?.ollama, "ollama should be marked invalid after 401");
-      const ollamaCallsAfterFirstPoll = calls.filter((u) => u.includes("ollama.com")).length;
+      const ollamaCallsAfterFirstPoll = calls.filter(isOllamaUrl).length;
       assert.equal(ollamaCallsAfterFirstPoll, 1);
 
       // Second quota poll must NOT hit Ollama again
       await rotator.pollAccountQuota(account);
       assert.equal(
-        calls.filter((u) => u.includes("ollama.com")).length,
+        calls.filter(isOllamaUrl).length,
         1,
         "invalidated ollama credential must not be re-polled every cycle",
       );

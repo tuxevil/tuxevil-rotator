@@ -23,10 +23,12 @@ export class IdempotencyManager {
         .update(`idkey:${clientKey.trim()}`)
         .digest("hex");
     }
+    // SHA-256 is intentional: this is a deterministic HTTP request payload fingerprint
+    // for in-flight deduplication / idempotency caching, not a password hash.
     const raw = typeof body === "string" ? body : JSON.stringify(body);
     return createHash("sha256")
       .update(`body:${model}:${raw}`)
-      .digest("hex");
+      .digest("hex"); // codeql[js/insufficient-password-hash]
   }
 
   /**
