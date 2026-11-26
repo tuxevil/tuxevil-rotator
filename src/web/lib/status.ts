@@ -263,6 +263,6 @@ export const ROUTING_POLICIES: Array<{ value: string; label: string; description
   {
     value: "sticky-quota",
     label: "Sticky quota",
-    description: "Keep the current account while it has quota; fall back during cooldowns and return when it recovers.",
+    description: "Serve one account sequentially until its quota reaches 0%; fall back temporarily during cooldowns and return when it recovers.",
   },
 ];

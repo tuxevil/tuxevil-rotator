@@ -228,6 +228,7 @@ interface AccountRequestWaiter {
   signal?: AbortSignal;
   timer: ReturnType<typeof setTimeout>;
   onAbort?: () => void;
+  onLease?: (modelKey: string) => void;
   resolve: (account: AccountRuntime | null) => void;
   reject: (error: unknown) => void;
 }
@@ -278,8 +279,9 @@ export class AccountRotator {
   // Fallback for requests where model can't be resolved
   private defaultIndex = 0;
   private startTime = Date.now();
-  private quotaPollTimer: ReturnType<typeof setInterval> | null = null;
+  private quotaPollTimer: ReturnType<typeof setTimeout> | null = null;
   private quotaInitialPollTimer: ReturnType<typeof setTimeout> | null = null;
+  private quotaPollingStopped = false;
   private quotaPolls = new WeakMap<AccountRuntime, Promise<boolean>>();
   private quotaRepollRequested = new WeakSet<AccountRuntime>();
   private quotaPollCycle: Promise<void> | null = null;
@@ -1033,29 +1035,112 @@ export class AccountRotator {
   // Quota Polling
   // =========================================================================
 
-  private startQuotaPolling(): void {
+  private getBaseQuotaPollIntervalMs(): number {
     const configuredIntervalMs = this.config.quotaPollIntervalMs;
-    const intervalMs =
-      Number.isFinite(configuredIntervalMs) &&
+    return Number.isFinite(configuredIntervalMs) &&
       configuredIntervalMs >= MIN_QUOTA_POLL_INTERVAL_MS &&
       configuredIntervalMs <= MAX_QUOTA_POLL_INTERVAL_MS
-        ? Math.floor(configuredIntervalMs)
-        : DEFAULT_QUOTA_POLL_INTERVAL_MS;
-    this.log(`Quota polling every ${Math.round(intervalMs / 1000)}s`);
+      ? Math.floor(configuredIntervalMs)
+      : DEFAULT_QUOTA_POLL_INTERVAL_MS;
+  }
 
-    // Initial poll (delayed 2s to allow token refresh first)
-    this.quotaInitialPollTimer = setTimeout(() => this.pollAllQuotas(), 2000);
+  private computeNextQuotaPollDelayMs(
+    baseIntervalMs = this.getBaseQuotaPollIntervalMs(),
+    now = Date.now(),
+    random = Math.random,
+  ): number {
+    const available = this.accounts.filter((a) => !a.disabled && !a.flagged);
+    const hasInFlight = available.some((a) => a.inFlightRequests > 0);
+    const missingInitialQuota = available.some((a) => a.quota.length === 0);
+    const recentActivityWindowMs = 15 * 60_000;
+    const lastUsedAt = available.reduce(
+      (latest, account) => Math.max(latest, account.lastUsed ?? 0),
+      0,
+    );
+    const isRecentlyActive =
+      lastUsedAt > 0 && now - lastUsedAt < recentActivityWindowMs;
 
-    this.quotaPollTimer = setInterval(() => this.pollAllQuotas(), intervalMs);
+    let effectiveBaseMs = baseIntervalMs;
+    if (!hasInFlight && !isRecentlyActive && !this.autoWarmupEnabled && !missingInitialQuota) {
+      const idleMs = lastUsedAt > 0 ? now - lastUsedAt : now - this.startTime;
+      const idleMultiplier = idleMs >= 60 * 60_000 ? 4 : 2;
+      const idleCapMs = Math.max(baseIntervalMs, 30 * 60_000);
+      effectiveBaseMs = Math.min(idleCapMs, baseIntervalMs * idleMultiplier);
+
+      let nextCooldownExpiry = Infinity;
+      for (const account of available) {
+        for (const until of Object.values(account.cooldownsByModel)) {
+          if (until > now && until < nextCooldownExpiry) {
+            nextCooldownExpiry = until;
+          }
+        }
+      }
+      if (Number.isFinite(nextCooldownExpiry)) {
+        effectiveBaseMs = Math.min(
+          effectiveBaseMs,
+          Math.max(baseIntervalMs, nextCooldownExpiry - now),
+        );
+      }
+    }
+
+    const jitterFactor = 0.85 + random() * 0.35;
+    return Math.min(
+      MAX_QUOTA_POLL_INTERVAL_MS,
+      Math.max(MIN_QUOTA_POLL_INTERVAL_MS, Math.round(effectiveBaseMs * jitterFactor)),
+    );
+  }
+
+  private scheduleNextQuotaPoll(): void {
+    if (this.quotaPollingStopped) return;
+    if (this.quotaPollTimer) {
+      clearTimeout(this.quotaPollTimer);
+      this.quotaPollTimer = null;
+    }
+    const delayMs = this.computeNextQuotaPollDelayMs();
+    this.quotaPollTimer = setTimeout(() => {
+      this.quotaPollTimer = null;
+      void this.runScheduledQuotaPoll(false);
+    }, delayMs);
+    this.quotaPollTimer.unref?.();
+  }
+
+  private async runScheduledQuotaPoll(isInitial: boolean): Promise<void> {
+    if (isInitial) {
+      this.quotaInitialPollTimer = null;
+    }
+    if (this.quotaPollingStopped) return;
+    try {
+      await this.pollAllQuotas(true);
+    } finally {
+      if (!this.quotaPollingStopped) {
+        this.scheduleNextQuotaPoll();
+      }
+    }
+  }
+
+  private startQuotaPolling(): void {
+    this.quotaPollingStopped = false;
+    const intervalMs = this.getBaseQuotaPollIntervalMs();
+    this.log(`Quota polling every ${Math.round(intervalMs / 1000)}s (jittered)`);
+
+    // Initial poll (delayed 2-5s to allow token refresh first and avoid fixed cadence)
+    const initialDelayMs = 2000 + Math.floor(Math.random() * 3000);
+    this.quotaInitialPollTimer = setTimeout(() => {
+      void this.runScheduledQuotaPoll(true);
+    }, initialDelayMs);
+    this.quotaInitialPollTimer.unref?.();
+
+    this.scheduleNextQuotaPoll();
   }
 
   stopQuotaPolling(): void {
+    this.quotaPollingStopped = true;
     if (this.quotaInitialPollTimer) {
       clearTimeout(this.quotaInitialPollTimer);
       this.quotaInitialPollTimer = null;
     }
     if (this.quotaPollTimer) {
-      clearInterval(this.quotaPollTimer);
+      clearTimeout(this.quotaPollTimer);
       this.quotaPollTimer = null;
     }
   }
@@ -1104,6 +1189,7 @@ export class AccountRotator {
   private async pollAccountQuotaOnce(account: AccountRuntime): Promise<boolean> {
     let quotaPublished = false;
     const snapshotRevision = dynamicCatalog.snapshotRevision;
+    const cooldownSnapshotAtStart: Record<string, number> = { ...account.cooldownsByModel };
     const cooldownsBefore = JSON.stringify(account.cooldownsByModel);
     try {
       const quotaCtx: QuotaFetchContext = {
@@ -1161,6 +1247,7 @@ export class AccountRotator {
         if (
           !Number.isFinite(resetAt) ||
           resetAt <= now ||
+          account.cooldownsByModel[quota.modelKey] !== cooldownSnapshotAtStart[quota.modelKey] ||
           account.cooldownsByModel[quota.modelKey] === resetAt
         ) {
           continue;
@@ -1183,22 +1270,29 @@ export class AccountRotator {
     return quotaPublished;
   }
 
-  private pollAllQuotas(): Promise<void> {
+  private pollAllQuotas(scheduled = false): Promise<void> {
     if (this.quotaPollCycle) return this.quotaPollCycle;
-    this.quotaPollCycle = this.pollAllQuotasOnce().finally(() => {
+    this.quotaPollCycle = this.pollAllQuotasOnce(scheduled).finally(() => {
       this.quotaPollCycle = null;
     });
     return this.quotaPollCycle;
   }
 
-  private async pollAllQuotasOnce(): Promise<void> {
+  private async pollAllQuotasOnce(scheduled = false): Promise<void> {
     void this.refreshOllamaCatalogOnce().catch(() => {});
     void this.refreshCodexCatalogOnce().catch(() => {});
 
     const available = this.accounts.filter((a) => !a.disabled && !a.flagged);
     this.reconcileDynamicCatalog();
     let quotaPublished = false;
-    for (const account of available) {
+    for (let i = 0; i < available.length; i++) {
+      if (scheduled && this.quotaPollingStopped) break;
+      if (scheduled && i > 0) {
+        const spacingMs = 250 + Math.floor(Math.random() * 1000);
+        await new Promise((resolve) => setTimeout(resolve, spacingMs));
+        if (this.quotaPollingStopped) break;
+      }
+      const account = available[i];
       if (await this.pollAccountQuota(account)) {
         quotaPublished = true;
       }
@@ -1223,8 +1317,9 @@ export class AccountRotator {
       return;
     }
 
-    // Check per-model quota-based rotation
-    if (this.config.rotateOnQuotaDrop > 0) {
+    // Check per-model quota-based rotation (disabled for quota-aware policies
+    // like sticky-quota and sequential-quota that drain an account to 0%).
+    if (this.config.rotateOnQuotaDrop > 0 && !this.isQuotaAwarePolicy()) {
       for (const [modelKey, mState] of this.modelState.entries()) {
         const account = this.accounts[mState.activeAccountIndex];
         if (!account) continue;
@@ -1414,19 +1509,22 @@ export class AccountRotator {
           const single = adapter.getKickstartModelForPool(poolKey);
           return single ? [single] : [];
         })();
-    if (rawCandidates.length === 0) return null;
 
     let upstreamModels = [...rawCandidates];
     if (providerId === DEFAULT_PROVIDER) {
-      const allOff = !providerOff && upstreamModels.every((model) =>
-        isProviderModelOff(this, providerId, model),
-      );
-      if (allOff || !QUOTA_MODEL_KEYS[poolKey]) {
+      const isCustomPool = !QUOTA_MODEL_KEYS[poolKey];
+      const allOff =
+        upstreamModels.length > 0 &&
+        !providerOff &&
+        upstreamModels.every((model) =>
+          isProviderModelOff(this, providerId, model),
+        );
+      if (upstreamModels.length === 0 || allOff || isCustomPool) {
         const accountCandidates = dynamicCatalog
           .getModelsForQuotaPool(poolKey, getAccountIdentity(account))
           .filter((entry) => !entry.id.toLowerCase().endsWith("-disabled"));
         if (accountCandidates.length > 0) {
-          const activeCandidates = providerOff || !allOff
+          const activeCandidates = providerOff || (upstreamModels.length > 0 && !allOff)
             ? accountCandidates
             : accountCandidates.filter(
                 (entry) => !isProviderModelOff(this, providerId, entry.id),
@@ -1441,12 +1539,13 @@ export class AccountRotator {
               .map((entry) => entry.id)
               .filter((id) => id !== preferred?.id),
           ];
-          upstreamModels = allOff
+          upstreamModels = (allOff || isCustomPool || upstreamModels.length === 0)
             ? dynamicIds
             : Array.from(new Set([...dynamicIds, ...upstreamModels]));
         }
       }
     }
+    if (upstreamModels.length === 0) return null;
 
     return {
       poolKey,
@@ -1541,15 +1640,15 @@ export class AccountRotator {
       hybridScore: number;
     } | null = null;
     const policy = this.config.routingPolicy || "timer-first";
+    const sequentialOrder = this.isQuotaAwarePolicy(policy);
 
-    const candidateIndices =
-      policy === "sequential-quota"
-        ? Array.from({ length: this.accounts.length }, (_, offset) =>
-            excludeIdx >= 0
-              ? (excludeIdx + 1 + offset) % this.accounts.length
-              : offset,
-          )
-        : Array.from({ length: this.accounts.length }, (_, i) => i);
+    const candidateIndices = sequentialOrder
+      ? Array.from({ length: this.accounts.length }, (_, offset) =>
+          excludeIdx >= 0
+            ? (excludeIdx + 1 + offset) % this.accounts.length
+            : offset,
+        )
+      : Array.from({ length: this.accounts.length }, (_, i) => i);
 
     for (const i of candidateIndices) {
       if (i === excludeIdx) continue;
@@ -1579,7 +1678,7 @@ export class AccountRotator {
         tokenSnapshot.tokens < 1
       )
         continue;
-      if (policy === "sequential-quota") return account;
+      if (sequentialOrder) return account;
       const metrics = {
         priority,
         quota,
@@ -2001,7 +2100,7 @@ export class AccountRotator {
     },
     policy: Config["routingPolicy"],
   ): boolean {
-    if (policy === "sequential-quota") {
+    if (this.isQuotaAwarePolicy(policy)) {
       return candidate.distance < best.distance;
     }
     if (policy === "hybrid") {
@@ -2247,6 +2346,7 @@ export class AccountRotator {
     signal?: AbortSignal,
     providerId?: string,
     autoScope?: AutoAccountScope,
+    onLease?: (modelKey: string) => void,
   ): Promise<AccountRuntime | null> {
     if (signal?.aborted) return null;
     autoScope ??= this.getExplicitAccessScope(model, providerId);
@@ -2255,12 +2355,12 @@ export class AccountRotator {
       this.hasQueuedRequest(queueKey) ||
       this.isConcurrencySaturated(model, providerId, autoScope)
     ) {
-      return this.enqueueAccountRequest(model, signal, queueKey, providerId, autoScope);
+      return this.enqueueAccountRequest(model, signal, queueKey, providerId, autoScope, onLease);
     }
 
-    const account = await this.tryGetActiveAccount(model, providerId, autoScope);
+    const account = await this.tryGetActiveAccount(model, providerId, autoScope, onLease);
     if (account || !this.isConcurrencySaturated(model, providerId, autoScope)) return account;
-    return this.enqueueAccountRequest(model, signal, queueKey, providerId, autoScope);
+    return this.enqueueAccountRequest(model, signal, queueKey, providerId, autoScope, onLease);
   }
 
   /** Keep fairness within a provider pool without making unrelated providers wait. */
@@ -2279,6 +2379,7 @@ export class AccountRotator {
     queueKey = this.getRequestQueueKey(model),
     providerId?: string,
     autoScope?: AutoAccountScope,
+    onLease?: (modelKey: string) => void,
   ): Promise<AccountRuntime | null> {
     if (signal?.aborted) return Promise.resolve(null);
 
@@ -2289,6 +2390,7 @@ export class AccountRotator {
       waiter.providerId = providerId;
       waiter.autoScope = autoScope;
       waiter.signal = signal;
+      waiter.onLease = onLease;
       waiter.resolve = resolve;
       waiter.reject = reject;
       waiter.timer = setTimeout(() => {
@@ -2389,52 +2491,69 @@ export class AccountRotator {
           ...new Set(this.requestWaiters.map((waiter) => waiter.queueKey)),
         ];
         for (const queueKey of queueKeys) {
-          const waiter = this.requestWaiters.find(
+          const queueWaiters = this.requestWaiters.filter(
             (candidate) => candidate.queueKey === queueKey,
           );
-          if (!waiter) continue;
-          if (waiter.signal?.aborted) {
-            this.settleAccountRequestWaiter(waiter, null);
-            progressed = true;
-            continue;
-          }
-
-          let account: AccountRuntime | null;
-          try {
-            account = await this.tryGetActiveAccount(waiter.model, waiter.providerId, waiter.autoScope);
-          } catch (error) {
-            this.rejectAccountRequestWaiter(waiter, error);
-            progressed = true;
-            continue;
-          }
-
-          if (!this.requestWaiters.includes(waiter)) {
-            if (account) {
-              this.finishRequest(
-                account,
-                waiter.model
-                  ? this.resolveRequestPoolKey(waiter.model, waiter.providerId)
-                  : undefined,
-                waiter.providerId,
-              );
+          for (const waiter of queueWaiters) {
+            if (!this.requestWaiters.includes(waiter)) continue;
+            if (waiter.signal?.aborted) {
+              this.settleAccountRequestWaiter(waiter, null);
+              progressed = true;
+              continue;
             }
-            progressed = true;
-            continue;
-          }
-          if (account) {
-            this.settleAccountRequestWaiter(waiter, account);
-            progressed = true;
-            continue;
-          }
-          if (this.requestWaiterDrainRequested) {
-            progressed = true;
-            continue;
-          }
-          const wakeAt = this.getNextRequestAvailabilityAt(waiter.model, waiter.providerId, waiter.autoScope);
-          if (wakeAt !== null) this.scheduleRequestWaiterWake(wakeAt);
-          if (!this.isConcurrencySaturated(waiter.model, waiter.providerId, waiter.autoScope) && wakeAt === null) {
-            this.settleAccountRequestWaiter(waiter, null);
-            progressed = true;
+
+            let leasedModelKey: string | undefined;
+            let account: AccountRuntime | null;
+            try {
+              account = await this.tryGetActiveAccount(
+                waiter.model,
+                waiter.providerId,
+                waiter.autoScope,
+                (key) => {
+                  leasedModelKey = key;
+                },
+              );
+            } catch (error) {
+              this.rejectAccountRequestWaiter(waiter, error);
+              progressed = true;
+              continue;
+            }
+
+            if (!this.requestWaiters.includes(waiter)) {
+              if (account) {
+                this.finishRequest(
+                  account,
+                  leasedModelKey ??
+                    (waiter.model
+                      ? this.resolveRequestPoolKey(waiter.model, waiter.providerId)
+                      : undefined),
+                  waiter.providerId,
+                );
+              }
+              progressed = true;
+              continue;
+            }
+            if (account) {
+              if (leasedModelKey !== undefined) waiter.onLease?.(leasedModelKey);
+              this.settleAccountRequestWaiter(waiter, account);
+              progressed = true;
+              break;
+            }
+            if (this.requestWaiterDrainRequested) {
+              progressed = true;
+              break;
+            }
+            const wakeAt = this.getNextRequestAvailabilityAt(waiter.model, waiter.providerId, waiter.autoScope);
+            if (wakeAt !== null) this.scheduleRequestWaiterWake(wakeAt);
+            const saturated = this.isConcurrencySaturated(waiter.model, waiter.providerId, waiter.autoScope);
+            if (!saturated && wakeAt === null) {
+              this.settleAccountRequestWaiter(waiter, null);
+              progressed = true;
+              continue;
+            }
+            // Block tail waiters behind a concurrency-saturated head (FIFO fairness),
+            // but let other pools proceed when the head is only parked on a pool cooldown.
+            if (saturated) break;
           }
         }
       } while (progressed || this.requestWaiterDrainRequested);
@@ -2442,6 +2561,59 @@ export class AccountRotator {
       this.drainingRequestWaiters = false;
       if (this.requestWaiterDrainRequested) this.requestWaiterDrain();
     }
+  }
+
+  private getStickyConcurrencyTarget(
+    modelKey: string,
+    now: number,
+    autoScope?: AutoAccountScope,
+  ): AccountRuntime | null {
+    const policy = this.config.routingPolicy || "timer-first";
+    if (policy !== "sticky-quota") return null;
+
+    const state = this.modelState.get(modelKey);
+    const providerId = getProviderIdForPoolKey(modelKey);
+    const isPermanentlyGone = (account: AccountRuntime | undefined): boolean =>
+      !account ||
+      account.disabled ||
+      account.flagged ||
+      Boolean(account.invalidProviders?.[providerId]) ||
+      this.getModelQuota(account, modelKey) === 0;
+    const isEligibleIgnoringConcurrency = (
+      account: AccountRuntime | undefined,
+    ): account is AccountRuntime =>
+      Boolean(
+        account &&
+          this.getRoutingRejectionForModel(
+            account,
+            modelKey,
+            now,
+            policy,
+            true,
+            autoScope,
+          ) === null,
+      );
+
+    if (state) {
+      const preferred =
+        state.stickyAccountIndex !== undefined
+          ? this.accounts[state.stickyAccountIndex]
+          : undefined;
+      if (!isPermanentlyGone(preferred) && isEligibleIgnoringConcurrency(preferred)) {
+        return preferred;
+      }
+      const current = this.accounts[state.activeAccountIndex];
+      if (current && current !== preferred && isEligibleIgnoringConcurrency(current)) {
+        return current;
+      }
+      return null;
+    }
+
+    const defaultAcc = this.accounts[this.defaultIndex];
+    if (isEligibleIgnoringConcurrency(defaultAcc)) {
+      return defaultAcc;
+    }
+    return this.accounts.find((account) => isEligibleIgnoringConcurrency(account)) ?? null;
   }
 
   private isConcurrencySaturated(
@@ -2454,6 +2626,27 @@ export class AccountRotator {
     const modelKey = model ? this.resolveRequestPoolKey(model, providerId) : null;
     if (!modelKey) return false;
     const policy = this.config.routingPolicy || "timer-first";
+
+    if (policy === "sticky-quota") {
+      const stickyTarget = this.getStickyConcurrencyTarget(modelKey, now, autoScope);
+      if (stickyTarget) {
+        const stickyRejection = this.getRoutingRejectionForModel(
+          stickyTarget,
+          modelKey,
+          now,
+          policy,
+          false,
+          autoScope,
+        );
+        if (
+          stickyRejection &&
+          (stickyRejection.reason === "account-concurrency" ||
+            stickyRejection.reason === "project-concurrency")
+        ) {
+          return true;
+        }
+      }
+    }
 
     let concurrencyBlocked = false;
     for (const account of this.accounts) {
@@ -2494,12 +2687,31 @@ export class AccountRotator {
     model?: string,
     providerId?: string,
     autoScope?: AutoAccountScope,
+    onLease?: (modelKey: string) => void,
   ): Promise<AccountRuntime | null> {
     const now = Date.now();
     if (this.accounts.length === 0) return null;
     if (this.isProtectivePauseActive(now)) return null;
 
     const modelKey = model ? this.resolveRequestPoolKey(model, providerId) : null;
+    const account = await this.tryGetActiveAccountWithKey(
+      modelKey,
+      now,
+      providerId,
+      autoScope,
+    );
+    if (account) {
+      onLease?.(modelKey ?? "__default__");
+    }
+    return account;
+  }
+
+  private async tryGetActiveAccountWithKey(
+    modelKey: string | null,
+    now: number,
+    providerId?: string,
+    autoScope?: AutoAccountScope,
+  ): Promise<AccountRuntime | null> {
     const state = modelKey ? this.modelState.get(modelKey) : null;
     const idx = state?.activeAccountIndex ?? this.defaultIndex;
     const current = this.accounts[idx];
@@ -2536,14 +2748,14 @@ export class AccountRotator {
         return this.rotateModelForRequest(modelKey, now, idx, autoScope);
       }
     }
-    if (modelKey && hasActiveRequests) {
+    if (modelKey && hasActiveRequests && policy !== "sticky-quota") {
       const leastLoaded = this.pickLeastLoadedModelAccount(modelKey, now, autoScope);
       if (leastLoaded && leastLoaded !== current) {
         return this.rotateModelForRequest(modelKey, now, idx, autoScope);
       }
     }
 
-    if (modelKey && state && !hasActiveRequests) {
+    if (modelKey && state && (!hasActiveRequests || policy === "sticky-quota")) {
       try {
         const restored = await this.restorePreferredModelAccount(
           modelKey,
@@ -2556,6 +2768,27 @@ export class AccountRotator {
       } catch (error) {
         if (!this.isCodexPoolKey(modelKey)) throw error;
         return this.rotateModelForRequest(modelKey, now, idx, autoScope);
+      }
+    }
+
+    if (modelKey && policy === "sticky-quota") {
+      const stickyTarget = this.getStickyConcurrencyTarget(modelKey, now, autoScope);
+      if (stickyTarget) {
+        const stickyRejection = this.getRoutingRejectionForModel(
+          stickyTarget,
+          modelKey,
+          now,
+          policy,
+          false,
+          autoScope,
+        );
+        if (
+          stickyRejection &&
+          (stickyRejection.reason === "account-concurrency" ||
+            stickyRejection.reason === "project-concurrency")
+        ) {
+          return null;
+        }
       }
     }
 
@@ -2688,9 +2921,16 @@ export class AccountRotator {
     }
 
     const preferred = this.accounts[preferredIndex];
-    if (this.getModelQuota(preferred, modelKey) === 0) {
-      // A zero quota is a permanent hand-off for this rotation cycle. The
-      // next selected account becomes the new preference in rotateModel().
+    const providerId = getProviderIdForPoolKey(modelKey);
+    if (
+      !preferred ||
+      preferred.disabled ||
+      preferred.flagged ||
+      Boolean(preferred.invalidProviders?.[providerId]) ||
+      this.getModelQuota(preferred, modelKey) === 0
+    ) {
+      // A zero quota or permanent account unavailability is a hand-off for this
+      // rotation cycle. The next selected account becomes the new preference.
       state.stickyAccountIndex = undefined;
       this.scheduleStateSave();
       return null;
@@ -2718,9 +2958,11 @@ export class AccountRotator {
     forRequest = false,
     autoScope?: AutoAccountScope,
   ): Promise<AccountRuntime | null> {
-    const best = forRequest
-      ? this.pickLeastLoadedModelAccount(modelKey, now, autoScope)
-      : this.pickBestModelAccount(modelKey, now, excludeIdx, autoScope);
+    const policy = this.config.routingPolicy || "timer-first";
+    const best =
+      forRequest && !this.isQuotaAwarePolicy(policy)
+        ? this.pickLeastLoadedModelAccount(modelKey, now, autoScope)
+        : this.pickBestModelAccount(modelKey, now, excludeIdx, autoScope);
 
     if (best) {
       const previous = this.modelState.get(modelKey);
@@ -2731,10 +2973,16 @@ export class AccountRotator {
           preferredIndex === undefined
             ? undefined
             : this.accounts[preferredIndex];
+        const providerId = getProviderIdForPoolKey(modelKey);
+        const preferredPermanentlyGone =
+          !preferred ||
+          preferred.disabled ||
+          preferred.flagged ||
+          Boolean(preferred.invalidProviders?.[providerId]) ||
+          this.getModelQuota(preferred, modelKey) === 0;
         if (
           preferredIndex !== undefined &&
-          preferred &&
-          this.getModelQuota(preferred, modelKey) !== 0 &&
+          !preferredPermanentlyGone &&
           (preferredIndex !== previous.activeAccountIndex ||
             !this.isAvailableForModel(preferred, modelKey, now, autoScope))
         ) {
@@ -4834,9 +5082,43 @@ export class AccountRotator {
       };
     };
 
+    const previousAccounts = this.accounts;
     const mergedAccounts = normalized.accounts.map(matchAndReuseAccount);
     this.config = { ...normalized, accounts: mergedAccounts.map((account) => account.config) };
     this.accounts = mergedAccounts;
+
+    const remapIndex = (oldIndex: number): number => {
+      const prev = previousAccounts[oldIndex];
+      return prev ? mergedAccounts.indexOf(prev) : -1;
+    };
+    for (const [modelKey, mState] of this.modelState.entries()) {
+      const mappedSticky =
+        mState.stickyAccountIndex !== undefined ? remapIndex(mState.stickyAccountIndex) : -1;
+      mState.stickyAccountIndex = mappedSticky >= 0 ? mappedSticky : undefined;
+
+      const mappedActive = remapIndex(mState.activeAccountIndex);
+      if (mappedActive >= 0) {
+        mState.activeAccountIndex = mappedActive;
+      } else if (mergedAccounts.length === 0) {
+        this.modelState.delete(modelKey);
+      } else {
+        mState.activeAccountIndex =
+          mappedSticky >= 0
+            ? mappedSticky
+            : Math.min(Math.max(0, mState.activeAccountIndex), mergedAccounts.length - 1);
+        mState.requestsOnActiveAccount = 0;
+      }
+    }
+    const mappedDefault = remapIndex(this.defaultIndex);
+    this.defaultIndex =
+      mappedDefault >= 0
+        ? mappedDefault
+        : mergedAccounts.length > 0
+          ? Math.min(Math.max(0, this.defaultIndex), mergedAccounts.length - 1)
+          : 0;
+    const mappedCursor = remapIndex(this.requestCursorIndex);
+    this.requestCursorIndex = mappedCursor >= 0 ? mappedCursor : 0;
+
     applyConfigOverrides(this.config);
     this.reconcileDynamicCatalog();
     this.requestWaiterDrain();

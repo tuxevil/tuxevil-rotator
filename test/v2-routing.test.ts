@@ -1625,6 +1625,107 @@ describe("v2 routing and status", () => {
     assert.equal(rotator.modelState.get(model).stickyAccountIndex, 1);
   });
 
+  it("serves one account sequentially under sticky-quota across concurrency and quota drops", async () => {
+    const config = makeConfig();
+    config.routingPolicy = "sticky-quota";
+    config.rotateOnQuotaDrop = 20;
+    config.maxConcurrentRequestsPerAccount = 2;
+    config.maxConcurrentRequestsPerProjectModel = 2;
+    config.accounts.push({
+      email: "c@example.com",
+      refreshToken: "c",
+      projectId: "pc",
+      tier: "free",
+    });
+    const rotator = new AccountRotator(config) as any;
+    rotator.stopQuotaPolling();
+    rotator.modelState.clear();
+    rotator.defaultIndex = 0;
+    rotator.ensureValidToken = async () => {};
+    rotator.ensureValidTokenForModel = async () => {};
+    const model = "gemini";
+
+    // Account B has higher quota and a 5h timer, C has 7d, A has fresh 80%.
+    // Sticky-quota must still pick A first sequentially and drain it completely.
+    rotator.accounts[0].quota = [
+      { modelKey: model, displayName: "G3.1Pro", percentRemaining: 80, resetTime: null, timerType: "fresh" },
+    ];
+    rotator.accounts[1].quota = [
+      { modelKey: model, displayName: "G3.1Pro", percentRemaining: 100, resetTime: null, timerType: "5h" },
+    ];
+    rotator.accounts[2].quota = [
+      { modelKey: model, displayName: "G3.1Pro", percentRemaining: 95, resetTime: null, timerType: "7d" },
+    ];
+
+    const first = await rotator.getActiveAccount(model);
+    const second = await rotator.getActiveAccount(model);
+    assert.equal(first?.config.email, "a@example.com");
+    assert.equal(second?.config.email, "a@example.com");
+
+    // 3rd concurrent request exceeds maxConcurrentRequestsPerAccount=2;
+    // sticky-quota must queue for account A instead of spilling onto B or C.
+    let thirdSettled = false;
+    const thirdPromise = rotator.getActiveAccount(model).then((acc: any) => {
+      thirdSettled = true;
+      return acc;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(thirdSettled, false);
+
+    rotator.finishRequest(first, model);
+    const third = await thirdPromise;
+    assert.equal(third?.config.email, "a@example.com");
+    rotator.finishRequest(second, model);
+    rotator.finishRequest(third, model);
+
+    // Quota drop from 80% -> 40% (40% >= rotateOnQuotaDrop=20) must NOT rotate sticky-quota.
+    rotator.accounts[0].quota[0].percentRemaining = 40;
+    rotator.pollAccountQuota = async () => true;
+    await rotator.pollAllQuotas();
+    assert.equal(rotator.modelState.get(model).activeAccountIndex, 0);
+    assert.equal(rotator.modelState.get(model).stickyAccountIndex, 0);
+
+    // Only once A reaches 0% does sticky-quota advance sequentially to B (not C).
+    rotator.accounts[0].quota[0].percentRemaining = 0;
+    const nextAccount = await rotator.getActiveAccount(model);
+    assert.equal(nextAccount?.config.email, "b@example.com");
+    rotator.finishRequest(nextAccount, model);
+    assert.equal(rotator.modelState.get(model).activeAccountIndex, 1);
+    assert.equal(rotator.modelState.get(model).stickyAccountIndex, 1);
+  });
+
+  it("adds jitter and idle backoff to quota polling schedule", () => {
+    const config = makeConfig();
+    config.quotaPollIntervalMs = 300_000;
+    const rotator = new AccountRotator(config) as any;
+    rotator.stopQuotaPolling();
+
+    // Active/missing-initial-quota accounts use base interval with jitter [0.85, 1.20].
+    rotator.accounts[0].quota = [];
+    const activeLow = rotator.computeNextQuotaPollDelayMs(300_000, Date.now(), () => 0);
+    const activeHigh = rotator.computeNextQuotaPollDelayMs(300_000, Date.now(), () => 1);
+    assert.equal(activeLow, 255_000);
+    assert.equal(activeHigh, 360_000);
+
+    // Idle accounts with populated quota back off 2x after 15m (capped at 30m).
+    const now = Date.now();
+    for (const acc of rotator.accounts) {
+      acc.quota = [
+        { modelKey: "gemini", displayName: "G3.1Pro", percentRemaining: 100, resetTime: null, timerType: "fresh" },
+      ];
+      acc.lastUsed = now - 20 * 60_000;
+    }
+    const idle2x = rotator.computeNextQuotaPollDelayMs(300_000, now, () => 0.5);
+    assert.equal(idle2x, Math.round(600_000 * 1.025));
+
+    // After 60m idle, backs off 4x (capped at 30m).
+    for (const acc of rotator.accounts) {
+      acc.lastUsed = now - 90 * 60_000;
+    }
+    const idle4x = rotator.computeNextQuotaPollDelayMs(300_000, now, () => 0.5);
+    assert.equal(idle4x, Math.round(1_200_000 * 1.025));
+  });
+
   it("uses circular account order for sequential-quota", () => {
     const config = makeConfig();
     config.routingPolicy = "sequential-quota";
