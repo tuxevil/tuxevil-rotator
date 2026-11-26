@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { discoverProject, getOAuthClientConfig, warnIfUsingFallbackOAuthCreds } from "../src/providers/google-antigravity/oauth.js";
+import { buildAuthUrl, discoverProject, getOAuthClientConfig, SCOPES, warnIfUsingFallbackOAuthCreds } from "../src/providers/google-antigravity/oauth.js";
 import { CLIENT_ID, CLIENT_SECRET } from "../src/types.js";
 
 const originalFetch = globalThis.fetch;
@@ -179,5 +179,12 @@ describe("oauth fallback credentials warning", () => {
 			}),
 			/Invalid OAuth redirect URI/,
 		);
+	});
+
+	it("includes the aicode scope in OAuth SCOPES and auth URLs", () => {
+		assert.ok(SCOPES.includes("https://www.googleapis.com/auth/aicode"));
+		const url = new URL(buildAuthUrl("state-1", "challenge-1"));
+		const scopes = (url.searchParams.get("scope") ?? "").split(/\s+/);
+		assert.ok(scopes.includes("https://www.googleapis.com/auth/aicode"));
 	});
 });

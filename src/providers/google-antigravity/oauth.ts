@@ -15,6 +15,7 @@ export const SCOPES = [
 	"https://www.googleapis.com/auth/userinfo.profile",
 	"https://www.googleapis.com/auth/cclog",
 	"https://www.googleapis.com/auth/experimentsandconfigs",
+	"https://www.googleapis.com/auth/aicode",
 ];
 export const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 
