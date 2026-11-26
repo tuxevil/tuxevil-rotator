@@ -357,6 +357,8 @@ export function buildAntigravityWireHeaders(
     }
   }
   requestReason ||= process.env.GOOG_REQUEST_REASON?.trim() || "";
+  // Never default to the account projectId: Google-managed Antigravity projects
+  // lack the Cloud Code Private API for billing and answer 403 PERMISSION_DENIED.
   userProjectHeader ||= process.env.GOOG_USER_PROJECT?.trim() || "";
   if (requestReason) {
     headers["X-Goog-Request-Reason"] = requestReason;
@@ -392,7 +394,7 @@ async function forwardRequestOnce(
   requestBody: string,
   signal?: AbortSignal,
 ): Promise<ForwardedResponse> {
-  // Try endpoints with cascade on 401/403/404
+  // Try endpoints with cascade only on 404 (missing route), never replaying 401/403
   for (
     let endpointIdx = 0;
     endpointIdx < ANTIGRAVITY_ENDPOINTS.length;
@@ -402,11 +404,11 @@ async function forwardRequestOnce(
     const url = `${endpoint}/v1internal:streamGenerateContent?alt=sse`;
     const isProd = endpointIdx === ANTIGRAVITY_ENDPOINTS.length - 1;
 
+    const controller = !isProd ? new AbortController() : undefined;
+    const timeout = controller
+      ? setTimeout(() => controller.abort(), 10_000)
+      : undefined;
     try {
-      const controller = !isProd ? new AbortController() : undefined;
-      const timeout = controller
-        ? setTimeout(() => controller.abort(), 10_000)
-        : undefined;
       const requestSignal =
         controller?.signal && signal
           ? AbortSignal.any([controller.signal, signal])
@@ -419,18 +421,15 @@ async function forwardRequestOnce(
         signal: requestSignal,
         dispatcher: getAccountProxyDispatcher(account, "google-antigravity"),
       } as RequestInitWithDispatcher);
-      if (timeout) clearTimeout(timeout);
 
       if (
-        (response.status === 401 ||
-          response.status === 403 ||
-          response.status === 404) &&
+        response.status === 404 &&
         endpointIdx < ANTIGRAVITY_ENDPOINTS.length - 1
       ) {
         forwardLogger.log("info",
           `Endpoint ${endpoint} returned ${response.status}, cascading...`,
         );
-        response.text().catch(() => {});
+        await response.body?.cancel().catch(() => undefined);
         continue;
       }
 
@@ -446,10 +445,91 @@ async function forwardRequestOnce(
         continue;
       }
       throw err;
+    } finally {
+      if (timeout) clearTimeout(timeout);
     }
   }
 
   throw new Error("All endpoints failed");
+}
+
+const ERROR_BODY_READ_TIMEOUT_MS = 500;
+const ERROR_BODY_MAX_BYTES = 262_144;
+
+async function readBoundedErrorResponseText(
+  response: Response,
+  signal?: AbortSignal,
+  timeoutMs = ERROR_BODY_READ_TIMEOUT_MS,
+  maxBytes = ERROR_BODY_MAX_BYTES,
+): Promise<{ text: string; truncatedOrTimedOut: boolean }> {
+  const cloned = response.clone();
+  if (!cloned.body) {
+    const text = await cloned.text().catch(() => "");
+    return { text, truncatedOrTimedOut: false };
+  }
+  const reader = cloned.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let totalBytes = 0;
+  let truncatedOrTimedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+
+  const deadline = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), timeoutMs);
+    timer.unref?.();
+  });
+  const aborted = signal
+    ? new Promise<"abort">((resolve) => {
+        if (signal.aborted) {
+          resolve("abort");
+          return;
+        }
+        onAbort = () => resolve("abort");
+        signal.addEventListener("abort", onAbort, { once: true });
+      })
+    : null;
+
+  try {
+    while (true) {
+      const racers: Array<Promise<ReadableStreamReadResult<Uint8Array> | "timeout" | "abort">> = [
+        reader.read(),
+        deadline,
+      ];
+      if (aborted) racers.push(aborted);
+      const step = await Promise.race(racers);
+      if (step === "timeout" || step === "abort") {
+        truncatedOrTimedOut = true;
+        break;
+      }
+      if (step.done) break;
+      const chunk = step.value;
+      if (chunk.byteLength > 0) {
+        const remaining = maxBytes - totalBytes;
+        if (remaining <= 0) {
+          truncatedOrTimedOut = true;
+          break;
+        }
+        const slice = chunk.byteLength > remaining ? chunk.subarray(0, remaining) : chunk;
+        totalBytes += slice.byteLength;
+        text += decoder.decode(slice, { stream: true });
+        if (totalBytes >= maxBytes) {
+          truncatedOrTimedOut = true;
+          break;
+        }
+      }
+    }
+    text += decoder.decode();
+  } catch {
+    // Ignore stream read errors on error payloads; return whatever was buffered.
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
+    // Do not await branch cancel before the caller cancels the original body;
+    // in WHATWG ReadableStream tee(), awaiting one branch can wait for the other.
+    void reader.cancel().catch(() => undefined);
+  }
+  return { text, truncatedOrTimedOut };
 }
 
 /**
@@ -524,7 +604,14 @@ export async function forwardRequest(
         );
         const status = result.response.status;
         if (status === 408 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504) {
-          const errorText = await result.response.clone().text().catch(() => "");
+          const { text: errorText, truncatedOrTimedOut } = await readBoundedErrorResponseText(
+            result.response,
+            signal,
+          );
+          if (signal?.aborted) {
+            await result.response.body?.cancel().catch(() => undefined);
+            throw signal.reason ?? new DOMException("Aborted", "AbortError");
+          }
           if (
             isAntigravityRetryableError({
               status,
@@ -546,6 +633,17 @@ export async function forwardRequest(
               serverRetryDelayMs,
               { response: fallbackResponse, endpoint: result.endpoint },
             );
+          }
+          if (truncatedOrTimedOut) {
+            await result.response.body?.cancel().catch(() => undefined);
+            return {
+              endpoint: result.endpoint,
+              response: new Response(errorText, {
+                status: result.response.status,
+                statusText: result.response.statusText,
+                headers: result.response.headers,
+              }),
+            };
           }
         }
         return result;

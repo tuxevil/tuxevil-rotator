@@ -728,4 +728,58 @@ describe("Antigravity IDE/CLI twin parity", () => {
 			globalThis.fetch = originalFetch;
 		}
 	});
+
+	it("does not send X-Goog-User-Project by default and does not cascade HTTP 403 across endpoints", async () => {
+		let primaryHits = 0;
+		let backupHits = 0;
+		const primaryHeaders: IncomingHttpHeaders[] = [];
+		const primary = await startCaptureServer((captured) => {
+			primaryHits += 1;
+			primaryHeaders.push(captured.headers);
+			return {
+				status: 403,
+				body: JSON.stringify({ error: { code: 403, status: "PERMISSION_DENIED", message: "ToS violation" } }),
+			};
+		});
+		const backup = await startCaptureServer(() => {
+			backupHits += 1;
+			return { status: 200, body: "{}" };
+		});
+		endpointOverrides.splice(0, endpointOverrides.length, primary.url, backup.url);
+
+		try {
+			const account = createTwinAccount();
+			const forwarded = await forwardRequest(
+				account,
+				{
+					project: "ignored",
+					model: "gemini-3-flash",
+					request: { contents: [{ role: "user", parts: [{ text: "hi" }] }] },
+				},
+				{},
+				undefined,
+				{ apiRetry: false },
+			);
+			assert.equal(forwarded.response.status, 403);
+			assert.equal(forwarded.endpoint, primary.url);
+			assert.equal(primaryHits, 1);
+			assert.equal(backupHits, 0);
+			assert.equal(primaryHeaders[0]["x-goog-user-project"], undefined);
+
+			const codeAssist = await forwardCodeAssistRequest(
+				account,
+				"loadCodeAssist",
+				{},
+				{},
+			);
+			assert.equal(codeAssist.response.status, 403);
+			assert.equal(codeAssist.endpoint, primary.url);
+			assert.equal(primaryHits, 2);
+			assert.equal(backupHits, 0);
+			assert.equal(primaryHeaders[1]["x-goog-user-project"], undefined);
+		} finally {
+			await stopServer(primary.server);
+			await stopServer(backup.server);
+		}
+	});
 });
