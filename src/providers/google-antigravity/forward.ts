@@ -25,6 +25,10 @@ import {
   isAntigravityRetryableError,
 } from "../../rate-limit-parser.js";
 import { applyAntigravityTwinPayload } from "./twin-payload.js";
+import {
+  forwardAicodeRequestOnce,
+  resolveAicodeTarget,
+} from "./aicode-forward.js";
 
 const forwardLogger = logger.child("google-forward");
 
@@ -566,9 +570,32 @@ export async function forwardRequest(
   const requestBody = JSON.stringify(bodyToForward);
   const forwardHeaders = buildAntigravityWireHeaders(account, originalHeaders);
 
+  const executeOnce = async (): Promise<ForwardedResponse> => {
+    const aicodeTarget = await resolveAicodeTarget(
+      account,
+      body.model,
+      originalHeaders,
+      signal,
+    );
+    if (aicodeTarget) {
+      const { result, scopeInsufficientFallback } = await forwardAicodeRequestOnce(
+        account,
+        aicodeTarget,
+        bodyToForward,
+        originalHeaders,
+        signal,
+        readBoundedErrorResponseText,
+      );
+      if (!scopeInsufficientFallback) {
+        return result;
+      }
+    }
+    return forwardRequestOnce(account, forwardHeaders, requestBody, signal);
+  };
+
   const retrySpec = options?.apiRetry;
   if (retrySpec === false) {
-    return forwardRequestOnce(account, forwardHeaders, requestBody, signal);
+    return executeOnce();
   }
 
   const retryOptions =
@@ -596,12 +623,7 @@ export async function forwardRequest(
         retryOptions.onRetry?.(info);
       },
       fn: async () => {
-        const result = await forwardRequestOnce(
-          account,
-          forwardHeaders,
-          requestBody,
-          signal,
-        );
+        const result = await executeOnce();
         const status = result.response.status;
         if (status === 408 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504) {
           const { text: errorText, truncatedOrTimedOut } = await readBoundedErrorResponseText(

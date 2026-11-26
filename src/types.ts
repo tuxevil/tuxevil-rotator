@@ -588,6 +588,24 @@ export interface AccountRuntime {
     useAicodeMendel: boolean | null;
     userTierId?: string | null;
   };
+  /** Cached Google AICode runtime discovery (fetchConfig/fetchLicenses/cooldown). */
+  aicodeState?: {
+    credentialGeneration: string;
+    scopeCooldownUntil?: number;
+    config?: {
+      credentialGeneration: string;
+      fetchedAt: number;
+      experiencesByLowerName: Record<string, string>;
+      experienceNames: string[];
+      useAicodeMendel: boolean | null;
+    };
+    licenses?: {
+      credentialGeneration: string;
+      fetchedAt: number;
+      userTier: string | null;
+      tierDisplayName: string | null;
+    };
+  };
   /** Provider-local auth failures/cooldowns; Google/Ollama remain routable. */
   invalidProviders?: Record<string, string>;
   providerCooldowns?: Record<string, number>;
@@ -1407,6 +1425,10 @@ export const KICKSTART_PRO_MODELS_FOR_QUOTA_POOL: Record<string, readonly string
 };
 
 export const AICODE_SCOPE = "https://www.googleapis.com/auth/aicode";
+
+export const AICODE_ENDPOINTS = [
+  "https://aicode.googleapis.com",
+];
 
 export const QUOTA_API_URL =
   "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";

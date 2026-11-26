@@ -24,12 +24,16 @@ export function hasGoogleAntigravityCredential(account: AccountRuntime): boolean
   return !account.config.provider || account.config.provider === DEFAULT_PROVIDER;
 }
 
+export function hasTokenScopes(account: AccountRuntime): boolean {
+  return Array.isArray(account.tokenScopes) && account.tokenScopes.length > 0;
+}
+
+export function hasAicodeScope(account: AccountRuntime): boolean {
+  return hasTokenScopes(account) && account.tokenScopes!.includes(AICODE_SCOPE);
+}
+
 export function hasMissingAicodeScope(account: AccountRuntime): boolean {
-  return (
-    Array.isArray(account.tokenScopes) &&
-    account.tokenScopes.length > 0 &&
-    !account.tokenScopes.includes(AICODE_SCOPE)
-  );
+  return hasTokenScopes(account) && !account.tokenScopes!.includes(AICODE_SCOPE);
 }
 
 export function parseLoadCodeAssistPersonalConsumer(raw: unknown): {
@@ -80,7 +84,7 @@ export async function refreshAicodeEligibilityIfNeeded(
 ): Promise<void> {
   if (
     !hasGoogleAntigravityCredential(account) ||
-    !hasMissingAicodeScope(account) ||
+    !hasTokenScopes(account) ||
     !account.accessToken
   ) {
     return;

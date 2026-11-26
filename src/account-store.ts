@@ -92,6 +92,16 @@ function validateCredentialLengths(
 
 export { validateAccountConfigLengths };
 
+function stripUndefinedFields<T extends object>(obj: T): Partial<T> {
+  const clean: Partial<T> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined) {
+      (clean as Record<string, unknown>)[key] = value;
+    }
+  }
+  return clean;
+}
+
 export function mergeCredentials(
   existing: AccountConfig["credentials"] | undefined,
   incoming: AccountConfig["credentials"] | undefined,
@@ -103,10 +113,12 @@ export function mergeCredentials(
     if (seen.has(cred.provider)) continue;
     seen.add(cred.provider);
     const incomingCredential = incomingByProvider.get(cred.provider);
-    out.push(incomingCredential ? { ...cred, ...incomingCredential } : cred);
+    out.push(incomingCredential ? { ...cred, ...stripUndefinedFields(incomingCredential) } : cred);
     incomingByProvider.delete(cred.provider);
   }
-  for (const cred of incomingByProvider.values()) out.push(cred);
+  for (const cred of incomingByProvider.values()) {
+    out.push(stripUndefinedFields(cred) as NonNullable<AccountConfig["credentials"]>[number]);
+  }
   return sortAccountCredentials(out);
 }
 

@@ -237,7 +237,13 @@ describe("AICode 3-rule re-auth warning", () => {
         missingAicodeScope: true,
       });
 
-      // Re-login clears cached eligibility until refreshed with new scopes
+      // Re-login clears cached eligibility AND syncs credentials[0].refreshToken
+      // while preserving existing per-credential fields like proxyUrl.
+      const prevGen = getCredentialGeneration(acc, "google-antigravity");
+      acc.config.proxyUrl = "http://127.0.0.1:8888";
+      if (acc.config.credentials?.[0]) {
+        acc.config.credentials[0].proxyUrl = "http://127.0.0.1:8888";
+      }
       await rotator.addOrUpdateAccount({
         email: "user@gmail.com",
         provider: "google-antigravity",
@@ -246,6 +252,16 @@ describe("AICode 3-rule re-auth warning", () => {
         tier: "pro",
       });
       assert.equal(rotator.getStatus().accounts[0].authWarning, null);
+      assert.equal(acc.config.refreshToken, "refresh-2-with-aicode");
+      assert.equal(
+        acc.config.credentials?.find((c) => c.provider === "google-antigravity")?.refreshToken,
+        "refresh-2-with-aicode",
+      );
+      assert.equal(
+        acc.config.credentials?.find((c) => c.provider === "google-antigravity")?.proxyUrl,
+        "http://127.0.0.1:8888",
+      );
+      assert.notEqual(getCredentialGeneration(acc, "google-antigravity"), prevGen);
     } finally {
       globalThis.fetch = originalFetch;
     }

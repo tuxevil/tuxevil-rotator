@@ -5180,19 +5180,20 @@ export class AccountRotator {
   }
 
   async addOrUpdateAccount(accountConfig: AccountConfig): Promise<void> {
-    const receivesCodexCredential = accountConfig.credentials?.some(
+    const normalizedConfig = normalizeAccountConfig(accountConfig);
+    const receivesCodexCredential = normalizedConfig.credentials?.some(
       (credential) => credential.provider === "openai-codex",
     );
     const existingIndex = this.accounts.findIndex(
-      (account) => account.config.email === accountConfig.email,
+      (account) => account.config.email === normalizedConfig.email,
     );
     if (existingIndex >= 0) {
       const existing = this.accounts[existingIndex];
       existing.config = {
         ...existing.config,
-        ...accountConfig,
-        credentials: mergeCredentials(existing.config.credentials, accountConfig.credentials),
-        tier: accountConfig.tier || existing.config.tier || "unknown",
+        ...normalizedConfig,
+        credentials: mergeCredentials(existing.config.credentials, normalizedConfig.credentials),
+        tier: normalizedConfig.tier || existing.config.tier || "unknown",
       };
       existing.disabled = false;
       existing.flagged = false;
@@ -5201,12 +5202,13 @@ export class AccountRotator {
       existing.accessToken = null;
       existing.tokenExpires = 0;
       const updatedProviders = new Set<string>(
-        (accountConfig.credentials ?? []).map((credential) => credential.provider),
+        (normalizedConfig.credentials ?? []).map((credential) => credential.provider),
       );
-      if (accountConfig.refreshToken) updatedProviders.add(DEFAULT_PROVIDER);
+      if (normalizedConfig.refreshToken) updatedProviders.add(DEFAULT_PROVIDER);
       if (updatedProviders.has(DEFAULT_PROVIDER)) {
         delete existing.tokenScopes;
         delete existing.aicodeEligibility;
+        delete existing.aicodeState;
       }
       if (receivesCodexCredential) updatedProviders.add("openai-codex");
       for (const pid of updatedProviders) {
@@ -5224,10 +5226,10 @@ export class AccountRotator {
         }
       }
       this.config.accounts[existingIndex] = existing.config;
-      this.log(`${accountConfig.email}: account updated via hosted login`);
+      this.log(`${normalizedConfig.email}: account updated via hosted login`);
     } else {
       const runtime: AccountRuntime = {
-        config: { ...accountConfig, tier: accountConfig.tier || "unknown" },
+        config: { ...normalizedConfig, tier: normalizedConfig.tier || "unknown" },
         accessToken: null,
         tokenExpires: 0,
         requestsSinceRotation: 0,

@@ -42,37 +42,27 @@ Si falta cualquiera de las tres condiciones, o si AICode responde HTTP `403` con
 
 ## 3. Fases de implementación en `pi-antigravity-rotator`
 
-### Fase 1: Visibilidad y prevención (completada / actual)
+### Fase 1: Visibilidad y prevención (completada)
 - Incluir `https://www.googleapis.com/auth/aicode` en `SCOPES` (`src/providers/google-antigravity/oauth.ts`) para nuevos logins.
 - Mantener `autoWarmupEnabled: false` para evitar kickstarts sintéticos.
 - Capturar `scope` en el refresh de token (`ensureGoogleToken`), evaluar `loadCodeAssist` + `listExperiments` con caché de 6h por generación de credencial y mostrar advertencia por cuenta en `accounts` cuando se cumplan las 3 reglas de migración (personal consumer + `use-aicode-mendel` activo + falta scope `aicode`).
 
-### Fase 2: Cliente de gestión AICode (`v1alpha` discovery + entitlement)
-- Crear `src/providers/google-antigravity/aicode.ts`:
-  - `fetchAicodeConfig(account)` (`GET /v1alpha:fetchConfig`): obtener `availableExperiences`, `availableModels` y `agySurfaceConfig.agentExperiences` para mapear cada `modelId` a su `experience` (`experiences/...` o nombre de experiencia).
-  - `fetchAicodeLicenses(account)` (`GET /v1alpha:fetchLicenses`): resolver `entitlement.userTier`.
-  - Manejo explícito de `403 ACCESS_TOKEN_SCOPE_INSUFFICIENT`: registrar `aicodeScopeCooldownUntil` en memoria (sin invalidar la credencial CCPA ni disparar pausa protectora) y hacer fallback a `v1internal`.
+### Fase 2: Cliente de gestión AICode (`v1alpha` discovery + entitlement) (completada)
+- `src/providers/google-antigravity/aicode.ts`:
+  - `fetchAicodeConfig(account)` (`GET /v1alpha:fetchConfig`, caché 5m): indexa `availableExperiences` activos (entradas con `model`) y lee `use-aicode-mendel`.
+  - `fetchAicodeLicenses(account)` (`GET /v1alpha:fetchLicenses`, caché 5m): resuelve `entitlement.userTier`.
+  - Manejo explícito de `403 ACCESS_TOKEN_SCOPE_INSUFFICIENT`: registra cooldown de 1h en memoria (`markAicodeScopeMissing`, sin invalidar CCPA ni activar pausa protectora) y hace fallback a `v1internal`.
 
-### Fase 3: Conversor y forwarding de generación AICode
-- Crear `src/providers/google-antigravity/aicode-forward.ts`:
-  - Traducir `RequestBody` de `v1internal` hacia `google.gca.aicode.v1main.GenerateContentRequest`:
-    - Extraer `contents`, `systemInstruction`, `tools`, `toolConfig`, `safetySettings`, `generationConfig`, `sessionId` desde `body.request`.
-    - Poblar `model` (o `aicode.experience` según `fetchConfig`) y `entitlement: { userTier }`.
-    - Omitir campos exclusivos de `v1internal` (`project`, `requestId`, `userPromptId`, `requestType`, `userAgent` en el JSON).
-  - Enviar `POST https://aicode.googleapis.com/v1alpha:streamGenerateContent?alt=sse` usando `getAccountProxyDispatcher(account, "google-antigravity")` y `User-Agent` / metadata twin.
-  - Transformar o desempaquetar el stream SSE de `GenerateContentResponse` hacia el formato que espera `proxy.ts` / `compat.ts` (envolver `{ response: chunk }` cuando el cliente o acumulador espere `v1internal`, o exponer un acumulador unificado).
-  - En `forward.ts`, seleccionar la ruta AICode solo si:
-    1. `personalConsumer === true`
-    2. `useAicodeMendel === true`
-    3. `tokenScopes.includes(AICODE_SCOPE)` y no hay cooldown de scope AICode.
-  - Si AICode responde `403` con `ACCESS_TOKEN_SCOPE_INSUFFICIENT`, activar cooldown y reintentar la petición una vez contra `daily-cloudcode-pa/v1internal`.
+### Fase 3: Conversor y forwarding de generación AICode (completada)
+- `src/providers/google-antigravity/aicode-forward.ts` + `src/providers/google-antigravity/forward.ts`:
+  - Traduce `RequestBody` de `v1internal` hacia `google.gca.aicode.v1main.GenerateContentRequest` plano con `aicode: { experience }` y `entitlement: { userTier }` (`model` y `aicode` son `oneof inference` en el proto), omitiendo `project`, `requestId`, `userPromptId`, `requestType` y `userAgent`.
+  - Solo enruta a `POST https://aicode.googleapis.com/v1alpha:streamGenerateContent?alt=sse` cuando la cuenta cumple las 3 reglas (`personalConsumer`, `useAicodeMendel`, scope `aicode` y sin cooldown) **y** el modelo existe en `fetchConfig.availableExperiences` (modelos exclusivos de CCPA como `gemini-4-hydrogen-high` permanecen en `daily-cloudcode-pa.googleapis.com`).
+  - Envuelve los chunks SSE planos de `GenerateContentResponse` en `{ response: ... }` para mantener compatibilidad con `proxy.ts`, `compat.ts` y clientes `v1internal`.
+  - Ante `403 ACCESS_TOKEN_SCOPE_INSUFFICIENT`, activa el cooldown de 1h y reintenta inmediatamente la misma petición contra `daily-cloudcode-pa/v1internal`.
+  - Pruebas de ruta, conversión, caché y fallback en `test/aicode-routing.test.ts`.
 
-### Fase 4: Cuota AICode y re-autenticación de cuentas
+### Fase 4: Cuota AICode y re-autenticación de cuentas (pendiente)
 - Integrar `GET /v1alpha:fetchQuotaStatus` en `src/providers/google-antigravity/quota.ts` para cuentas que operen sobre AICode:
   - Reusar `parseGoogleQuotaSummaryResponse` sobre `response.quotaSummary` (misma estructura `groups[].buckets[]` con `remainingFraction` y `resetTime`).
-  - Reconciliar `buckets[]` con el catálogo de `fetchConfig.availableModels`.
-- Añadir soporte en pruebas E2E (`test/antigravity-twin-parity.test.ts` y nueva suite `test/aicode-routing.test.ts`) cubriendo:
-  - Enrutamiento dual (cuentas con scope `aicode` -> `aicode.googleapis.com`, cuentas sin scope -> `daily-cloudcode-pa`).
-  - Fallback automático ante `403 ACCESS_TOKEN_SCOPE_INSUFFICIENT` sin marcar la cuenta como `flagged` o `invalid`.
-  - Conversión de payload request y stream SSE response.
-- Una vez desplegadas las Fases 2–4, re-autenticar progresivamente las cuentas marcadas con la advertencia en `accounts`.
+  - Reconciliar `buckets[]` con el catálogo de `fetchConfig.availableExperiences`.
+- Completar pruebas E2E en `test/proxy-e2e.test.ts` / `test/antigravity-twin-parity.test.ts` y desplegar en producción para re-autenticar el resto de cuentas marcadas.
