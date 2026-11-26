@@ -15,7 +15,7 @@ export interface FetchWithRetryOptions extends RequestInit {
 	maxServerRetryDelayMs?: number;
 	retryStatuses?: number[];
 	fetchImpl?: typeof fetch;
-	sleepImpl?: (ms: number) => Promise<void>;
+	sleepImpl?: (ms: number, signal?: AbortSignal) => Promise<void>;
 	/** Node/Undici dispatcher selected from the account's provider config. */
 	dispatcher?: Dispatcher;
 }
@@ -67,7 +67,12 @@ export function isRetryableStatus(status: number, retryStatuses: readonly number
 }
 
 export function isRetryableFetchError(error: unknown): boolean {
-	if (error instanceof DOMException && error.name === "AbortError") return true;
+	if (
+		(error instanceof DOMException || error instanceof Error) &&
+		(error.name === "AbortError" || error.name === "TimeoutError")
+	) {
+		return true;
+	}
 	if (error instanceof UpstreamHeadersTimeoutError) return true;
 	const cause =
 		typeof error === "object" && error !== null && "cause" in error
@@ -233,6 +238,9 @@ export async function fetchWithRetry(input: RequestInfo | URL, options: FetchWit
 
 	let lastError: unknown;
 	for (let attempt = 0; attempt <= retries; attempt++) {
+		if (init.signal?.aborted) {
+			throw init.signal.reason ?? new DOMException("Aborted", "AbortError");
+		}
 		let serverRetryDelayMs = 0;
 		try {
 			const requestInit: RequestInitWithDispatcher = {
@@ -249,6 +257,9 @@ export async function fetchWithRetry(input: RequestInfo | URL, options: FetchWit
 			let errorText = "";
 			if (response.status === 429 || response.status === 402 || response.status >= 500) {
 				errorText = await response.clone().text().catch(() => "");
+			}
+			if (init.signal?.aborted) {
+				throw init.signal.reason ?? new DOMException("Aborted", "AbortError");
 			}
 			const serverDelay = extractRetryDelayMs(errorText, response.headers);
 			if (serverDelay !== null) {
@@ -271,7 +282,7 @@ export async function fetchWithRetry(input: RequestInfo | URL, options: FetchWit
 			await response.body?.cancel().catch(() => undefined);
 		} catch (err) {
 			lastError = err;
-			if (!isRetryableFetchError(err) || attempt === retries) {
+			if (init.signal?.aborted || !isRetryableFetchError(err) || attempt === retries) {
 				throw err;
 			}
 		}
@@ -286,6 +297,7 @@ export async function fetchWithRetry(input: RequestInfo | URL, options: FetchWit
 				jitterRange,
 				serverRetryDelayMs,
 			),
+			init.signal ?? undefined,
 		);
 	}
 
@@ -361,6 +373,9 @@ export async function runWithAntigravityApiRetry<T>(
 			return await fn(attempt);
 		} catch (error) {
 			lastError = error;
+			if (signal?.aborted) {
+				throw error;
+			}
 			const verdict = classifyError(error);
 			const serverDelayMs = verdict.serverRetryDelayMs ?? 0;
 			if (

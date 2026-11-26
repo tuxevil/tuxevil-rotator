@@ -113,6 +113,7 @@ function chunkTail(chunk: unknown): string {
 export function startSseKeepalive(
   res: KeepaliveResponse,
   intervalMs: number = DEFAULT_SSE_KEEPALIVE_INTERVAL_MS,
+  onBeforePing?: () => void,
 ): () => void {
   if (!Number.isFinite(intervalMs) || intervalMs <= 0) return () => {};
   const originalWrite = res.write;
@@ -144,6 +145,11 @@ export function startSseKeepalive(
       return;
     }
     if (atEventBoundary() && !res.writableNeedDrain) {
+      onBeforePing?.();
+      if (stopped || res.destroyed || res.writableEnded) {
+        stop();
+        return;
+      }
       (originalWrite as (chunk: string) => boolean).call(res, ": ping\n\n");
     }
     arm();

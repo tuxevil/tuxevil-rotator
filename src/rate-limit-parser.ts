@@ -78,24 +78,29 @@ export function parseErrorJsonDetails(errorText: string): ParsedErrorDetails {
 	} catch {
 		return result;
 	}
-	const root = isRecord(parsed) && isRecord(parsed.error) ? parsed.error : parsed;
-	if (!isRecord(root)) return result;
-	if (typeof root.status === "string") result.statusText = root.status;
-	if (typeof root.code === "number" && Number.isInteger(root.code)) {
-		result.grpcCode = root.code;
-	}
-	if (Array.isArray(root.details)) {
-		for (const detail of root.details) {
-			if (!isRecord(detail)) continue;
-			if (typeof detail.reason === "string" && detail.reason.trim()) {
-				result.reasons.push(detail.reason.trim());
-			}
-			if (isRecord(detail.metadata) && typeof detail.metadata.reason === "string" && detail.metadata.reason.trim()) {
-				result.metadataReasons.push(detail.metadata.reason.trim());
-			}
-			if (typeof detail.retryDelay === "string") {
-				const ms = parseDurationToMs(detail.retryDelay);
-				if (ms && ms > 0) result.retryDelaysMs.push(ms);
+	const items = Array.isArray(parsed) ? parsed : [parsed];
+	for (const item of items) {
+		const root = isRecord(item) && isRecord(item.error) ? item.error : item;
+		if (!isRecord(root)) continue;
+		if (result.statusText === undefined && typeof root.status === "string") {
+			result.statusText = root.status;
+		}
+		if (result.grpcCode === undefined && typeof root.code === "number" && Number.isInteger(root.code)) {
+			result.grpcCode = root.code;
+		}
+		if (Array.isArray(root.details)) {
+			for (const detail of root.details) {
+				if (!isRecord(detail)) continue;
+				if (typeof detail.reason === "string" && detail.reason.trim()) {
+					result.reasons.push(detail.reason.trim());
+				}
+				if (isRecord(detail.metadata) && typeof detail.metadata.reason === "string" && detail.metadata.reason.trim()) {
+					result.metadataReasons.push(detail.metadata.reason.trim());
+				}
+				if (typeof detail.retryDelay === "string") {
+					const ms = parseDurationToMs(detail.retryDelay);
+					if (ms && ms > 0) result.retryDelaysMs.push(ms);
+				}
 			}
 		}
 	}

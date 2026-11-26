@@ -4,6 +4,7 @@ import { classifyAccessObservation } from "./access-evidence.js";
 import { getCachedOllamaContextWindow } from "./providers/ollama/context-window.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
 import {
   type CompressionHeaderOptions,
   buildRotatorResponseHeaders,
@@ -1207,31 +1208,19 @@ export async function streamCompatSse(
     if (!nodeStream.destroyed) nodeStream.destroy(error);
   }, options.idleTimeoutMs);
 
-  try {
-    for await (const chunk of nodeStream) {
-      if (reqClosed) {
-        break;
-      }
-      idleGuard.reset();
-      if (firstByteMs === undefined) firstByteMs = Date.now() - streamStartMs;
-      const str = chunk.toString();
-      tailBuffer += str;
-      let newlineIdx;
-      while ((newlineIdx = tailBuffer.indexOf("\n")) >= 0) {
-        const line = tailBuffer.slice(0, newlineIdx).trim();
-        tailBuffer = tailBuffer.slice(newlineIdx + 1);
-
-        if (upstream === "ollama") {
-          if (line) emitOllamaLine(line);
-          continue;
-        }
-        if (upstream === "opencode-zen") {
-          if (line) emitOpenAiSseLine(line);
-          continue;
-        }
-        if (!line.startsWith("data:")) continue;
-        const payload = line.slice(5).trim();
-        if (!payload || payload === "[DONE]") continue;
+  const decoder = new StringDecoder("utf8");
+  const processCompatLine = (line: string): void => {
+    if (upstream === "ollama") {
+      if (line) emitOllamaLine(line);
+      return;
+    }
+    if (upstream === "opencode-zen") {
+      if (line) emitOpenAiSseLine(line);
+      return;
+    }
+    if (!line.startsWith("data:")) return;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]") return;
 
         try {
           const parsed = JSON.parse(payload) as Record<string, unknown>;
@@ -1387,8 +1376,34 @@ export async function streamCompatSse(
         } catch {
           // Ignore malformed JSON chunks
         }
+  };
+
+  try {
+    for await (const chunk of nodeStream) {
+      if (reqClosed) {
+        break;
+      }
+      idleGuard.reset();
+      if (firstByteMs === undefined) firstByteMs = Date.now() - streamStartMs;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+      tailBuffer += decoder.write(buf);
+      let newlineIdx;
+      while ((newlineIdx = tailBuffer.indexOf("\n")) >= 0) {
+        const line = tailBuffer.slice(0, newlineIdx).trim();
+        tailBuffer = tailBuffer.slice(newlineIdx + 1);
+        processCompatLine(line);
       }
       await waitForResponseDrain(res, options.backpressureTimeoutMs);
+    }
+    if (!reqClosed) {
+      tailBuffer += decoder.end();
+      if (tailBuffer.length > 0) {
+        for (const rawLine of tailBuffer.split("\n")) {
+          const line = rawLine.trim();
+          if (line) processCompatLine(line);
+        }
+        tailBuffer = "";
+      }
     }
   } catch (err) {
     if (!reqClosed) {
@@ -2000,29 +2015,19 @@ export async function streamResponsesSse(
       // Ignore malformed NDJSON lines
     }
   };
-  try {
-    for await (const chunk of nodeStream) {
-      if (reqClosed) {
-        break;
-      }
-      idleGuard.reset();
-      if (firstByteMs === undefined) firstByteMs = Date.now() - streamStartMs;
-      tailBuffer += chunk.toString();
-      let newlineIdx;
-      while ((newlineIdx = tailBuffer.indexOf("\n")) >= 0) {
-        const line = tailBuffer.slice(0, newlineIdx).trim();
-        tailBuffer = tailBuffer.slice(newlineIdx + 1);
-        if (upstream === "ollama") {
-          if (line) emitOllamaLine(line);
-          continue;
-        }
-        if (upstream === "opencode-zen") {
-          emitOpenCodeZenLine(line);
-          continue;
-        }
-        if (!line.startsWith("data:")) continue;
-        const payload = line.slice(5).trim();
-        if (!payload || payload === "[DONE]") continue;
+  const decoder = new StringDecoder("utf8");
+  const processResponsesLine = (line: string): void => {
+    if (upstream === "ollama") {
+      if (line) emitOllamaLine(line);
+      return;
+    }
+    if (upstream === "opencode-zen") {
+      emitOpenCodeZenLine(line);
+      return;
+    }
+    if (!line.startsWith("data:")) return;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]") return;
         try {
           const parsed = JSON.parse(payload) as Record<string, unknown>;
           const response = isRecord(parsed.response) ? parsed.response : parsed;
@@ -2208,8 +2213,34 @@ export async function streamResponsesSse(
         } catch {
           // Ignore malformed JSON chunks
         }
+  };
+
+  try {
+    for await (const chunk of nodeStream) {
+      if (reqClosed) {
+        break;
+      }
+      idleGuard.reset();
+      if (firstByteMs === undefined) firstByteMs = Date.now() - streamStartMs;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+      tailBuffer += decoder.write(buf);
+      let newlineIdx;
+      while ((newlineIdx = tailBuffer.indexOf("\n")) >= 0) {
+        const line = tailBuffer.slice(0, newlineIdx).trim();
+        tailBuffer = tailBuffer.slice(newlineIdx + 1);
+        processResponsesLine(line);
       }
       await waitForResponseDrain(res, options.backpressureTimeoutMs);
+    }
+    if (!reqClosed) {
+      tailBuffer += decoder.end();
+      if (tailBuffer.length > 0) {
+        for (const rawLine of tailBuffer.split("\n")) {
+          const line = rawLine.trim();
+          if (line) processResponsesLine(line);
+        }
+        tailBuffer = "";
+      }
     }
   } catch (err) {
     if (!reqClosed) {

@@ -509,6 +509,9 @@ export async function classifyUpstreamResponse(
 
   if (response.status === 403) {
     const errorText = await response.text().catch(() => "");
+    if (isModelScopedForbidden(errorText, providerId, model)) {
+      return { kind: "forbidden", errorText, endpoint };
+    }
     const lower = errorText.toLowerCase();
     const flagPatternsLocal = [
       "infring",
@@ -854,6 +857,11 @@ async function handleUpstreamAccountAction(
   }
 
   if (action.kind === "flagged-403") {
+    if (isModelScopedForbidden(action.errorText, provider.id, model)) {
+      writeLog(`[${label}] 403: ${action.errorText.slice(0, 200)}`, "warn");
+      logRequestEnd(403, `endpoint=${action.endpoint}`);
+      return buildFailureDecision(options, 403, action.errorText);
+    }
     writeLog(`[${label}] FLAGGED: ${action.errorText.slice(0, 200)}`, "error");
     recordFailureAttempt?.(403);
     logRequestEnd(403, `endpoint=${action.endpoint}`);
@@ -1061,6 +1069,23 @@ async function streamResponseBody(
     let waitingForDrain = false;
     let stopKeepalive = (): void => {};
 
+    const contentType =
+      Object.entries(responseHeaders).find(
+        ([key]) => key.toLowerCase() === "content-type",
+      )?.[1] ?? "";
+    const isSse = contentType.toLowerCase().includes("text/event-stream");
+    const ensureHeadersSent = (flush = false): void => {
+      if (!res.headersSent && !res.destroyed && !res.writableEnded) {
+        res.writeHead(responseStatus, responseHeaders);
+        if (flush) res.flushHeaders?.();
+      }
+    };
+    if (isSse && !res.destroyed && !res.writableEnded) {
+      stopKeepalive = startSseKeepalive(res, keepaliveIntervalMs, () => {
+        ensureHeadersSent(true);
+      });
+    }
+
     const cleanup = (): void => {
       stopKeepalive();
       if (idleTimer) clearTimeout(idleTimer);
@@ -1141,10 +1166,12 @@ async function streamResponseBody(
         const error = new Error(
           `idle timeout after ${Math.round(STREAM_IDLE_TIMEOUT_MS / 1000)}s`,
         );
-        if (hasForwardedBytes) emitStreamError(error);
-        finish(
-          error.message,
-        );
+        if (!hasForwardedBytes && !res.headersSent) {
+          failBeforeFlush(error);
+        } else {
+          emitStreamError(error);
+          finish(error.message);
+        }
         if (!nodeStream.destroyed) nodeStream.destroy();
       }, STREAM_IDLE_TIMEOUT_MS);
     };
@@ -1154,13 +1181,7 @@ async function streamResponseBody(
       resetIdleTimer();
       // Forward to client immediately (real-time streaming preserved)
       if (!res.destroyed && !res.writableEnded) {
-        if (!res.headersSent) {
-          res.writeHead(responseStatus, responseHeaders);
-          const contentType = Object.entries(responseHeaders).find(([key]) => key.toLowerCase() === "content-type")?.[1] ?? "";
-          if (contentType.includes("text/event-stream")) {
-            stopKeepalive = startSseKeepalive(res, keepaliveIntervalMs);
-          }
-        }
+        ensureHeadersSent(false);
         hasForwardedBytes = true;
         if (!res.write(chunk)) pauseForBackpressure();
       }
@@ -1170,9 +1191,12 @@ async function streamResponseBody(
         if (usage) firstUsage = usage;
       }
     };
-    const onEnd = (): void => finish();
+    const onEnd = (): void => {
+      ensureHeadersSent(false);
+      finish();
+    };
     const onError = (err: Error): void => {
-      if (!hasForwardedBytes) {
+      if (!hasForwardedBytes && !res.headersSent) {
         failBeforeFlush(err);
       } else {
         emitStreamError(err);
@@ -1180,7 +1204,7 @@ async function streamResponseBody(
       }
     };
     const onClose = (): void => {
-      if (!hasForwardedBytes) {
+      if (!hasForwardedBytes && !res.headersSent) {
         failBeforeFlush(new Error("upstream stream closed before response data"));
       } else {
         emitStreamError(new Error("upstream stream closed before response completion"));
@@ -1530,7 +1554,16 @@ export async function withRotation<T>(
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (requestIsOff()) return modelOffOutcome();
     const admissionStartedMs = Date.now();
-    const account = await rotator.getActiveAccount(model, signal, providerId, autoScope);
+    let grantedModelKey: string | undefined;
+    const account = await rotator.getActiveAccount(
+      model,
+      signal,
+      providerId,
+      autoScope,
+      (key) => {
+        grantedModelKey = key;
+      },
+    );
     if (!account) {
       if (signal?.aborted) {
         return { ok: false, status: 499, errorText: "Client closed request" };
@@ -1542,7 +1575,7 @@ export async function withRotation<T>(
     const label = account.config.label || account.config.email;
     // Release this admission's pool even if later settings or catalog updates
     // change routing while token validation or the upstream request awaits.
-    const modelKey = routingModelKey(rotator, model, providerId);
+    const modelKey = grantedModelKey ?? routingModelKey(rotator, model, providerId);
     const displayModelKey = observedModelKey(
       rotator,
       body.displayModel || model,
@@ -1712,6 +1745,9 @@ export async function withRotation<T>(
         });
         if (decision.kind === "retry") continue;
         if (
+          attempt < maxRetries &&
+          (decision.actionKind !== "rate-limited" ||
+            Boolean(decision.noReplacementReason)) &&
           decision.actionKind !== "non-retryable-error" &&
           decision.actionKind !== "flagged-401" &&
           decision.actionKind !== "flagged-403" &&
@@ -2147,11 +2183,15 @@ async function handleProxyRequest(
       return;
     }
     const admissionStartedMs = Date.now();
+    let grantedModelKey: string | undefined;
     const account = await rotator.getActiveAccount(
       body.model,
       clientController.signal,
       providerId,
       accessScope,
+      (key) => {
+        grantedModelKey = key;
+      },
     );
     if (!account) {
       if (clientController.signal.aborted || res.destroyed) return;
@@ -2164,7 +2204,7 @@ async function handleProxyRequest(
     }
 
     const label = account.config.label || account.config.email;
-    const modelKey = routingModelKey(rotator, body.model, providerId);
+    const modelKey = grantedModelKey ?? routingModelKey(rotator, body.model, providerId);
     const displayModelKey = observedModelKey(rotator, body.model); // metrics/logs
     const queueWaitMs = Date.now() - admissionStartedMs;
     const requestId = `${modelKey}-${Date.now().toString(36)}-${attempt + 1}`;
@@ -2332,6 +2372,9 @@ async function handleProxyRequest(
         });
         if (decision.kind === "retry") continue;
         if (
+          attempt < maxRetries &&
+          (decision.actionKind !== "rate-limited" ||
+            Boolean(decision.noReplacementReason)) &&
           decision.actionKind !== "non-retryable-error" &&
           decision.actionKind !== "flagged-401" &&
           decision.actionKind !== "flagged-403" &&
@@ -2356,8 +2399,6 @@ async function handleProxyRequest(
       }
 
       // Success or non-error client response
-      const shouldRotate = rotator.recordRequest(account, body.model, providerId);
-
       const responseHeaders: Record<string, string> = {};
       response.headers.forEach((value, key) => {
         if (
@@ -2383,6 +2424,7 @@ async function handleProxyRequest(
       });
       Object.assign(responseHeaders, rotatorHeaders);
 
+      let shouldRotate = false;
       try {
         const usage = await streamResponseBody(
           response.body,
@@ -2395,6 +2437,7 @@ async function handleProxyRequest(
           provider.createStreamAccumulator(),
           rotator.getConfig?.()?.sseKeepaliveIntervalMs,
         );
+        shouldRotate = rotator.recordRequest(account, body.model, providerId);
         const totalMs = Date.now() - requestStartMs;
         const ttfbMs = usage?.firstByteMs ?? totalMs;
         const outcomeStatus = usage?.streamError ? 502 : response.status;
@@ -2522,6 +2565,12 @@ async function handleCodeAssistPassthrough(
   rotator: AccountRotator,
   action: CodeAssistAction,
 ): Promise<void> {
+  const initialAuth = await authenticateVirtualKey(req);
+  if (!initialAuth.authenticated) {
+    sendAuthErrorResponse(res, initialAuth);
+    return;
+  }
+
   let bodyBuffer: Buffer;
   try {
     bodyBuffer = await readLimitedBody(req);
@@ -2546,6 +2595,23 @@ async function handleCodeAssistPassthrough(
     return;
   }
 
+  const targetModel =
+    typeof (body as Record<string, unknown>).model === "string"
+      ? ((body as Record<string, unknown>).model as string).trim()
+      : "";
+  if (
+    targetModel &&
+    initialAuth.key?.models &&
+    initialAuth.key.models.length > 0 &&
+    !initialAuth.key.models.includes("*")
+  ) {
+    const modelAuth = await authenticateVirtualKey(req, targetModel);
+    if (!modelAuth.authenticated) {
+      sendAuthErrorResponse(res, modelAuth);
+      return;
+    }
+  }
+
   const provider = getProviderAdapter(DEFAULT_PROVIDER);
   if (!provider.forwardCodeAssistRequest) {
     res.writeHead(501, { "Content-Type": "application/json" });
@@ -2558,10 +2624,16 @@ async function handleCodeAssistPassthrough(
   const maxRetries = getStreamRecoveryMaxRetries(rotator);
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     let account: AccountRuntime | null;
+    let grantedModelKey: string | undefined;
     try {
       account = await rotator.getActiveAccount(
         CODE_ASSIST_ROUTING_MODEL,
         clientController.signal,
+        DEFAULT_PROVIDER,
+        undefined,
+        (key) => {
+          grantedModelKey = key;
+        },
       );
     } catch {
       if (clientController.signal.aborted || res.destroyed) return;
@@ -2576,15 +2648,14 @@ async function handleCodeAssistPassthrough(
       return;
     }
 
+    const releaseModelKey =
+      grantedModelKey ??
+      routingModelKey(rotator, CODE_ASSIST_ROUTING_MODEL, DEFAULT_PROVIDER);
     let accountReleased = false;
     const releaseCurrentAccount = (): void => {
       if (accountReleased) return;
       accountReleased = true;
-      rotator.finishRequest(
-        account,
-        resolveQuotaModelKey(CODE_ASSIST_ROUTING_MODEL) ?? undefined,
-        DEFAULT_PROVIDER,
-      );
+      rotator.finishRequest(account, releaseModelKey, DEFAULT_PROVIDER);
     };
 
     try {
@@ -2632,6 +2703,14 @@ async function handleCodeAssistPassthrough(
     } finally {
       releaseCurrentAccount();
     }
+  }
+}
+
+function decodePathSegment(segment: string): string | null {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return null;
   }
 }
 
@@ -2945,37 +3024,62 @@ export function startProxy(
 
     if (method === "POST" && pathname.startsWith("/api/enable/")) {
       if (!requireAdmin(req, res)) return;
-      const email = decodeURIComponent(pathname.slice("/api/enable/".length));
+      const email = decodePathSegment(pathname.slice("/api/enable/".length));
+      if (email === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+        return;
+      }
       void serveEnableApi(res, rotator, email);
       return;
     }
 
     if (method === "POST" && pathname.startsWith("/api/disable/")) {
       if (!requireAdmin(req, res)) return;
-      const email = decodeURIComponent(pathname.slice("/api/disable/".length));
+      const email = decodePathSegment(pathname.slice("/api/disable/".length));
+      if (email === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+        return;
+      }
       void serveDisableApi(res, rotator, email);
       return;
     }
 
     if (method === "POST" && pathname.startsWith("/api/quarantine/")) {
       if (!requireAdmin(req, res)) return;
-      const email = decodeURIComponent(pathname.slice("/api/quarantine/".length));
+      const email = decodePathSegment(pathname.slice("/api/quarantine/".length));
+      if (email === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+        return;
+      }
       void serveQuarantineApi(res, rotator, email);
       return;
     }
 
     if (method === "POST" && pathname.startsWith("/api/restore/")) {
       if (!requireAdmin(req, res)) return;
-      const email = decodeURIComponent(pathname.slice("/api/restore/".length));
+      const email = decodePathSegment(pathname.slice("/api/restore/".length));
+      if (email === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+        return;
+      }
       void serveRestoreApi(res, rotator, email);
       return;
     }
 
     if (method === "POST" && pathname.startsWith("/api/remove-account/")) {
       if (!requireAdmin(req, res)) return;
-      const email = decodeURIComponent(
+      const email = decodePathSegment(
         pathname.slice("/api/remove-account/".length),
       );
+      if (email === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+        return;
+      }
       void serveRemoveAccountApi(res, rotator, email);
       return;
     }
@@ -2994,8 +3098,13 @@ export function startProxy(
         );
         return;
       }
-      const email = decodeURIComponent(rest.slice(0, lastSlash));
-      const tier = decodeURIComponent(rest.slice(lastSlash + 1));
+      const email = decodePathSegment(rest.slice(0, lastSlash));
+      const tier = decodePathSegment(rest.slice(lastSlash + 1));
+      if (email === null || tier === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+        return;
+      }
       void serveSetTierApi(res, rotator, email, tier);
       return;
     }
@@ -3004,13 +3113,18 @@ export function startProxy(
       if (!requireAdmin(req, res)) return;
       const rest = pathname.slice("/api/clear-inflight/".length);
       const firstSlash = rest.indexOf("/");
-      const email = decodeURIComponent(
+      const email = decodePathSegment(
         firstSlash >= 0 ? rest.slice(0, firstSlash) : rest,
       );
       const modelKey =
         firstSlash >= 0
-          ? decodeURIComponent(rest.slice(firstSlash + 1))
+          ? decodePathSegment(rest.slice(firstSlash + 1))
           : undefined;
+      if (email === null || modelKey === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+        return;
+      }
       serveClearInFlightApi(res, rotator, email, modelKey);
       return;
     }
@@ -3019,7 +3133,12 @@ export function startProxy(
       if (!requireAdmin(req, res)) return;
       const rest = pathname.slice("/api/clear-breaker/".length);
       const modelKey =
-        rest && rest !== "all" ? decodeURIComponent(rest) : undefined;
+        rest && rest !== "all" ? decodePathSegment(rest) : undefined;
+      if (modelKey === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+        return;
+      }
       void serveClearBreakerApi(res, rotator, modelKey);
       return;
     }
@@ -3043,7 +3162,12 @@ export function startProxy(
       if (!requireAdmin(req, res)) return;
       const rest = pathname.slice("/api/account-fresh-window-starts/".length);
       const lastSlash = rest.lastIndexOf("/");
-      const email = decodeURIComponent(rest.slice(0, lastSlash));
+      const email = decodePathSegment(rest.slice(0, lastSlash));
+      if (email === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+        return;
+      }
       const enabled = rest.slice(lastSlash + 1) === "on";
       void serveAccountFreshWindowStartsApi(res, rotator, email, enabled);
       return;
@@ -3055,12 +3179,22 @@ export function startProxy(
       const firstSlash = rest.indexOf("/");
       if (firstSlash >= 0) {
         // /api/kickstart/:email/:modelKey
-        const email = decodeURIComponent(rest.slice(0, firstSlash));
-        const modelKey = decodeURIComponent(rest.slice(firstSlash + 1));
+        const email = decodePathSegment(rest.slice(0, firstSlash));
+        const modelKey = decodePathSegment(rest.slice(firstSlash + 1));
+        if (email === null || modelKey === null) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+          return;
+        }
         serveKickstartApi(res, rotator, email, modelKey);
       } else {
         // /api/kickstart/:email — kickstart all fresh timers
-        const email = decodeURIComponent(rest);
+        const email = decodePathSegment(rest);
+        if (email === null) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+          return;
+        }
         serveKickstartApi(res, rotator, email);
       }
       return;
@@ -3128,7 +3262,12 @@ export function startProxy(
 
     if (pathname.startsWith("/api/keys/")) {
       if (!requireAdmin(req, res)) return;
-      const hash = decodeURIComponent(pathname.slice("/api/keys/".length));
+      const hash = decodePathSegment(pathname.slice("/api/keys/".length));
+      if (hash === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+        return;
+      }
       if (method === "GET") {
         void serveGetVirtualKeyApi(res, hash);
         return;
@@ -3256,7 +3395,19 @@ export function startProxy(
       /^\/v1\/responses\/([^/]+)(?:\/(cancel|input_items))?$/,
     );
     if (responseMatch) {
-      const responseId = decodeURIComponent(responseMatch[1]);
+      const responseId = decodePathSegment(responseMatch[1]);
+      if (responseId === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: {
+              message: "Invalid response id encoding",
+              type: "invalid_request_error",
+            },
+          }),
+        );
+        return;
+      }
       const action = responseMatch[2] || "";
       if (method === "GET" && !action)
         return handleOpenAIResponsesRetrieve(req, res, responseId);
