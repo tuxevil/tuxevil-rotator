@@ -32,7 +32,11 @@ import {
 	existsSync,
 	readdirSync,
 	readFileSync,
+	openSync,
+	readSync,
+	closeSync,
 } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import { join } from "node:path";
 import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
 
@@ -101,13 +105,91 @@ function getClientIp(req) {
 	return parts[0] || remote || "unknown";
 }
 
+function splitHeaderTokensRespectingQuotes(raw, delimiter) {
+	const parts = [];
+	let current = "";
+	let inQuotes = false;
+	let escaped = false;
+	for (let i = 0; i < raw.length; i++) {
+		const ch = raw[i];
+		if (escaped) {
+			current += ch;
+			escaped = false;
+			continue;
+		}
+		if (inQuotes && ch === "\\") {
+			current += ch;
+			escaped = true;
+			continue;
+		}
+		if (ch === "\"") {
+			inQuotes = !inQuotes;
+			current += ch;
+			continue;
+		}
+		if (!inQuotes && ch === delimiter) {
+			parts.push(current);
+			current = "";
+			continue;
+		}
+		current += ch;
+	}
+	parts.push(current);
+	return parts;
+}
+
+function parseRightmostRfc7239Proto(headerValue) {
+	const raw = Array.isArray(headerValue) ? headerValue.join(",") : headerValue;
+	if (typeof raw !== "string" || !raw.trim()) return "";
+	const elements = splitHeaderTokensRespectingQuotes(raw, ",")
+		.map((s) => s.trim())
+		.filter(Boolean);
+	if (elements.length === 0) return "";
+	const rightmost = elements[elements.length - 1];
+	for (const param of splitHeaderTokensRespectingQuotes(rightmost, ";")) {
+		const eq = param.indexOf("=");
+		if (eq <= 0) continue;
+		const key = param.slice(0, eq).trim().toLowerCase();
+		if (key !== "proto") continue;
+		let val = param.slice(eq + 1).trim();
+		if (val.startsWith("\"") && val.endsWith("\"") && val.length >= 2) {
+			val = val.slice(1, -1).replace(/\\(.)/g, "$1");
+		}
+		return val.trim().toLowerCase();
+	}
+	return "";
+}
+
+function getRightmostForwardedProto(req) {
+	const xfpRaw = Array.isArray(req.headers["x-forwarded-proto"])
+		? req.headers["x-forwarded-proto"].join(",")
+		: req.headers["x-forwarded-proto"];
+	const xfpProto =
+		typeof xfpRaw === "string" && xfpRaw.trim()
+			? xfpRaw.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean).pop() || ""
+			: "";
+	const rfcProto = parseRightmostRfc7239Proto(req.headers["forwarded"]);
+	if (rfcProto && xfpProto) {
+		return rfcProto === xfpProto ? rfcProto : "";
+	}
+	return rfcProto || xfpProto;
+}
+
 function isAdminTransportAllowed(req) {
 	if (!REQUIRE_HTTPS_ADMIN) return true;
 	const remote = normalizeIp(req.socket?.remoteAddress || "");
-	if (isLoopbackIp(remote)) return true;
+	const hasForwardingHeaders =
+		typeof req.headers["x-forwarded-proto"] === "string" ||
+		typeof req.headers["x-forwarded-for"] === "string" ||
+		typeof req.headers["forwarded"] === "string";
 	if (isTrustedProxy(remote)) {
-		const proto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase();
-		return proto === "https";
+		if (hasForwardingHeaders) {
+			return getRightmostForwardedProto(req) === "https";
+		}
+		return isLoopbackIp(remote);
+	}
+	if (isLoopbackIp(remote) && !hasForwardingHeaders) {
+		return true;
 	}
 	return false;
 }
@@ -409,13 +491,17 @@ function getDailyFile() {
 	return join(DATA_DIR, `${date}.jsonl`);
 }
 
-function appendWithinDailyCap(filePath, line) {
+function assertWithinDailyCap(filePath, line) {
 	if (MAX_DAILY_FILE_BYTES > 0 && existsSync(filePath)) {
 		const size = statSync(filePath).size;
 		if (size + Buffer.byteLength(line, "utf-8") > MAX_DAILY_FILE_BYTES) {
 			throw new Error("Daily storage cap reached");
 		}
 	}
+}
+
+function appendWithinDailyCap(filePath, line) {
+	assertWithinDailyCap(filePath, line);
 	appendFileSync(filePath, line, "utf-8");
 }
 
@@ -456,7 +542,8 @@ function storeEvent(payload) {
 		featuresUsed: sanitizeFeaturesUsed(payload.featuresUsed),
 	};
 
-	appendWithinDailyCap(getDailyFile(), JSON.stringify(clean) + "\n");
+	const dailyFile = getDailyFile();
+	const dailyLine = JSON.stringify(clean) + "\n";
 
 	// Flag events also go to a dedicated file for easy analysis
 	if (payload.event === "flag" && payload.flag) {
@@ -467,9 +554,16 @@ function storeEvent(payload) {
 			receivedAt: new Date().toISOString(),
 			...sanitizeFlagData(payload.flag),
 		};
-		const flagFile = getDailyFile().replace(".jsonl", "-flags.jsonl");
-		appendWithinDailyCap(flagFile, JSON.stringify(flagClean) + "\n");
+		const flagFile = dailyFile.replace(".jsonl", "-flags.jsonl");
+		const flagLine = JSON.stringify(flagClean) + "\n";
+		assertWithinDailyCap(dailyFile, dailyLine);
+		assertWithinDailyCap(flagFile, flagLine);
+		appendFileSync(dailyFile, dailyLine, "utf-8");
+		appendFileSync(flagFile, flagLine, "utf-8");
+		return;
 	}
+
+	appendWithinDailyCap(dailyFile, dailyLine);
 }
 
 function sanitizeFlagData(flag) {
@@ -633,23 +727,33 @@ function getModelPricing(model) {
 	if (Object.hasOwn(MODEL_PRICING, model)) return MODEL_PRICING[model];
 	const lower = model.toLowerCase();
 	if (Object.hasOwn(MODEL_PRICING, lower)) return MODEL_PRICING[lower];
-	if (lower.includes("opus")) {
+	const ollamaId = lower.replace(/^ollama\//, "").replace(/(?::cloud|-cloud)$/, "");
+	if (ollamaId !== lower) {
+		return Object.hasOwn(MODEL_PRICING, ollamaId) ? MODEL_PRICING[ollamaId] : null;
+	}
+	const opencodeId = lower.replace(/^opencode\//, "");
+	if (opencodeId !== lower) {
+		return Object.hasOwn(MODEL_PRICING, opencodeId) ? MODEL_PRICING[opencodeId] : null;
+	}
+	if (lower.includes("claude") && lower.includes("opus")) {
 		if (lower.includes("5-5") || lower.includes("5.5")) return MODEL_PRICING["claude-opus-5-5"];
 		return MODEL_PRICING["claude-opus-4-6-thinking"];
 	}
-	if (lower.includes("sonnet")) {
+	if (lower.includes("claude") && lower.includes("sonnet")) {
 		if (lower.includes("5-5") || lower.includes("5.5")) return MODEL_PRICING["claude-sonnet-5-5"];
 		return MODEL_PRICING["claude-sonnet-4-6"];
 	}
-	if (lower.includes("4-carbon") || lower.includes("4.0-carbon")) return MODEL_PRICING["gemini-4-carbon"];
-	if (lower.includes("4-argon") || lower.includes("4.0-argon")) return MODEL_PRICING["gemini-4-argon"];
-	if (lower.includes("4-neon") || lower.includes("4.0-neon")) return MODEL_PRICING["gemini-4-neon"];
-	if (lower.includes("4-hydrogen") || lower.includes("4.0-hydrogen")) return MODEL_PRICING["gemini-4-hydrogen"];
-	if (lower.includes("3.8-flash")) return MODEL_PRICING["gemini-3.8-flash-high"];
-	if (lower.includes("3.7-flash")) return MODEL_PRICING["gemini-3.7-flash-tiered"];
-	if (lower.includes("3.6-flash")) return MODEL_PRICING["gemini-3.6-flash-high"];
-	if (lower.includes("flash")) return MODEL_PRICING["gemini-3-flash"];
-	if (lower.includes("pro")) return MODEL_PRICING["gemini-3.1-pro"];
+	if (lower.includes("gemini")) {
+		if (lower.includes("4-carbon") || lower.includes("4.0-carbon")) return MODEL_PRICING["gemini-4-carbon"];
+		if (lower.includes("4-argon") || lower.includes("4.0-argon")) return MODEL_PRICING["gemini-4-argon"];
+		if (lower.includes("4-neon") || lower.includes("4.0-neon")) return MODEL_PRICING["gemini-4-neon"];
+		if (lower.includes("4-hydrogen") || lower.includes("4.0-hydrogen")) return MODEL_PRICING["gemini-4-hydrogen"];
+		if (lower.includes("3.8") && lower.includes("flash")) return MODEL_PRICING["gemini-3.8-flash-high"];
+		if (lower.includes("3.7") && lower.includes("flash")) return MODEL_PRICING["gemini-3.7-flash-tiered"];
+		if (lower.includes("3.6") && lower.includes("flash")) return MODEL_PRICING["gemini-3.6-flash-high"];
+		if (lower.includes("flash")) return MODEL_PRICING["gemini-3-flash"];
+		if (lower.includes("pro")) return MODEL_PRICING["gemini-3.1-pro"];
+	}
 	return null;
 }
 
@@ -695,68 +799,138 @@ function parseQueryString(url) {
 	return params;
 }
 
-// Per-file parsed JSONL cache keyed by filename + (mtimeMs, size) so immutable past days are not re-parsed
+// Per-file parsed JSONL cache keyed by filename + (mtimeMs, size) with bounded LRU capacity
 const jsonlFileCache = new Map(); // filename -> { mtimeMs, size, records }
+const MAX_JSONL_CACHE_FILES = 16;
+const MAX_JSONL_CACHE_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_JSONL_CACHE_TOTAL_BYTES = 8 * 1024 * 1024;
+let jsonlCacheBytes = 0;
 
-function readJsonlCached(file) {
-	const fullPath = join(DATA_DIR, file);
-	let st;
-	try { st = statSync(fullPath); } catch { return []; }
-	const cached = jsonlFileCache.get(file);
-	if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
-		return cached.records;
+function evictJsonlCacheIfNeeded(incomingBytes) {
+	while (
+		jsonlFileCache.size > 0 &&
+		(jsonlFileCache.size >= MAX_JSONL_CACHE_FILES || jsonlCacheBytes + incomingBytes > MAX_JSONL_CACHE_TOTAL_BYTES)
+	) {
+		const oldestKey = jsonlFileCache.keys().next().value;
+		const oldest = jsonlFileCache.get(oldestKey);
+		jsonlFileCache.delete(oldestKey);
+		if (oldest) jsonlCacheBytes = Math.max(0, jsonlCacheBytes - oldest.size);
 	}
+}
+
+function parseJsonlContent(content) {
 	const records = [];
-	const lines = readFileSync(fullPath, "utf-8").split("\n").filter(Boolean);
-	for (const line of lines) {
-		try { records.push(JSON.parse(line)); } catch { /* skip malformed line */ }
+	let start = 0;
+	const len = content.length;
+	while (start < len) {
+		let nl = content.indexOf("\n", start);
+		if (nl === -1) nl = len;
+		if (nl > start) {
+			const line = content.slice(start, nl);
+			if (line.length > 0) {
+				try { records.push(JSON.parse(line)); } catch { /* skip malformed line */ }
+			}
+		}
+		start = nl + 1;
 	}
-	jsonlFileCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, records });
 	return records;
 }
 
-// Collect all raw events + flag events from JSONL files
-function loadAllEvents() {
+function forEachJsonlRecord(file, onRecord) {
+	const fullPath = join(DATA_DIR, file);
+	let st;
+	try { st = statSync(fullPath); } catch { return; }
+	const cached = jsonlFileCache.get(file);
+	if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+		// Refresh LRU position
+		jsonlFileCache.delete(file);
+		jsonlFileCache.set(file, cached);
+		for (const rec of cached.records) onRecord(rec);
+		return;
+	}
+	if (cached) {
+		jsonlFileCache.delete(file);
+		jsonlCacheBytes = Math.max(0, jsonlCacheBytes - cached.size);
+	}
+	if (st.size <= MAX_JSONL_CACHE_FILE_BYTES) {
+		const records = parseJsonlContent(readFileSync(fullPath, "utf-8"));
+		evictJsonlCacheIfNeeded(st.size);
+		jsonlFileCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, records });
+		jsonlCacheBytes += st.size;
+		for (const rec of records) onRecord(rec);
+		return;
+	}
+	// Stream large files in 64KB chunks so historical files never materialize an entire file array in heap.
+	const CHUNK_SIZE = 64 * 1024;
+	const buf = Buffer.allocUnsafe(CHUNK_SIZE);
+	const decoder = new StringDecoder("utf8");
+	let leftover = "";
+	const fd = openSync(fullPath, "r");
+	try {
+		while (true) {
+			const bytesRead = readSync(fd, buf, 0, CHUNK_SIZE, null);
+			if (bytesRead === 0) break;
+			leftover += decoder.write(buf.subarray(0, bytesRead));
+			let start = 0;
+			while (true) {
+				const nl = leftover.indexOf("\n", start);
+				if (nl === -1) break;
+				if (nl > start) {
+					const line = leftover.slice(start, nl);
+					if (line.length > 0) {
+						try { onRecord(JSON.parse(line)); } catch { /* skip malformed line */ }
+					}
+				}
+				start = nl + 1;
+			}
+			leftover = start > 0 ? leftover.slice(start) : leftover;
+		}
+		leftover += decoder.end();
+		if (leftover.length > 0) {
+			try { onRecord(JSON.parse(leftover)); } catch { /* skip malformed line */ }
+		}
+	} finally {
+		closeSync(fd);
+	}
+}
+
+// Stream raw events + flag events from JSONL files, pre-filtering by date range before disk reads
+function forEachEventFile(filters = {}, onEvent, onFlagEvent) {
 	const dirEntries = readdirSync(DATA_DIR);
 	const allFiles = dirEntries.filter((f) => f.endsWith(".jsonl") && !f.endsWith("-flags.jsonl")).sort();
 	const flagFiles = dirEntries.filter((f) => f.endsWith("-flags.jsonl")).sort();
 	const activeSet = new Set([...allFiles, ...flagFiles]);
-	for (const key of jsonlFileCache.keys()) {
-		if (!activeSet.has(key)) jsonlFileCache.delete(key);
+	for (const [key, entry] of jsonlFileCache.entries()) {
+		if (!activeSet.has(key)) {
+			jsonlFileCache.delete(key);
+			jsonlCacheBytes = Math.max(0, jsonlCacheBytes - entry.size);
+		}
 	}
-	const events = [];
-	const flagEvents = [];
-	for (const file of allFiles) {
-		for (const ev of readJsonlCached(file)) events.push({ file, ev });
+	const from = filters.from || "";
+	const to = filters.to || "";
+	const selectedFiles = (from || to)
+		? allFiles.filter((f) => {
+			const date = f.replace(".jsonl", "");
+			if (from && date < from) return false;
+			if (to && date > to) return false;
+			return true;
+		})
+		: allFiles;
+	const selectedFlagFiles = (from || to)
+		? flagFiles.filter((f) => {
+			const date = f.replace("-flags.jsonl", "");
+			if (from && date < from) return false;
+			if (to && date > to) return false;
+			return true;
+		})
+		: flagFiles;
+	for (const file of selectedFiles) {
+		forEachJsonlRecord(file, (ev) => onEvent(file, ev));
 	}
-	for (const file of flagFiles) {
-		for (const fl of readJsonlCached(file)) flagEvents.push({ file, fl });
+	for (const file of selectedFlagFiles) {
+		forEachJsonlRecord(file, (fl) => onFlagEvent(file, fl));
 	}
-	return { events, flagEvents, allFiles, flagFiles };
-}
-
-// Extract filter options from all events (unfiltered, for populating dropdowns)
-function buildFilterOptions(events, flagEvents) {
-	const installIds = new Set();
-	const versions = new Set();
-	const osList = new Set();
-	const models = new Set();
-	const dates = new Set();
-	for (const { ev, file } of events) {
-		if (ev.installId) installIds.add(ev.installId);
-		if (ev.version) versions.add(ev.version);
-		if (ev.os) osList.add(ev.os);
-		for (const m of ev.modelsUsed || []) models.add(m);
-		const date = file.replace(".jsonl", "");
-		if (date) dates.add(date);
-	}
-	return {
-		installIds: [...installIds].sort(),
-		versions: [...versions].sort(),
-		os: [...osList].sort(),
-		models: [...models].sort(),
-		dateRange: { from: [...dates].sort()[0] ?? null, to: [...dates].sort().at(-1) ?? null },
-	};
+	return { allFiles, flagFiles };
 }
 
 
@@ -783,28 +957,6 @@ function mergeMaxTokens(target, tokensByModel) {
 // Returns one summary row per unique installId based on their latest
 // non-flag heartbeat/boot/shutdown event + flag count over the same filtered window.
 function computeInstallList(filters = {}) {
-	const { events: allEvents, flagEvents: allFlagEvents } = loadAllEvents();
-
-	// Apply same filters as computeStats
-	const events = allEvents.filter(({ ev, file }) => {
-		if (filters.installId && ev.installId !== filters.installId) return false;
-		if (filters.version   && ev.version   !== filters.version)   return false;
-		if (filters.os        && ev.os        !== filters.os)        return false;
-		if (filters.model     && !(ev.modelsUsed || []).includes(filters.model)) return false;
-		const date = file.replace('.jsonl', '');
-		if (filters.from && date < filters.from) return false;
-		if (filters.to   && date > filters.to)   return false;
-		return true;
-	});
-
-	const flagEvents = allFlagEvents.filter(({ fl, file }) => {
-		if (filters.installId && fl.installId !== filters.installId) return false;
-		const date = file.replace('-flags.jsonl', '');
-		if (filters.from && date < filters.from) return false;
-		if (filters.to   && date > filters.to)   return false;
-		return true;
-	});
-
 	// Latest non-flag state snapshot + latest overall timestamp per install.
 	// Excluding flag events from state prevents a recent flag (which lacks accountCount,
 	// OS, health, and tokensByModel) from overwriting the install's real profile with zeros.
@@ -813,31 +965,44 @@ function computeInstallList(filters = {}) {
 	const firstSeen = Object.create(null);
 	const maxRequests = Object.create(null);
 	const maxTokensByInstall = Object.create(null); // installId -> { [model]: { input, output, requests } }
-
-	for (const { ev } of events) {
-		const id = ev.installId;
-		if (!id) continue;
-		const prevAny = latestAny[id];
-		if (!prevAny || (ev.ts || '') >= (prevAny.ts || '')) latestAny[id] = ev;
-		if (!firstSeen[id] || (ev.ts || '') < firstSeen[id]) firstSeen[id] = ev.ts;
-
-		if (ev.event !== 'flag') {
-			const prevState = latestState[id];
-			if (!prevState || (ev.ts || '') >= (prevState.ts || '')) latestState[id] = ev;
-			const reqVal = safeNonNegInt(ev.totalRequests, MAX_REQUESTS_CAP);
-			if (reqVal > (maxRequests[id] || 0)) maxRequests[id] = reqVal;
-			if (ev.tokensByModel && typeof ev.tokensByModel === 'object') {
-				if (!maxTokensByInstall[id]) maxTokensByInstall[id] = Object.create(null);
-				mergeMaxTokens(maxTokensByInstall[id], ev.tokensByModel);
-			}
-		}
-	}
-
-	// Flag counts per install
 	const flagsByInstall = Object.create(null);
-	for (const { fl } of flagEvents) {
-		flagsByInstall[fl.installId] = (flagsByInstall[fl.installId] || 0) + 1;
-	}
+
+	forEachEventFile(
+		filters,
+		(file, ev) => {
+			if (filters.installId && ev.installId !== filters.installId) return;
+			if (filters.version   && ev.version   !== filters.version)   return;
+			if (filters.os        && ev.os        !== filters.os)        return;
+			if (filters.model     && !(ev.modelsUsed || []).includes(filters.model)) return;
+			const date = file.replace(".jsonl", "");
+			if (filters.from && date < filters.from) return;
+			if (filters.to   && date > filters.to)   return;
+
+			const id = ev.installId;
+			if (!id) return;
+			const prevAny = latestAny[id];
+			if (!prevAny || (ev.ts || "") >= (prevAny.ts || "")) latestAny[id] = ev;
+			if (!firstSeen[id] || (ev.ts || "") < firstSeen[id]) firstSeen[id] = ev.ts;
+
+			if (ev.event !== "flag") {
+				const prevState = latestState[id];
+				if (!prevState || (ev.ts || "") >= (prevState.ts || "")) latestState[id] = ev;
+				const reqVal = safeNonNegInt(ev.totalRequests, MAX_REQUESTS_CAP);
+				if (reqVal > (maxRequests[id] || 0)) maxRequests[id] = reqVal;
+				if (ev.tokensByModel && typeof ev.tokensByModel === "object") {
+					if (!maxTokensByInstall[id]) maxTokensByInstall[id] = Object.create(null);
+					mergeMaxTokens(maxTokensByInstall[id], ev.tokensByModel);
+				}
+			}
+		},
+		(file, fl) => {
+			if (filters.installId && fl.installId !== filters.installId) return;
+			const date = file.replace("-flags.jsonl", "");
+			if (filters.from && date < filters.from) return;
+			if (filters.to   && date > filters.to)   return;
+			if (fl.installId) flagsByInstall[fl.installId] = (flagsByInstall[fl.installId] || 0) + 1;
+		},
+	);
 
 	const list = Object.keys(latestAny).map((id) => {
 		const ev = latestState[id] || latestAny[id];
@@ -871,29 +1036,11 @@ function computeInstallList(filters = {}) {
 }
 
 function computeStats(filters = {}) {
-	const { events: allEvents, flagEvents: allFlagEvents, allFiles } = loadAllEvents();
-
-	// Apply filters to main events
-	const events = allEvents.filter(({ ev, file }) => {
-		if (filters.installId && ev.installId !== filters.installId) return false;
-		if (filters.version && ev.version !== filters.version) return false;
-		if (filters.os && ev.os !== filters.os) return false;
-		if (filters.model && !(ev.modelsUsed || []).includes(filters.model)) return false;
-		const date = file.replace(".jsonl", "");
-		if (filters.from && date < filters.from) return false;
-		if (filters.to && date > filters.to) return false;
-		return true;
-	});
-
-	// Apply filters to flag events (by installId, date)
-	const flagEvents = allFlagEvents.filter(({ fl, file }) => {
-		if (filters.installId && fl.installId !== filters.installId) return false;
-		if (filters.model && fl.model !== filters.model) return false;
-		const date = file.replace("-flags.jsonl", "");
-		if (filters.from && date < filters.from) return false;
-		if (filters.to && date > filters.to) return false;
-		return true;
-	});
+	const filterInstallIds = new Set();
+	const filterVersions = new Set();
+	const filterOsList = new Set();
+	const filterModels = new Set();
+	const filterDates = new Set();
 
 	const uniqueInstalls = new Set();
 	let totalEvents = 0;
@@ -916,6 +1063,20 @@ function computeStats(filters = {}) {
 	const latestSeenByInstall = Object.create(null); // installId → latest ev (any type, for activity)
 	const dailyMap = Object.create(null); // YYYY-MM-DD → { date, events, installs: Set, boots, mainFlags, detailFlags }
 
+	// Flag aggregates
+	const flagsByStatus = Object.create(null);
+	const flagsByReasonCode = Object.create(null);
+	const flagsByPattern = Object.create(null);
+	const flagsByModel = Object.create(null);
+	const flagsByTimerType = Object.create(null);
+	const flagsByInstall = Object.create(null);
+	let flagsOnProAccounts = 0;
+	let flagsOnFreeAccounts = 0;
+	let flagRequestsTotal = 0;
+	let flagCount = 0;
+	const uniqueFlagSignatures = new Set();
+	const recentIncidents = [];
+
 	function ensureDay(date) {
 		if (!dailyMap[date]) {
 			dailyMap[date] = { date, events: 0, installs: new Set(), boots: 0, mainFlags: 0, detailFlags: 0 };
@@ -923,52 +1084,127 @@ function computeStats(filters = {}) {
 		return dailyMap[date];
 	}
 
-	for (const { ev, file } of events) {
-		totalEvents++;
-		uniqueInstalls.add(ev.installId);
-		if (ev.event === "boot") totalBoots++;
-		if (ev.event === "flag") totalFlags++;
-		if (ev.version) versionCounts[ev.version] = (versionCounts[ev.version] || 0) + 1;
+	const { allFiles } = forEachEventFile(
+		filters,
+		(file, ev) => {
+			if (ev.installId) filterInstallIds.add(ev.installId);
+			if (ev.version) filterVersions.add(ev.version);
+			if (ev.os) filterOsList.add(ev.os);
+			for (const m of ev.modelsUsed || []) filterModels.add(m);
+			const date = file.replace(".jsonl", "");
+			if (date) filterDates.add(date);
 
-		const day = ensureDay(file.replace(".jsonl", ""));
-		day.events++;
-		if (ev.installId) day.installs.add(ev.installId);
-		if (ev.event === "boot") day.boots++;
-		if (ev.event === "flag") day.mainFlags++;
+			if (filters.installId && ev.installId !== filters.installId) return;
+			if (filters.version && ev.version !== filters.version) return;
+			if (filters.os && ev.os !== filters.os) return;
+			if (filters.model && !(ev.modelsUsed || []).includes(filters.model)) return;
+			if (filters.from && date < filters.from) return;
+			if (filters.to && date > filters.to) return;
 
-		const prevSeen = latestSeenByInstall[ev.installId];
-		if (!prevSeen || (ev.ts || "") >= (prevSeen.ts || "")) {
-			latestSeenByInstall[ev.installId] = ev;
-		}
+			totalEvents++;
+			uniqueInstalls.add(ev.installId);
+			if (ev.event === "boot") totalBoots++;
+			if (ev.event === "flag") totalFlags++;
+			if (ev.version) versionCounts[ev.version] = (versionCounts[ev.version] || 0) + 1;
 
-		if (ev.event !== "flag") {
-			nonFlagEvents++;
-			if (ev.os) osCounts[ev.os] = (osCounts[ev.os] || 0) + 1;
-			if (ev.arch) archCounts[ev.arch] = (archCounts[ev.arch] || 0) + 1;
-			if (ev.routingHealthState) healthCounts[ev.routingHealthState] = (healthCounts[ev.routingHealthState] || 0) + 1;
-			totalAccounts += safeNonNegInt(ev.accountCount, 1000);
-			const reqVal = safeNonNegInt(ev.totalRequests, MAX_REQUESTS_CAP);
-			if (ev.installId && reqVal > (maxRequestsByInstall[ev.installId] || 0)) {
-				maxRequestsByInstall[ev.installId] = reqVal;
+			const day = ensureDay(date);
+			day.events++;
+			if (ev.installId) day.installs.add(ev.installId);
+			if (ev.event === "boot") day.boots++;
+			if (ev.event === "flag") day.mainFlags++;
+
+			const prevSeen = latestSeenByInstall[ev.installId];
+			if (!prevSeen || (ev.ts || "") >= (prevSeen.ts || "")) {
+				latestSeenByInstall[ev.installId] = ev;
 			}
 
-			const prevState = latestStateByInstall[ev.installId];
-			if (!prevState || (ev.ts || "") >= (prevState.ts || "")) {
-				latestStateByInstall[ev.installId] = ev;
-			}
+			if (ev.event !== "flag") {
+				nonFlagEvents++;
+				if (ev.os) osCounts[ev.os] = (osCounts[ev.os] || 0) + 1;
+				if (ev.arch) archCounts[ev.arch] = (archCounts[ev.arch] || 0) + 1;
+				if (ev.routingHealthState) healthCounts[ev.routingHealthState] = (healthCounts[ev.routingHealthState] || 0) + 1;
+				totalAccounts += safeNonNegInt(ev.accountCount, 1000);
+				const reqVal = safeNonNegInt(ev.totalRequests, MAX_REQUESTS_CAP);
+				if (ev.installId && reqVal > (maxRequestsByInstall[ev.installId] || 0)) {
+					maxRequestsByInstall[ev.installId] = reqVal;
+				}
 
-			if (ev.installId && ev.tokensByModel && typeof ev.tokensByModel === "object") {
-				if (!maxTokensByInstall[ev.installId]) maxTokensByInstall[ev.installId] = Object.create(null);
-				mergeMaxTokens(maxTokensByInstall[ev.installId], ev.tokensByModel);
-			}
-			for (const m of ev.modelsUsed || []) modelCounts[m] = (modelCounts[m] || 0) + 1;
-			if (ev.featuresUsed && typeof ev.featuresUsed === "object") {
-				for (const [k, v] of Object.entries(ev.featuresUsed)) {
-					if (v === true && Object.hasOwn(featuresCount, k)) featuresCount[k]++;
+				const prevState = latestStateByInstall[ev.installId];
+				if (!prevState || (ev.ts || "") >= (prevState.ts || "")) {
+					latestStateByInstall[ev.installId] = ev;
+				}
+
+				if (ev.installId && ev.tokensByModel && typeof ev.tokensByModel === "object") {
+					if (!maxTokensByInstall[ev.installId]) maxTokensByInstall[ev.installId] = Object.create(null);
+					mergeMaxTokens(maxTokensByInstall[ev.installId], ev.tokensByModel);
+				}
+				for (const m of ev.modelsUsed || []) modelCounts[m] = (modelCounts[m] || 0) + 1;
+				if (ev.featuresUsed && typeof ev.featuresUsed === "object") {
+					for (const [k, v] of Object.entries(ev.featuresUsed)) {
+						if (v === true && Object.hasOwn(featuresCount, k)) featuresCount[k]++;
+					}
 				}
 			}
-		}
-	}
+		},
+		(file, fl) => {
+			if (filters.installId && fl.installId !== filters.installId) return;
+			if (filters.model && fl.model !== filters.model) return;
+			const date = file.replace("-flags.jsonl", "");
+			if (filters.from && date < filters.from) return;
+			if (filters.to && date > filters.to) return;
+
+			flagCount++;
+			const day = ensureDay(date);
+			day.detailFlags++;
+			if (fl.installId) flagsByInstall[fl.installId] = (flagsByInstall[fl.installId] || 0) + 1;
+			flagsByStatus[fl.flagHttpStatus] = (flagsByStatus[fl.flagHttpStatus] || 0) + 1;
+			const reasonCode = fl.flagReasonCode || "UNKNOWN";
+			flagsByReasonCode[reasonCode] = (flagsByReasonCode[reasonCode] || 0) + 1;
+			for (const p of fl.flagPatternsMatched || []) flagsByPattern[p] = (flagsByPattern[p] || 0) + 1;
+			if (fl.model) flagsByModel[fl.model] = (flagsByModel[fl.model] || 0) + 1;
+			if (fl.timerType) flagsByTimerType[fl.timerType] = (flagsByTimerType[fl.timerType] || 0) + 1;
+			if (fl.wasProAccount) flagsOnProAccounts++;
+			else flagsOnFreeAccounts++;
+			flagRequestsTotal += fl.accountTotalRequests || 0;
+			const signature = JSON.stringify({
+				status: fl.flagHttpStatus,
+				reasonCode: fl.flagReasonCode || "",
+				patterns: [...(fl.flagPatternsMatched || [])].sort(),
+				model: fl.model || "",
+				timerType: fl.timerType || "",
+				quota: fl.accountQuotaPercent,
+				pro: !!fl.wasProAccount,
+				pause: !!fl.protectivePauseTriggered,
+			});
+			uniqueFlagSignatures.add(signature);
+			recentIncidents.push({
+				installId: fl.installId,
+				version: fl.version || "?",
+				ts: fl.ts,
+				receivedAt: fl.receivedAt,
+				flagHttpStatus: fl.flagHttpStatus,
+				flagReasonCode: fl.flagReasonCode || "UNKNOWN",
+				flagReasonMessage: fl.flagReasonMessage || "",
+				flagPatternsMatched: fl.flagPatternsMatched || [],
+				model: fl.model || "unknown",
+				timerType: fl.timerType || "unknown",
+				accountQuotaPercent: fl.accountQuotaPercent ?? -1,
+				wasProAccount: !!fl.wasProAccount,
+				accountTotalRequests: fl.accountTotalRequests ?? 0,
+				accountRequestsLastHour: fl.accountRequestsLastHour ?? 0,
+				accountConcurrentAtFlag: fl.accountConcurrentAtFlag ?? 0,
+				poolSize: fl.poolSize ?? 0,
+				poolHealthyCount: fl.poolHealthyCount ?? 0,
+				protectivePauseTriggered: !!fl.protectivePauseTriggered,
+				uptimeSeconds: fl.uptimeSeconds ?? 0,
+				timeSinceLastFlagSeconds: fl.timeSinceLastFlagSeconds ?? -1,
+			});
+			if (recentIncidents.length >= 200) {
+				recentIncidents.sort((a, b) => String(b.receivedAt || b.ts).localeCompare(String(a.receivedAt || a.ts)));
+				recentIncidents.length = 50;
+			}
+		},
+	);
 
 	// Fleet summary from latest non-flag state snapshot per unique install
 	const nowMs = Date.now();
@@ -1036,46 +1272,6 @@ function computeStats(filters = {}) {
 		}
 	}
 
-	// Flag aggregates
-	const flagsByStatus = Object.create(null);
-	const flagsByReasonCode = Object.create(null);
-	const flagsByPattern = Object.create(null);
-	const flagsByModel = Object.create(null);
-	const flagsByTimerType = Object.create(null);
-	const flagsByInstall = Object.create(null);
-	let flagsOnProAccounts = 0;
-	let flagsOnFreeAccounts = 0;
-	let flagRequestsTotal = 0;
-	let flagCount = 0;
-	const uniqueFlagSignatures = new Set();
-
-	for (const { fl, file } of flagEvents) {
-		flagCount++;
-		const day = ensureDay(file.replace("-flags.jsonl", ""));
-		day.detailFlags++;
-		if (fl.installId) flagsByInstall[fl.installId] = (flagsByInstall[fl.installId] || 0) + 1;
-		flagsByStatus[fl.flagHttpStatus] = (flagsByStatus[fl.flagHttpStatus] || 0) + 1;
-		const reasonCode = fl.flagReasonCode || "UNKNOWN";
-		flagsByReasonCode[reasonCode] = (flagsByReasonCode[reasonCode] || 0) + 1;
-		for (const p of fl.flagPatternsMatched || []) flagsByPattern[p] = (flagsByPattern[p] || 0) + 1;
-		if (fl.model) flagsByModel[fl.model] = (flagsByModel[fl.model] || 0) + 1;
-		if (fl.timerType) flagsByTimerType[fl.timerType] = (flagsByTimerType[fl.timerType] || 0) + 1;
-		if (fl.wasProAccount) flagsOnProAccounts++;
-		else flagsOnFreeAccounts++;
-		flagRequestsTotal += fl.accountTotalRequests || 0;
-		const signature = JSON.stringify({
-			status: fl.flagHttpStatus,
-			reasonCode: fl.flagReasonCode || "",
-			patterns: [...(fl.flagPatternsMatched || [])].sort(),
-			model: fl.model || "",
-			timerType: fl.timerType || "",
-			quota: fl.accountQuotaPercent,
-			pro: !!fl.wasProAccount,
-			pause: !!fl.protectivePauseTriggered,
-		});
-		uniqueFlagSignatures.add(signature);
-	}
-
 	const avgRequestsBeforeFlag = flagCount > 0 ? Math.round(flagRequestsTotal / flagCount) : 0;
 	const uniqueFlagIncidents = uniqueFlagSignatures.size;
 	const canonicalFlagTotal = flagCount > 0 ? flagCount : totalFlags;
@@ -1088,31 +1284,8 @@ function computeStats(filters = {}) {
 			sharePct: canonicalFlagTotal > 0 ? Math.round((count / canonicalFlagTotal) * 1000) / 10 : 0,
 		}));
 	const totalRequestsAcrossAll = Object.values(maxRequestsByInstall).reduce((acc, n) => acc + n, 0);
-	const recentIncidents = flagEvents
-		.map(({ fl }) => ({
-			installId: fl.installId,
-			version: fl.version || "?",
-			ts: fl.ts,
-			receivedAt: fl.receivedAt,
-			flagHttpStatus: fl.flagHttpStatus,
-			flagReasonCode: fl.flagReasonCode || "UNKNOWN",
-			flagReasonMessage: fl.flagReasonMessage || "",
-			flagPatternsMatched: fl.flagPatternsMatched || [],
-			model: fl.model || "unknown",
-			timerType: fl.timerType || "unknown",
-			accountQuotaPercent: fl.accountQuotaPercent ?? -1,
-			wasProAccount: !!fl.wasProAccount,
-			accountTotalRequests: fl.accountTotalRequests ?? 0,
-			accountRequestsLastHour: fl.accountRequestsLastHour ?? 0,
-			accountConcurrentAtFlag: fl.accountConcurrentAtFlag ?? 0,
-			poolSize: fl.poolSize ?? 0,
-			poolHealthyCount: fl.poolHealthyCount ?? 0,
-			protectivePauseTriggered: !!fl.protectivePauseTriggered,
-			uptimeSeconds: fl.uptimeSeconds ?? 0,
-			timeSinceLastFlagSeconds: fl.timeSinceLastFlagSeconds ?? -1,
-		}))
-		.sort((a, b) => String(b.receivedAt || b.ts).localeCompare(String(a.receivedAt || a.ts)))
-		.slice(0, 50);
+	recentIncidents.sort((a, b) => String(b.receivedAt || b.ts).localeCompare(String(a.receivedAt || a.ts)));
+	if (recentIncidents.length > 50) recentIncidents.length = 50;
 
 	const daily = Object.values(dailyMap)
 		.sort((a, b) => a.date.localeCompare(b.date))
@@ -1124,8 +1297,18 @@ function computeStats(filters = {}) {
 			flags: d.detailFlags > 0 ? d.detailFlags : d.mainFlags,
 		}));
 
-	// Build filter options from ALL events (unfiltered) for dropdown population
-	const filterOptions = buildFilterOptions(allEvents, allFlagEvents);
+	for (const f of allFiles) {
+		const date = f.replace(".jsonl", "");
+		if (date) filterDates.add(date);
+	}
+	const sortedDates = [...filterDates].sort();
+	const filterOptions = {
+		installIds: [...filterInstallIds].sort(),
+		versions: [...filterVersions].sort(),
+		os: [...filterOsList].sort(),
+		models: [...filterModels].sort(),
+		dateRange: { from: sortedDates[0] ?? null, to: sortedDates.at(-1) ?? null },
+	};
 
 	return {
 		filters: { ...filters },
@@ -1269,6 +1452,7 @@ function getPublicStats() {
 				updatedAt: new Date().toISOString(),
 			};
 		}
+		publicStatsCacheTs = now;
 	}
 	return publicStatsCache;
 }
@@ -2119,9 +2303,14 @@ function isDuplicateFlagLoop(installId, flag) {
 		recentFlagMap.set(key, now); // sliding window suppresses unbroken polling loops
 		return true;
 	}
-	enforceMapCap(recentFlagMap, MAX_RATE_LIMIT_ENTRIES);
-	recentFlagMap.set(key, now);
 	return false;
+}
+
+function recordFlagDedup(installId, flag) {
+	if (FLAG_DEDUP_WINDOW_MS <= 0) return;
+	const key = buildFlagDedupKey(installId, flag);
+	enforceMapCap(recentFlagMap, MAX_RATE_LIMIT_ENTRIES);
+	recentFlagMap.set(key, Date.now());
 }
 
 function warmFlagDedupCache() {
@@ -4598,6 +4787,9 @@ const server = createServer(async (req, res) => {
 			}
 
 			storeEvent(data);
+			if (data.event === "flag") {
+				recordFlagDedup(data.installId, data.flag);
+			}
 			res.writeHead(202, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ accepted: true }));
 		} catch (err) {
