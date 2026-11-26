@@ -6,7 +6,10 @@ import { getAccountIdentity, getCredentialGeneration } from "../../account-ident
 import { fetchWithRetry, type RequestInitWithDispatcher } from "../../fetch-with-retry.js";
 import { logger } from "../../logger.js";
 import { AICODE_ENDPOINTS, REQUEST_USER_AGENT } from "../../types.js";
-import type { AccountRuntime } from "../../types.js";
+import type {
+  AccountRuntime,
+  GoogleQuotaResponse,
+} from "../../types.js";
 import { DEFAULT_PROVIDER } from "../credential-helpers.js";
 import { getAccountProxyDispatcher } from "../proxy-dispatcher.js";
 import { parseUseAicodeMendel } from "./aicode-eligibility.js";
@@ -120,6 +123,10 @@ export function parseAicodeFetchConfig(
 ): AicodeConfigSnapshot | null {
   if (!isRecord(raw)) return null;
   const experiencesByLowerName: Record<string, string> = Object.create(null);
+  const experienceMetaByLowerName: Record<
+    string,
+    { modelId?: string; displayName?: string }
+  > = Object.create(null);
   const experienceNames: string[] = [];
   const rawExperiences = Array.isArray(raw.availableExperiences)
     ? raw.availableExperiences
@@ -132,6 +139,18 @@ export function parseAicodeFetchConfig(
     if (!Object.hasOwn(experiencesByLowerName, lower)) {
       experiencesByLowerName[lower] = name;
       experienceNames.push(name);
+      const modelId =
+        typeof entry.model.modelId === "string" && entry.model.modelId.trim()
+          ? entry.model.modelId.trim()
+          : undefined;
+      const displayName =
+        typeof entry.model.displayName === "string" && entry.model.displayName.trim()
+          ? entry.model.displayName.trim()
+          : undefined;
+      experienceMetaByLowerName[lower] = {
+        ...(modelId ? { modelId } : {}),
+        ...(displayName ? { displayName } : {}),
+      };
     }
   }
   const useAicodeMendel = isRecord(raw.experimentConfig)
@@ -143,6 +162,7 @@ export function parseAicodeFetchConfig(
     fetchedAt,
     experiencesByLowerName,
     experienceNames,
+    experienceMetaByLowerName,
     useAicodeMendel,
   };
 }
@@ -329,4 +349,167 @@ export async function fetchAicodeLicenses(
 
   inFlightLicenseFetches.set(flightKey, promise);
   return promise;
+}
+
+export interface AicodeQuotaBucket {
+  modelId: string;
+  displayName?: string;
+  description?: string;
+  remainingFraction?: number;
+  resetTime?: string;
+}
+
+export interface AicodeQuotaStatusResult {
+  buckets: AicodeQuotaBucket[];
+  quotaSummary: unknown;
+}
+
+export function parseAicodeQuotaStatus(raw: unknown): AicodeQuotaStatusResult | null {
+  if (!isRecord(raw)) return null;
+  const rawBuckets = Array.isArray(raw.buckets) ? raw.buckets : [];
+  const buckets: AicodeQuotaBucket[] = [];
+  for (const entry of rawBuckets) {
+    if (!isRecord(entry) || !isRecord(entry.model)) continue;
+    const modelId =
+      typeof entry.model.modelId === "string" ? entry.model.modelId.trim() : "";
+    if (!modelId) continue;
+    const fraction =
+      typeof entry.remainingFraction === "number" &&
+      Number.isFinite(entry.remainingFraction) &&
+      entry.remainingFraction >= 0 &&
+      entry.remainingFraction <= 1
+        ? entry.remainingFraction
+        : undefined;
+    const resetTime =
+      typeof entry.resetTime === "string" && entry.resetTime.trim()
+        ? entry.resetTime.trim()
+        : undefined;
+    const displayName =
+      typeof entry.model.displayName === "string" && entry.model.displayName.trim()
+        ? entry.model.displayName.trim()
+        : undefined;
+    const description =
+      typeof entry.model.description === "string" && entry.model.description.trim()
+        ? entry.model.description.trim()
+        : undefined;
+    buckets.push({
+      modelId,
+      ...(displayName ? { displayName } : {}),
+      ...(description ? { description } : {}),
+      ...(fraction !== undefined ? { remainingFraction: fraction } : {}),
+      ...(resetTime ? { resetTime } : {}),
+    });
+  }
+  if (buckets.length === 0 && !isRecord(raw.quotaSummary)) {
+    return null;
+  }
+  return {
+    buckets,
+    quotaSummary: isRecord(raw.quotaSummary) ? raw.quotaSummary : null,
+  };
+}
+
+export async function fetchAicodeQuotaStatus(
+  account: AccountRuntime,
+  originalHeaders: Record<string, string> = {},
+  signal?: AbortSignal,
+): Promise<AicodeQuotaStatusResult | null> {
+  if (!account.accessToken) return null;
+  const gen = getCredentialGeneration(account, DEFAULT_PROVIDER);
+  try {
+    const endpoint = resolveAicodeEndpoint();
+    const response = await fetchWithRetry(`${endpoint}/v1alpha:fetchQuotaStatus`, {
+      method: "GET",
+      headers: buildAicodeWireHeaders(account, originalHeaders),
+      timeoutMs: 8000,
+      retries: 0,
+      signal,
+      dispatcher: getAccountProxyDispatcher(account, DEFAULT_PROVIDER),
+    } as RequestInitWithDispatcher);
+
+    if (getCredentialGeneration(account, DEFAULT_PROVIDER) !== gen) {
+      return null;
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "");
+      if (isAicodeInsufficientScopeError(response.status, errorText)) {
+        markAicodeScopeMissing(account);
+      }
+      return null;
+    }
+
+    const raw = await response.json().catch(() => null);
+    if (getCredentialGeneration(account, DEFAULT_PROVIDER) !== gen) {
+      return null;
+    }
+    return parseAicodeQuotaStatus(raw);
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    return null;
+  }
+}
+
+export function mergeAicodeQuotaIntoResponse(
+  data: GoogleQuotaResponse,
+  quotaStatus: AicodeQuotaStatusResult,
+  config?: AicodeConfigSnapshot | null,
+): GoogleQuotaResponse {
+  const bucketByModelId = new Map<string, AicodeQuotaBucket>();
+  for (const bucket of quotaStatus.buckets) {
+    bucketByModelId.set(bucket.modelId.toLowerCase(), bucket);
+  }
+
+  const mergedModels: GoogleQuotaResponse["models"] = { ...data.models };
+  const hasKeyIgnoreCase = (candidate: string): boolean => {
+    const lower = candidate.toLowerCase();
+    return Object.keys(mergedModels).some((k) => k.toLowerCase() === lower);
+  };
+
+  if (config && config.experienceNames.length > 0) {
+    for (const expName of config.experienceNames) {
+      if (hasKeyIgnoreCase(expName)) continue;
+      const meta = config.experienceMetaByLowerName?.[expName.toLowerCase()];
+      const bucket =
+        (meta?.modelId
+          ? bucketByModelId.get(meta.modelId.toLowerCase())
+          : undefined) ?? bucketByModelId.get(expName.toLowerCase());
+      const quotaInfo =
+        bucket && (bucket.remainingFraction !== undefined || bucket.resetTime)
+          ? {
+              ...(bucket.remainingFraction !== undefined
+                ? { remainingFraction: bucket.remainingFraction }
+                : {}),
+              ...(bucket.resetTime ? { resetTime: bucket.resetTime } : {}),
+            }
+          : undefined;
+      const displayName = meta?.displayName || bucket?.displayName;
+      mergedModels[expName] = {
+        ...(displayName ? { displayName } : {}),
+        ...(quotaInfo ? { quotaInfo } : {}),
+      };
+    }
+  } else {
+    for (const bucket of quotaStatus.buckets) {
+      if (hasKeyIgnoreCase(bucket.modelId)) continue;
+      const quotaInfo =
+        bucket.remainingFraction !== undefined || bucket.resetTime
+          ? {
+              ...(bucket.remainingFraction !== undefined
+                ? { remainingFraction: bucket.remainingFraction }
+                : {}),
+              ...(bucket.resetTime ? { resetTime: bucket.resetTime } : {}),
+            }
+          : undefined;
+      mergedModels[bucket.modelId] = {
+        ...(bucket.displayName ? { displayName: bucket.displayName } : {}),
+        ...(quotaInfo ? { quotaInfo } : {}),
+      };
+    }
+  }
+
+  return {
+    ...data,
+    models: mergedModels,
+  };
 }

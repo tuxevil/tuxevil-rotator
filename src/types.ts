@@ -597,6 +597,10 @@ export interface AccountRuntime {
       fetchedAt: number;
       experiencesByLowerName: Record<string, string>;
       experienceNames: string[];
+      experienceMetaByLowerName?: Record<
+        string,
+        { modelId?: string; displayName?: string }
+      >;
       useAicodeMendel: boolean | null;
     };
     licenses?: {

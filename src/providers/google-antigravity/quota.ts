@@ -40,6 +40,12 @@ import {
   parseGoogleQuotaResponse,
 } from "./dynamic-catalog.js";
 import { refreshAicodeEligibilityIfNeeded } from "./aicode-eligibility.js";
+import {
+  fetchAicodeConfig,
+  fetchAicodeQuotaStatus,
+  mergeAicodeQuotaIntoResponse,
+} from "./aicode.js";
+import { shouldAttemptAicodeRouting } from "./aicode-forward.js";
 
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -67,7 +73,13 @@ function sanitizeSummaryBucket(raw: unknown): GoogleQuotaSummaryBucket | null {
   if (typeof raw.bucketId === "string" && raw.bucketId.trim()) bucket.bucketId = raw.bucketId.trim();
   if (typeof raw.displayName === "string" && raw.displayName.trim()) bucket.displayName = raw.displayName.trim();
   if (typeof raw.description === "string" && raw.description.trim()) bucket.description = raw.description.trim();
-  if (typeof raw.window === "string" && raw.window.trim()) bucket.window = raw.window.trim();
+  const rawWindow =
+    typeof raw.window === "string" && raw.window.trim()
+      ? raw.window.trim()
+      : typeof raw.refreshWindowLabel === "string" && raw.refreshWindowLabel.trim()
+        ? raw.refreshWindowLabel.trim()
+        : undefined;
+  if (rawWindow) bucket.window = rawWindow;
   if (fraction !== undefined) bucket.remainingFraction = fraction;
   if (typeof raw.remainingAmount === "string" || typeof raw.remainingAmount === "number") {
     bucket.remainingAmount = raw.remainingAmount;
@@ -848,12 +860,36 @@ export async function fetchProviderQuota(
 
     const rawData = await response.json();
     if (!isCurrentGeneration()) return;
-    const data = parseGoogleQuotaResponse(rawData);
+    let data = parseGoogleQuotaResponse(rawData);
     if (!data) return;
+
+    await refreshAicodeEligibilityIfNeeded(
+      account,
+      quotaHeaders,
+      isCurrentGeneration,
+    );
+    if (!isCurrentGeneration()) return;
 
     const hasModels = Object.keys(data.models).length > 0;
     let summary: GoogleQuotaSummaryResponse | null = null;
-    if (hasModels) {
+    if (shouldAttemptAicodeRouting(account)) {
+      try {
+        const [aicodeQuota, aicodeConfig] = await Promise.all([
+          fetchAicodeQuotaStatus(account, quotaHeaders),
+          fetchAicodeConfig(account, quotaHeaders),
+        ]);
+        if (!isCurrentGeneration()) return;
+        if (aicodeQuota) {
+          summary = parseGoogleQuotaSummaryResponse(aicodeQuota.quotaSummary);
+          data = mergeAicodeQuotaIntoResponse(data, aicodeQuota, aicodeConfig);
+        }
+      } catch {
+        // Fall back to CCPA retrieveUserQuotaSummary when AICode quota status fails.
+      }
+      if (!isCurrentGeneration()) return;
+    }
+
+    if (!summary && hasModels) {
       try {
         const summaryResponse = await fetchWithRetry(QUOTA_SUMMARY_API_URL, {
           method: "POST",
@@ -872,13 +908,6 @@ export async function fetchProviderQuota(
       }
       if (!isCurrentGeneration()) return;
     }
-
-    await refreshAicodeEligibilityIfNeeded(
-      account,
-      quotaHeaders,
-      isCurrentGeneration,
-    );
-    if (!isCurrentGeneration()) return;
 
     const oldQuota = account.quota || [];
     const poolOverrides = buildSummaryModelPoolMap(data, summary);

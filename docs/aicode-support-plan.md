@@ -61,8 +61,9 @@ Si falta cualquiera de las tres condiciones, o si AICode responde HTTP `403` con
   - Ante `403 ACCESS_TOKEN_SCOPE_INSUFFICIENT`, activa el cooldown de 1h y reintenta inmediatamente la misma petición contra `daily-cloudcode-pa/v1internal`.
   - Pruebas de ruta, conversión, caché y fallback en `test/aicode-routing.test.ts`.
 
-### Fase 4: Cuota AICode y re-autenticación de cuentas (pendiente)
-- Integrar `GET /v1alpha:fetchQuotaStatus` en `src/providers/google-antigravity/quota.ts` para cuentas que operen sobre AICode:
-  - Reusar `parseGoogleQuotaSummaryResponse` sobre `response.quotaSummary` (misma estructura `groups[].buckets[]` con `remainingFraction` y `resetTime`).
-  - Reconciliar `buckets[]` con el catálogo de `fetchConfig.availableExperiences`.
-- Completar pruebas E2E en `test/proxy-e2e.test.ts` / `test/antigravity-twin-parity.test.ts` y desplegar en producción para re-autenticar el resto de cuentas marcadas.
+### Fase 4: Cuota AICode y re-autenticación de cuentas (completada)
+- Integrado `GET /v1alpha:fetchQuotaStatus` en `src/providers/google-antigravity/quota.ts` + `src/providers/google-antigravity/aicode.ts` para cuentas elegibles:
+  - `sanitizeSummaryBucket` normaliza `refreshWindowLabel` -> `window` para reutilizar `parseGoogleQuotaSummaryResponse` sobre `quotaSummary` (`groups[].buckets[]`).
+  - `mergeAicodeQuotaIntoResponse` combina `buckets[]` + `fetchConfig.availableExperiences` (p. ej. `claude-opus-5-5-high`, `claude-sonnet-5-5-high`) con `fetchAvailableModels` sin perder modelos exclusivos de CCPA (`gemini-4-hydrogen-high`).
+  - Ante `403 ACCESS_TOKEN_SCOPE_INSUFFICIENT`, registra cooldown de 1h y hace fallback inmediato a `retrieveUserQuotaSummary` sin marcar la cuenta.
+- Cobertura en `test/aicode-routing.test.ts` (conversión, SSE, fallback 403, `fetchQuotaStatus`).

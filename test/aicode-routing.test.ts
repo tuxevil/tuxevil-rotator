@@ -2,7 +2,10 @@ import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { getCredentialGeneration } from "../src/account-identity.js";
+import {
+  getAccountIdentity,
+  getCredentialGeneration,
+} from "../src/account-identity.js";
 import {
   AICODE_ENDPOINTS,
   AICODE_SCOPE,
@@ -25,6 +28,11 @@ import {
   resolveAicodeExperience,
 } from "../src/providers/google-antigravity/aicode.js";
 import { refreshAicodeEligibilityIfNeeded } from "../src/providers/google-antigravity/aicode-eligibility.js";
+import {
+  fetchProviderQuota,
+  parseGoogleQuotaSummaryResponse,
+} from "../src/providers/google-antigravity/quota.js";
+import { dynamicCatalog } from "../src/providers/google-antigravity/dynamic-catalog.js";
 import {
   forwardRequest,
   SseEventAccumulator,
@@ -507,5 +515,224 @@ describe("AICode Phase 2 & Phase 3 routing", () => {
     // resolveAicodeTarget returns null when USE_AICODE=false
     process.env.USE_AICODE = "false";
     assert.equal(await resolveAicodeTarget(makeEligibleAccount(), "gemini-3.8-flash-tiered", {}), null);
+  });
+
+  it("Phase 4: parses fetchQuotaStatus refreshWindowLabel and merges AICode models without dropping CCPA models", async () => {
+    const summary = parseGoogleQuotaSummaryResponse({
+      groups: [
+        {
+          displayName: "Gemini Models",
+          description: "Models within this group: Gemini Flash, Gemini Pro",
+          buckets: [
+            {
+              bucketId: "gemini-weekly",
+              refreshWindowLabel: "weekly",
+              remainingFraction: 0.75,
+              resetTime: "2026-12-03T12:00:00Z",
+            },
+            {
+              bucketId: "gemini-5h",
+              refreshWindowLabel: "5h",
+              remainingFraction: 0.4,
+              resetTime: "2026-11-26T22:00:00Z",
+            },
+          ],
+        },
+        {
+          displayName: "Claude and GPT models",
+          description: "Models within this group: Claude Opus, Claude Sonnet, GPT-OSS",
+          buckets: [
+            { bucketId: "3p-weekly", refreshWindowLabel: "weekly", remainingFraction: 1 },
+            { bucketId: "3p-5h", refreshWindowLabel: "5h", remainingFraction: 1 },
+          ],
+        },
+      ],
+    });
+    assert.ok(summary);
+    assert.equal(summary.groups?.[0]?.buckets?.[0]?.window, "weekly");
+    assert.equal(summary.groups?.[0]?.buckets?.[1]?.window, "5h");
+
+    const originalFetch = globalThis.fetch;
+    let ccpaSummaryCalls = 0;
+    let aicodeQuotaCalls = 0;
+    const aicodeStub = await startStubServer((req) => {
+      if (req.url === "/v1alpha:fetchConfig") {
+        return {
+          status: 200,
+          body: JSON.stringify({
+            experimentConfig: {
+              experimentFlags: [{ name: "use-aicode-mendel", boolValue: true }],
+            },
+            availableExperiences: [
+              {
+                name: "claude-opus-5-5-high",
+                model: { modelId: "claude-opus-5-5", displayName: "Claude Opus 5.5 (High)" },
+              },
+              {
+                name: "gemini-3.8-flash-tiered",
+                model: { modelId: "gemini-3.8-flash", displayName: "Gemini 3.8 Flash" },
+              },
+            ],
+          }),
+        };
+      }
+      if (req.url === "/v1alpha:fetchQuotaStatus") {
+        aicodeQuotaCalls += 1;
+        return {
+          status: 200,
+          body: JSON.stringify({
+            buckets: [
+              {
+                remainingFraction: 0.9,
+                resetTime: "2026-11-27T00:00:00Z",
+                model: { modelId: "claude-opus-5-5", displayName: "Claude Opus 5.5" },
+              },
+              {
+                remainingFraction: 0.4,
+                resetTime: "2026-11-26T22:00:00Z",
+                model: { modelId: "gemini-3.8-flash", displayName: "Gemini 3.8 Flash" },
+              },
+            ],
+            quotaSummary: {
+              groups: [
+                {
+                  displayName: "Gemini Models",
+                  description: "Models within this group: Gemini Flash, Gemini Pro",
+                  buckets: [
+                    {
+                      bucketId: "gemini-weekly",
+                      refreshWindowLabel: "weekly",
+                      remainingFraction: 0.75,
+                      resetTime: "2026-12-03T12:00:00Z",
+                    },
+                    {
+                      bucketId: "gemini-5h",
+                      refreshWindowLabel: "5h",
+                      remainingFraction: 0.4,
+                      resetTime: "2026-11-26T22:00:00Z",
+                    },
+                  ],
+                },
+                {
+                  displayName: "Claude and GPT models",
+                  description: "Models within this group: Claude Opus, Claude Sonnet, GPT-OSS",
+                  buckets: [
+                    { bucketId: "3p-weekly", refreshWindowLabel: "weekly", remainingFraction: 0.9 },
+                    { bucketId: "3p-5h", refreshWindowLabel: "5h", remainingFraction: 0.9 },
+                  ],
+                },
+              ],
+            },
+          }),
+        };
+      }
+      return { status: 404, body: "{}" };
+    });
+
+    AICODE_ENDPOINTS.splice(0, AICODE_ENDPOINTS.length, aicodeStub.url);
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("fetchAvailableModels")) {
+        return new Response(
+          JSON.stringify({
+            models: {
+              "gemini-4-hydrogen-high": { quotaInfo: { remainingFraction: 0.8 } },
+              "gemini-3.8-flash-tiered": { quotaInfo: { remainingFraction: 0.8 } },
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.includes("retrieveUserQuotaSummary")) {
+        ccpaSummaryCalls += 1;
+        return new Response(JSON.stringify({ groups: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    try {
+      const acc = makeEligibleAccount();
+      await fetchProviderQuota(acc, {
+        log: () => {},
+        markFlagged: () => {},
+        reportQuotaPollFlag: () => {},
+      });
+      assert.equal(aicodeQuotaCalls, 1);
+      assert.equal(ccpaSummaryCalls, 0, "should use AICode fetchQuotaStatus instead of CCPA summary");
+      const geminiQuota = acc.quota.find((q) => q.modelKey === "gemini");
+      const claudeQuota = acc.quota.find((q) => q.modelKey === "claude");
+      assert.equal(geminiQuota?.percentRemaining, 40);
+      assert.equal(claudeQuota?.percentRemaining, 90);
+      const snapshot = dynamicCatalog.getAccountSnapshot(
+        getAccountIdentity(acc),
+        getCredentialGeneration(acc, "google-antigravity"),
+      );
+      const modelIds = snapshot?.models ?? [];
+      assert.ok(modelIds.includes("gemini-4-hydrogen-high"), "keeps CCPA-only models");
+      assert.ok(modelIds.includes("claude-opus-5-5-high"), "adds AICode experiences");
+    } finally {
+      dynamicCatalog.reset();
+      globalThis.fetch = originalFetch;
+      await stopServer(aicodeStub.server);
+    }
+  });
+
+  it("Phase 4: falls back to retrieveUserQuotaSummary on 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT in fetchQuotaStatus", async () => {
+    const originalFetch = globalThis.fetch;
+    let ccpaSummaryCalls = 0;
+    const aicodeStub = await startStubServer(() => ({
+      status: 403,
+      body: JSON.stringify({ error: { message: "ACCESS_TOKEN_SCOPE_INSUFFICIENT" } }),
+    }));
+    AICODE_ENDPOINTS.splice(0, AICODE_ENDPOINTS.length, aicodeStub.url);
+
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("fetchAvailableModels")) {
+        return new Response(
+          JSON.stringify({
+            models: { "gemini-3.8-flash-tiered": { quotaInfo: { remainingFraction: 0.6 } } },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.includes("retrieveUserQuotaSummary")) {
+        ccpaSummaryCalls += 1;
+        return new Response(
+          JSON.stringify({
+            groups: [
+              {
+                displayName: "Gemini Models",
+                buckets: [{ bucketId: "gemini-5h", window: "5h", remainingFraction: 0.55 }],
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    try {
+      const acc = makeEligibleAccount();
+      let flagged = false;
+      await fetchProviderQuota(acc, {
+        log: () => {},
+        markFlagged: () => {
+          flagged = true;
+        },
+        reportQuotaPollFlag: () => {},
+      });
+      assert.equal(flagged, false);
+      assert.equal(isInAicodeScopeCooldown(acc), true);
+      assert.equal(ccpaSummaryCalls, 1);
+      assert.equal(acc.quota.find((q) => q.modelKey === "gemini")?.percentRemaining, 55);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await stopServer(aicodeStub.server);
+    }
   });
 });
