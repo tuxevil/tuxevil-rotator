@@ -337,7 +337,7 @@ describe("attention items", () => {
             authWarning: {
               code: "missing-aicode-scope",
               message: "Re-authenticate required: missing aicode scope.",
-              rules: { personalConsumer: true, useAicodeMendel: true, missingAicodeScope: true },
+              rules: { personalConsumer: true, inferenceTrafficMigration: true, missingAicodeScope: true },
             },
           }),
           account("b@x.dev"),
@@ -444,7 +444,7 @@ describe("accounts list", () => {
           authWarning: {
             code: "missing-aicode-scope",
             message: "Re-authenticate required",
-            rules: { personalConsumer: true, useAicodeMendel: true, missingAicodeScope: true },
+            rules: { personalConsumer: true, inferenceTrafficMigration: true, missingAicodeScope: true },
           },
         }),
       ),

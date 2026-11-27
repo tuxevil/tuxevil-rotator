@@ -823,7 +823,7 @@ export interface AccountAuthWarning {
   message: string;
   rules: {
     personalConsumer: boolean;
-    useAicodeMendel: boolean;
+    inferenceTrafficMigration: boolean;
     missingAicodeScope: boolean;
   };
 }

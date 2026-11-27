@@ -233,21 +233,23 @@ export function buildAccountAuthWarning(
     return null;
   }
 
+  // Only warn once Google moves the account's generation to AICode
+  // (enable-inference-traffic-migration); use-aicode-mendel alone does not.
   const personalConsumer = eligibility.personalConsumer === true;
-  const useAicodeMendel = eligibility.useAicodeMendel === true;
+  const inferenceTrafficMigration = eligibility.inferenceTrafficMigration === true;
   const missingAicodeScope = hasMissingAicodeScope(account);
 
-  if (!personalConsumer || !useAicodeMendel || !missingAicodeScope) {
+  if (!personalConsumer || !inferenceTrafficMigration || !missingAicodeScope) {
     return null;
   }
 
   return {
     code: "missing-aicode-scope",
     message:
-      "Re-authenticate required: personal consumer account has use-aicode-mendel active and is missing the aicode OAuth scope.",
+      "Re-authenticate required: Google moved this personal account to AICode (enable-inference-traffic-migration) and it is missing the aicode OAuth scope.",
     rules: {
       personalConsumer: true,
-      useAicodeMendel: true,
+      inferenceTrafficMigration: true,
       missingAicodeScope: true,
     },
   };

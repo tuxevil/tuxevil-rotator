@@ -194,7 +194,7 @@ export function buildAttention(
           ? `${name(aicodeReauth[0].email)} needs re-authentication for AICode`
           : `${aicodeReauth.length} accounts need re-authentication for AICode`,
       detail: aicodeReauth[0].authWarning!.message,
-      hint: "Personal consumer accounts with use-aicode-mendel active require the aicode OAuth scope.",
+      hint: "Google moved these personal accounts to AICode (enable-inference-traffic-migration); they need the aicode OAuth scope.",
       chips: aicodeReauth.map((a) => ({ label: name(a.email), tone: "neutral" as const })),
       actions:
         aicodeReauth.length === 1

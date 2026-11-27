@@ -209,7 +209,7 @@ function AuthWarningBlock({ warning }: { warning: NonNullable<DashboardAccount["
         <p class="callout-hint">
           Matched rules:
           {warning.rules.personalConsumer ? " personal consumer" : ""}
-          {warning.rules.useAicodeMendel ? " · use-aicode-mendel active" : ""}
+          {warning.rules.inferenceTrafficMigration ? " · enable-inference-traffic-migration active" : ""}
           {warning.rules.missingAicodeScope ? " · missing aicode scope" : ""}.
         </p>
         <Button size="sm" variant="primary" onClick={openAddAccount}>

@@ -90,7 +90,7 @@ describe("AICode 3-rule re-auth warning", () => {
     rmSync(testDir, { recursive: true, force: true });
   });
 
-  it("emits authWarning only when all 3 rules match", () => {
+  it("emits authWarning only when all 3 rules match (enable-inference-traffic-migration)", () => {
     const seed = makeAccountRuntime();
     const gen = getCredentialGeneration(seed, "google-antigravity");
     const base = makeAccountRuntime({
@@ -103,6 +103,7 @@ describe("AICode 3-rule re-auth warning", () => {
         checkedAt: Date.now(),
         personalConsumer: true,
         useAicodeMendel: true,
+        inferenceTrafficMigration: true,
         userTierId: "g1-pro-tier",
       },
     });
@@ -111,9 +112,24 @@ describe("AICode 3-rule re-auth warning", () => {
     assert.equal(matched.code, "missing-aicode-scope");
     assert.deepEqual(matched.rules, {
       personalConsumer: true,
-      useAicodeMendel: true,
+      inferenceTrafficMigration: true,
       missingAicodeScope: true,
     });
+
+    // use-aicode-mendel alone (today's production flags) must not warn.
+    assert.equal(
+      buildAccountAuthWarning(
+        makeAccountRuntime({
+          ...base,
+          aicodeEligibility: {
+            ...base.aicodeEligibility!,
+            useAicodeMendel: true,
+            inferenceTrafficMigration: false,
+          },
+        }),
+      ),
+      null,
+    );
 
     assert.equal(
       buildAccountAuthWarning(
@@ -129,7 +145,7 @@ describe("AICode 3-rule re-auth warning", () => {
       buildAccountAuthWarning(
         makeAccountRuntime({
           ...base,
-          aicodeEligibility: { ...base.aicodeEligibility!, useAicodeMendel: false },
+          aicodeEligibility: { ...base.aicodeEligibility!, inferenceTrafficMigration: null },
         }),
       ),
       null,
@@ -205,7 +221,10 @@ describe("AICode 3-rule re-auth warning", () => {
         expCalls += 1;
         return new Response(
           JSON.stringify({
-            flags: [{ name: "use-aicode-mendel", boolValue: true }],
+            flags: [
+              { name: "use-aicode-mendel", boolValue: true },
+              { name: "enable-inference-traffic-migration", boolValue: true },
+            ],
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         );
@@ -233,7 +252,7 @@ describe("AICode 3-rule re-auth warning", () => {
       assert.equal(status.accounts[0].authWarning?.code, "missing-aicode-scope");
       assert.deepEqual(status.accounts[0].authWarning?.rules, {
         personalConsumer: true,
-        useAicodeMendel: true,
+        inferenceTrafficMigration: true,
         missingAicodeScope: true,
       });
 
@@ -307,7 +326,7 @@ describe("AICode 3-rule re-auth warning", () => {
       message: "Re-authenticate required: missing aicode scope.",
       rules: {
         personalConsumer: true,
-        useAicodeMendel: true,
+        inferenceTrafficMigration: true,
         missingAicodeScope: true,
       },
     };
@@ -392,7 +411,7 @@ describe("AICode 3-rule re-auth warning", () => {
         render(createElement(AccountDetail, { email: "user@gmail.com", onClose: () => {} }), root);
       });
       assert.match(root.textContent ?? "", /Re-authentication required/);
-      assert.match(root.textContent ?? "", /personal consumer.*use-aicode-mendel active.*missing aicode scope/);
+      assert.match(root.textContent ?? "", /personal consumer.*enable-inference-traffic-migration active.*missing aicode scope/);
     } finally {
       render(null, root);
       overviewSignal.value = prevOverview;
