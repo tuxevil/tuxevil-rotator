@@ -1,5 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
-import { ANTIGRAVITY_VERSION, CLIENT_ID, CLIENT_SECRET, REQUEST_USER_AGENT, TOKEN_URL } from "../../types.js";
+import {
+	ANTIGRAVITY_CLIENT_METADATA,
+	CLIENT_ID,
+	CLIENT_SECRET,
+	REQUEST_USER_AGENT,
+	TOKEN_URL,
+} from "../../types.js";
 import { fetchWithRetry } from "../../fetch-with-retry.js";
 
 export const DEFAULT_REDIRECT_URI = "http://localhost:51121/oauth-callback";
@@ -9,6 +15,7 @@ export const SCOPES = [
 	"https://www.googleapis.com/auth/userinfo.profile",
 	"https://www.googleapis.com/auth/cclog",
 	"https://www.googleapis.com/auth/experimentsandconfigs",
+	"https://www.googleapis.com/auth/aicode",
 ];
 export const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 
@@ -112,7 +119,10 @@ export async function exchangeAuthorizationCode(code: string, verifier: string):
 	const oauth = getOAuthClientConfig();
 	const tokenResponse = await fetchWithRetry(TOKEN_URL, {
 		method: "POST",
-		headers: { "Content-Type": "application/x-www-form-urlencoded" },
+		headers: {
+			"Content-Type": "application/x-www-form-urlencoded",
+			"User-Agent": REQUEST_USER_AGENT,
+		},
 		body: new URLSearchParams({
 			client_id: oauth.clientId,
 			client_secret: oauth.clientSecret,
@@ -217,17 +227,12 @@ async function onboardUser(accessToken: string, tierId: string): Promise<string 
 	const headers: Record<string, string> = {
 		Authorization: `Bearer ${accessToken}`,
 		"Content-Type": "application/json",
-		"User-Agent": `${REQUEST_USER_AGENT} google-api-nodejs-client/10.3.0`,
-		"X-Goog-Api-Client": "gl-node/22.21.1",
+		"User-Agent": REQUEST_USER_AGENT,
 	};
 
 	const body = JSON.stringify({
-		tier_id: tierId,
-		metadata: {
-			ide_type: "ANTIGRAVITY",
-			ide_version: ANTIGRAVITY_VERSION,
-			ide_name: "antigravity",
-		},
+		tierId,
+		metadata: ANTIGRAVITY_CLIENT_METADATA,
 	});
 
 	for (let attempt = 0; attempt < ONBOARD_MAX_POLLS; attempt++) {
@@ -237,6 +242,7 @@ async function onboardUser(accessToken: string, tierId: string): Promise<string 
 				method: "POST",
 				headers,
 				body,
+				retryPolicy: "antigravity",
 			});
 			if (!response.ok) return null;
 			const data = (await response.json()) as Record<string, unknown> | null;
@@ -270,8 +276,9 @@ export async function discoverProject(accessToken: string): Promise<ProjectDisco
 				method: "POST",
 				headers,
 				body: JSON.stringify({
-					metadata: { ideType: "ANTIGRAVITY" },
+					metadata: ANTIGRAVITY_CLIENT_METADATA,
 				}),
+				retryPolicy: "antigravity",
 			});
 
 			if (response.ok) {
@@ -301,7 +308,10 @@ export async function discoverProject(accessToken: string): Promise<ProjectDisco
 export async function getUserEmail(accessToken: string): Promise<string | undefined> {
 	try {
 		const response = await fetchWithRetry("https://www.googleapis.com/oauth2/v1/userinfo?alt=json", {
-			headers: { Authorization: `Bearer ${accessToken}` },
+			headers: {
+				Authorization: `Bearer ${accessToken}`,
+				"User-Agent": REQUEST_USER_AGENT,
+			},
 		});
 		if (response.ok) {
 			const data = (await response.json()) as { email?: string };

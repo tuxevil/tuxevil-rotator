@@ -1,10 +1,12 @@
 import { describe, it, before, after, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../src/types.js";
-import { setAntigravityModelsForTest } from "./fixtures/antigravity-catalog.js";
+import { setAntigravityAccountCatalogsForTest, setAntigravityModelsForTest } from "./fixtures/antigravity-catalog.js";
 
 const savedEnv = {
   TUXEVIL_ROTATOR_DIR: process.env.TUXEVIL_ROTATOR_DIR,
@@ -29,7 +31,8 @@ const { initDb, closeDb } = await import("../src/db-store.js");
 const { setPersistedAdminToken } = await import("../src/admin-auth.js");
 const { getProviderAdapter } = await import("../src/providers/registry.js");
 const { clearCodexQuotaCache, CODEX_UNSTARTED_TIMER_THRESHOLD_SECONDS } = await import("../src/providers/openai-codex/quota.js");
-const { providerAdapterForModel } = await import("../src/proxy.js");
+const { providerAdapterForModel, withRotation } = await import("../src/proxy.js");
+const { ANTIGRAVITY_ENDPOINTS } = await import("../src/types.js");
 
 function makeConfig(): Config {
   return {
@@ -91,7 +94,8 @@ describe("v2 routing and status", () => {
     config.accounts![1].tier = "pro";
     const ids = config.accounts!.map(getAccountIdentity);
     const models = ["claude-sonnet-5-5-medium", "claude-opus-5-5-high", "gemini-4-argon-high"];
-    setAntigravityModelsForTest(models, ids);
+    // Live Free catalogs do not advertise paid models; the catalog decides access.
+    setAntigravityAccountCatalogsForTest([[ids[0], ["gemini-3.8-flash-high", "gemini-4-argon-disabled"]], [ids[1], models]]);
     const rotator = new AccountRotator(config) as any;
     rotator.stopQuotaPolling();
     rotator.ensureValidTokenForProvider = async () => {};
@@ -109,7 +113,8 @@ describe("v2 routing and status", () => {
     const rotator = new AccountRotator(config) as any;
     rotator.stopQuotaPolling();
     const model = "claude-sonnet-5-5-medium";
-    setAntigravityModelsForTest([model], rotator.accounts.map((a: any) => getAccountIdentity(a.config)));
+    const [freeId, proId] = rotator.accounts.map((a: any) => getAccountIdentity(a.config));
+    setAntigravityAccountCatalogsForTest([[freeId, ["gemini-3.8-flash-high"]], [proId, [model]]]);
     const poolKey = rotator.resolveRequestPoolKey(model, "google-antigravity");
     const key = rotator.resolveQuotaStateKey(poolKey);
     const now = Date.now();
@@ -395,8 +400,8 @@ describe("v2 routing and status", () => {
         "gemini",
       );
       assert.equal(result.ok, true);
-      assert.equal(result.upstreamModel, "gemini-3-flash");
-      assert.equal(requestBody?.model, "gemini-3-flash");
+      assert.equal(result.upstreamModel, "gemini-3.8-flash-tiered");
+      assert.equal(requestBody?.model, "gemini-3.8-flash-tiered");
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -631,7 +636,7 @@ describe("v2 routing and status", () => {
 
       const resGemini = await rotator.kickstartTimerForAccount("a@example.com", "gemini");
       assert.equal(resGemini.ok, true);
-      assert.equal(resGemini.upstreamModel, "gemini-3-flash");
+      assert.equal(resGemini.upstreamModel, "gemini-3.8-flash-tiered");
       assert.equal(quotaPolls, 1, "a direct kickstart must refresh quota immediately");
 
       quotaPolls = 0;
@@ -647,9 +652,9 @@ describe("v2 routing and status", () => {
       assert.equal(allRes.results.length, 2);
       assert.deepEqual(
         allRes.results.map((r: any) => r.upstreamModel).sort(),
-        ["gemini-3-flash", "gpt-oss-120b-medium"].sort(),
+        ["gemini-3.8-flash-tiered", "gpt-oss-120b-medium"].sort(),
       );
-      assert.deepEqual(requestedModels.sort(), ["gemini-3-flash", "gpt-oss-120b-medium"].sort());
+      assert.deepEqual(requestedModels.sort(), ["gemini-3.8-flash-tiered", "gpt-oss-120b-medium"].sort());
       assert.equal(quotaPolls, 1, "bulk kickstart must perform one account repoll");
     } finally {
       globalThis.fetch = originalFetch;
@@ -847,7 +852,7 @@ describe("v2 routing and status", () => {
 
       assert.deepEqual(
         requestedModels.sort(),
-        ["gemini-3-flash", "gpt-oss-120b-medium"].sort(),
+        ["gemini-3.8-flash-tiered", "gpt-oss-120b-medium"].sort(),
         "each upstream should be warmed exactly once",
       );
       assert.equal(pollCalls, 2, "one initial poll plus one post-warmup repoll");
@@ -1033,8 +1038,8 @@ describe("v2 routing and status", () => {
       const after = Date.now();
 
       assert.equal(result.status, 429);
-      assert.ok(account.cooldownsByModel.claude >= before + 4_815_000);
-      assert.ok(account.cooldownsByModel.claude <= after + 4_815_000);
+      assert.ok(account.cooldownsByModel.claude >= before + 4_814_000);
+      assert.ok(account.cooldownsByModel.claude <= after + 4_814_000);
       assert.equal(account.cooldownsByModel.gemini, undefined);
       assert.equal(account.cooldownsByModel.__default__, undefined);
     } finally {
@@ -1623,6 +1628,107 @@ describe("v2 routing and status", () => {
     assert.equal(rotator.modelState.get(model).stickyAccountIndex, 1);
   });
 
+  it("serves one account sequentially under sticky-quota across concurrency and quota drops", async () => {
+    const config = makeConfig();
+    config.routingPolicy = "sticky-quota";
+    config.rotateOnQuotaDrop = 20;
+    config.maxConcurrentRequestsPerAccount = 2;
+    config.maxConcurrentRequestsPerProjectModel = 2;
+    config.accounts.push({
+      email: "c@example.com",
+      refreshToken: "c",
+      projectId: "pc",
+      tier: "free",
+    });
+    const rotator = new AccountRotator(config) as any;
+    rotator.stopQuotaPolling();
+    rotator.modelState.clear();
+    rotator.defaultIndex = 0;
+    rotator.ensureValidToken = async () => {};
+    rotator.ensureValidTokenForModel = async () => {};
+    const model = "gemini";
+
+    // Account B has higher quota and a 5h timer, C has 7d, A has fresh 80%.
+    // Sticky-quota must still pick A first sequentially and drain it completely.
+    rotator.accounts[0].quota = [
+      { modelKey: model, displayName: "G3.1Pro", percentRemaining: 80, resetTime: null, timerType: "fresh" },
+    ];
+    rotator.accounts[1].quota = [
+      { modelKey: model, displayName: "G3.1Pro", percentRemaining: 100, resetTime: null, timerType: "5h" },
+    ];
+    rotator.accounts[2].quota = [
+      { modelKey: model, displayName: "G3.1Pro", percentRemaining: 95, resetTime: null, timerType: "7d" },
+    ];
+
+    const first = await rotator.getActiveAccount(model);
+    const second = await rotator.getActiveAccount(model);
+    assert.equal(first?.config.email, "a@example.com");
+    assert.equal(second?.config.email, "a@example.com");
+
+    // 3rd concurrent request exceeds maxConcurrentRequestsPerAccount=2;
+    // sticky-quota must queue for account A instead of spilling onto B or C.
+    let thirdSettled = false;
+    const thirdPromise = rotator.getActiveAccount(model).then((acc: any) => {
+      thirdSettled = true;
+      return acc;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(thirdSettled, false);
+
+    rotator.finishRequest(first, model);
+    const third = await thirdPromise;
+    assert.equal(third?.config.email, "a@example.com");
+    rotator.finishRequest(second, model);
+    rotator.finishRequest(third, model);
+
+    // Quota drop from 80% -> 40% (40% >= rotateOnQuotaDrop=20) must NOT rotate sticky-quota.
+    rotator.accounts[0].quota[0].percentRemaining = 40;
+    rotator.pollAccountQuota = async () => true;
+    await rotator.pollAllQuotas();
+    assert.equal(rotator.modelState.get(model).activeAccountIndex, 0);
+    assert.equal(rotator.modelState.get(model).stickyAccountIndex, 0);
+
+    // Only once A reaches 0% does sticky-quota advance sequentially to B (not C).
+    rotator.accounts[0].quota[0].percentRemaining = 0;
+    const nextAccount = await rotator.getActiveAccount(model);
+    assert.equal(nextAccount?.config.email, "b@example.com");
+    rotator.finishRequest(nextAccount, model);
+    assert.equal(rotator.modelState.get(model).activeAccountIndex, 1);
+    assert.equal(rotator.modelState.get(model).stickyAccountIndex, 1);
+  });
+
+  it("adds jitter and idle backoff to quota polling schedule", () => {
+    const config = makeConfig();
+    config.quotaPollIntervalMs = 300_000;
+    const rotator = new AccountRotator(config) as any;
+    rotator.stopQuotaPolling();
+
+    // Active/missing-initial-quota accounts use base interval with jitter [0.85, 1.20].
+    rotator.accounts[0].quota = [];
+    const activeLow = rotator.computeNextQuotaPollDelayMs(300_000, Date.now(), () => 0);
+    const activeHigh = rotator.computeNextQuotaPollDelayMs(300_000, Date.now(), () => 1);
+    assert.equal(activeLow, 255_000);
+    assert.equal(activeHigh, 360_000);
+
+    // Idle accounts with populated quota back off 2x after 15m (capped at 30m).
+    const now = Date.now();
+    for (const acc of rotator.accounts) {
+      acc.quota = [
+        { modelKey: "gemini", displayName: "G3.1Pro", percentRemaining: 100, resetTime: null, timerType: "fresh" },
+      ];
+      acc.lastUsed = now - 20 * 60_000;
+    }
+    const idle2x = rotator.computeNextQuotaPollDelayMs(300_000, now, () => 0.5);
+    assert.equal(idle2x, Math.round(600_000 * 1.025));
+
+    // After 60m idle, backs off 4x (capped at 30m).
+    for (const acc of rotator.accounts) {
+      acc.lastUsed = now - 90 * 60_000;
+    }
+    const idle4x = rotator.computeNextQuotaPollDelayMs(300_000, now, () => 0.5);
+    assert.equal(idle4x, Math.round(1_200_000 * 1.025));
+  });
+
   it("uses circular account order for sequential-quota", () => {
     const config = makeConfig();
     config.routingPolicy = "sequential-quota";
@@ -1998,6 +2104,101 @@ describe("v2 routing and status", () => {
     const sessionBest = rotator.pickBestModelAccount("session", now, -1);
     assert.equal(sessionBest?.config.email, "dual@example.com");
     assert.equal(allowed("session"), "dual@example.com");
+  });
+
+  it("keeps the sibling Ollama credential eligible after a Google 403 invalidates only google-antigravity", async () => {
+    const config = makeConfig();
+    config.accounts = [
+      {
+        email: "dual-403@example.com",
+        credentials: [
+          { provider: "google-antigravity", refreshToken: "g", projectId: "pg" },
+          { provider: "ollama", apiKey: "o" },
+        ],
+        tier: "pro",
+      },
+    ];
+    const rotator = new AccountRotator(config) as any;
+    rotator.stopQuotaPolling();
+    advertiseGoogleModelForRotator(rotator, "gemini-3.1-pro");
+    const account = rotator.accounts[0];
+    account.accessToken = "google-access-token";
+    account.tokenExpires = Date.now() + 60_000;
+    account.healthScore = 1;
+    const googlePool = rotator.resolveQuotaModelKeyForDisplay?.("gemini-3.1-pro") ?? "gemini";
+    account.quota = [googlePool, "session"].map((modelKey: string) => ({
+      modelKey,
+      displayName: modelKey,
+      providerId: modelKey === "session" ? "ollama" : "google-antigravity",
+      percentRemaining: 100,
+      resetTime: null,
+      timerType: "7d",
+    }));
+
+    let hits = 0;
+    let tosMode = false;
+    const upstream = createServer((req, res) => {
+      hits++;
+      req.resume();
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        error: {
+          code: 403,
+          status: "PERMISSION_DENIED",
+          message: tosMode
+            ? "This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product."
+            : "Resource not accessible by integration",
+        },
+      }));
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    const { port } = upstream.address() as AddressInfo;
+    const endpoints = ANTIGRAVITY_ENDPOINTS as unknown as string[];
+    const savedEndpoints = [...endpoints];
+    endpoints.splice(0, endpoints.length, `http://127.0.0.1:${port}`);
+
+    try {
+      const now = Date.now();
+      assert.equal(rotator.pickBestModelAccount("session", now, -1)?.config.email, "dual-403@example.com");
+      const outcome = await withRotation(
+        rotator,
+        "gemini-3.1-pro",
+        {},
+        { project: "pg", model: "gemini-3.1-pro", request: {} },
+        async () => "unreachable",
+      );
+      assert.equal(outcome.ok, false);
+      assert.equal(hits, 1, "the Google request reached the upstream once");
+      assert.equal(account.flagged, false, "generic 403 must not quarantine the whole account");
+      assert.ok(account.invalidProviders?.["google-antigravity"], "google-antigravity is invalidated");
+      assert.equal(account.invalidProviders?.ollama, undefined, "ollama credential stays valid");
+      assert.equal(
+        rotator.pickBestModelAccount("session", Date.now(), -1)?.config.email,
+        "dual-403@example.com",
+        "sibling Ollama pool remains eligible",
+      );
+      assert.equal(rotator.pickBestModelAccount(googlePool, Date.now(), -1), null);
+
+      // Antigravity ToS sanction quarantines the whole account (real rotator).
+      tosMode = true;
+      delete account.invalidProviders;
+      account.inFlightRequests = 0;
+      account.inFlightByModel = {};
+      advertiseGoogleModelForRotator(rotator, "gemini-3.1-pro");
+      const tosOutcome = await withRotation(
+        rotator,
+        "gemini-3.1-pro",
+        {},
+        { project: "pg", model: "gemini-3.1-pro", request: {} },
+        async () => "unreachable",
+      );
+      assert.equal(hits, 2, `ToS request reached upstream: ${JSON.stringify(tosOutcome).slice(0, 200)}`);
+      assert.equal(account.flagged, true, "ToS sanction quarantines the account");
+      assert.match(account.lastError ?? "", /^Quarantined after 403 \(flagged\): .*violation of Terms of Service/);
+    } finally {
+      endpoints.splice(0, endpoints.length, ...savedEndpoints);
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    }
   });
 
   it("skips ollama accounts when weekly quota is 0% even if session quota is >0%", () => {

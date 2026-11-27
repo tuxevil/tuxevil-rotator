@@ -12,7 +12,11 @@ import {
   withRotation,
   type RequestBody,
 } from "../src/proxy.js";
-import { ANTIGRAVITY_ENDPOINTS, type AccountRuntime } from "../src/types.js";
+import {
+	ANTIGRAVITY_ENDPOINTS,
+	type AccountRuntime,
+	type Config,
+} from "../src/types.js";
 import {
 	getAccountIdentity,
 	getCredentialGeneration,
@@ -94,7 +98,9 @@ type RotatorTracking = {
 
 type RotatorOptions = {
 	accounts?: AccountRuntime[];
+	accountCount?: number;
 	streamRecoveryMaxRetries?: number;
+	antigravityApiRetry?: Config["antigravityApiRetry"];
 };
 
 function makeRotator(
@@ -148,7 +154,9 @@ function makeRotator(
 		getGlobalDelayMs: () => 0,
 		getConfig: () => ({
 			streamRecoveryMaxRetries: options.streamRecoveryMaxRetries ?? 2,
+			...(options.antigravityApiRetry ? { antigravityApiRetry: options.antigravityApiRetry } : {}),
 		}),
+		...(options.accountCount !== undefined ? { getAccountCount: () => options.accountCount! } : {}),
 		saveState: async () => {},
 		getStatus: () => ({ accounts: [] }),
 		getOllamaModels: () => [],
@@ -360,7 +368,7 @@ describe("proxy e2e: pre-flush stream recovery", () => {
       calls += 1;
       req.resume();
       req.once("end", () => {
-        res.writeHead(500, { "Content-Type": "text/plain" });
+        res.writeHead(502, { "Content-Type": "text/plain" });
         res.end("still unavailable");
       });
     });
@@ -498,8 +506,8 @@ describe("proxy e2e: 429 rate-limited", () => {
 			assert.equal(outcome.ok, false);
 			if (!outcome.ok) {
 				assert.equal(outcome.status, 429);
-				// Retry-After: 120 seconds = 120000ms (+1000ms buffer from parser)
-				assert.equal(outcome.retryAfterMs, 121_000);
+				// Retry-After: 120 seconds = 120000ms (Antigravity parity, no artificial buffer)
+				assert.equal(outcome.retryAfterMs, 120_000);
 				assert.equal(outcome.endpoint, upstream.url);
 			}
 			assert.equal(tracking.markExhausted, 1);
@@ -538,12 +546,12 @@ describe("proxy e2e: 429 rate-limited", () => {
 			assert.equal(outcome.ok, false);
 			if (!outcome.ok) {
 				assert.equal(outcome.status, 429);
-				assert.equal(outcome.retryAfterMs, 4_815_000);
+				assert.equal(outcome.retryAfterMs, 4_814_000);
 			}
 			assert.equal(tracking.finishRequest, 1, "RESOURCE_EXHAUSTED should release the account once");
 			assert.deepEqual(tracking.lastMarkExhausted, {
 				model: "gemini-3.1-pro",
-				cooldownMs: 4_815_000,
+				cooldownMs: 4_814_000,
 			});
 		} finally {
 			await upstream.close();
@@ -899,10 +907,20 @@ describe("native Code Assist passthrough", () => {
 		};
 		let forwardedProject: unknown;
 		let fetchCount = 0;
+		let summaryCount = 0;
 		const originalFetch = globalThis.fetch;
-		globalThis.fetch = (async (_input, init) => {
-			fetchCount++;
+		globalThis.fetch = (async (input, init) => {
+			const url = String(input);
 			forwardedProject = JSON.parse(String(init?.body)).project;
+			assert.equal(forwardedProject, "legacy-quota-project");
+			if (url.includes("retrieveUserQuotaSummary")) {
+				summaryCount++;
+				return new Response(JSON.stringify({ groups: [] }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			fetchCount++;
 			return new Response(JSON.stringify({
 				models: {
 					"gemini-quota-discovered": { quotaInfo: { remainingFraction: 0.5 } },
@@ -921,6 +939,7 @@ describe("native Code Assist passthrough", () => {
 			});
 			assert.equal(forwardedProject, "legacy-quota-project");
 			assert.equal(fetchCount, 1);
+			assert.equal(summaryCount, 1);
 			assert.ok(dynamicCatalog.getModel("gemini-quota-discovered"));
 			assert.equal(
 				dynamicCatalog.hasModelForAccount(
@@ -1280,7 +1299,7 @@ describe("proxy e2e: 401 unauthorized", () => {
 });
 
 describe("proxy e2e: 403 flagged (infringement)", () => {
-	it("invalidates the provider with the 'infring' pattern and reports telemetry", async () => {
+	it("invalidates only the failing provider with the 'infring' pattern and reports telemetry", async () => {
 		const upstream = await listen((req, res) => {
 			res.writeHead(403, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({
@@ -1289,7 +1308,7 @@ describe("proxy e2e: 403 flagged (infringement)", () => {
 		});
 		endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
 
-		const tracking = { markProviderInvalid: 0, finishRequest: 0 };
+		const tracking = { invalidated: [] as string[], markFlagged: 0, finishRequest: 0 };
 		const rotator = {
 			getActiveAccount: async () => makeAccount("flag@example.com"),
 			rotateToNext: async () => null,
@@ -1308,8 +1327,10 @@ describe("proxy e2e: 403 flagged (infringement)", () => {
 				poolHealthyCount: 4,
 				uptimeSeconds: 600,
 			}),
-			markFlagged: () => {},
-			markProviderInvalid: () => { tracking.markProviderInvalid++; },
+			markFlagged: () => { tracking.markFlagged++; },
+			markProviderInvalid: (_account: AccountRuntime, providerId: string) => {
+				tracking.invalidated.push(providerId);
+			},
 			markError: () => {},
 			recordRequest: () => false,
 			recordProxyEvent: () => {},
@@ -1329,7 +1350,8 @@ describe("proxy e2e: 403 flagged (infringement)", () => {
 			if (!outcome.ok) {
 				assert.ok([429, 503].includes(outcome.status));
 			}
-			assert.equal(tracking.markProviderInvalid, 1, "flagged 403 should invalidate the provider");
+			assert.deepEqual(tracking.invalidated, ["google-antigravity"], "flagged 403 invalidates only the failing provider");
+			assert.equal(tracking.markFlagged, 0, "flagged 403 must not quarantine the whole account");
 			assert.equal(tracking.finishRequest, 1, "flagged 403 should release the account once");
 		} finally {
 			await upstream.close();
@@ -1338,76 +1360,100 @@ describe("proxy e2e: 403 flagged (infringement)", () => {
 });
 
 describe("proxy e2e: 403 non-flagged", () => {
-	it("does NOT flag the account and returns 403 to the caller", async () => {
+	async function run403(body: unknown, email: string) {
 		const upstream = await listen((req, res) => {
 			res.writeHead(403, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ error: { status: "PERMISSION_DENIED", message: "Resource not accessible by integration" } }));
+			res.end(JSON.stringify(body));
 		});
 		endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
-
 		const tracking = { markFlagged: 0, markError: 0, finishRequest: 0 };
-		const rotator = makeRotator(makeAccount("forbid@example.com"), tracking);
-
+		const invalidated: string[] = [];
+		const rotator = makeRotator(makeAccount(email), tracking);
+		(rotator as unknown as {
+			markProviderInvalid: (account: AccountRuntime, providerId: string) => void;
+		}).markProviderInvalid = (_account, providerId) => { invalidated.push(providerId); };
 		try {
-			const outcome = await withRotation(
-				rotator,
-				"gemini-3.1-pro",
-				{},
-				makeBody(),
-				async () => "should-not-reach",
-			);
+			const outcome = await withRotation(rotator, "gemini-3.1-pro", {}, makeBody(), async () => "should-not-reach");
+			return { outcome, tracking, invalidated };
+		} finally {
+			await upstream.close();
+		}
+	}
 
+	it("invalidates only the failing provider on a generic 403", async () => {
+		const { outcome, tracking, invalidated } = await run403(
+			{ error: { status: "PERMISSION_DENIED", message: "Resource not accessible by integration" } },
+			"forbid@example.com",
+		);
+		assert.equal(outcome.ok, false);
+		if (!outcome.ok) assert.ok([403, 429, 503].includes(outcome.status));
+		assert.deepEqual(invalidated, ["google-antigravity"], "a generic 403 is scoped to the failing provider");
+		assert.equal(tracking.markFlagged, 0, "a generic 403 must not quarantine the whole account");
+		assert.equal(tracking.finishRequest, 1, "403 should release the account once");
+	});
+
+	it("does not invalidate anything on a model-scoped entitlement 403", async () => {
+		const { outcome, invalidated, tracking } = await run403(
+			{ error: { code: "MODEL_NOT_SUPPORTED_FOR_PLAN", message: "Model not available for this plan" } },
+			"entitlement@example.com",
+		);
+		assert.equal(outcome.ok, false);
+		if (!outcome.ok) assert.equal(outcome.status, 403);
+		assert.deepEqual(invalidated, [], "a plan/entitlement 403 concerns one model, not the provider");
+		assert.equal(tracking.markFlagged, 0);
+	});
+
+	it("quarantines the whole account only on the Antigravity Terms of Service sanction", async () => {
+		const upstream = await listen((req, res) => {
+			res.writeHead(403, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({
+				error: {
+					code: 403,
+					message: "This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product.",
+					status: "PERMISSION_DENIED",
+					details: [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "TOS_VIOLATION" }],
+				},
+			}));
+		});
+		endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
+		const tracking = { markFlagged: 0, markError: 0, finishRequest: 0 };
+		const quarantined: string[] = [];
+		const invalidated: string[] = [];
+		const rotator = makeRotator(makeAccount("tos@example.com"), tracking);
+		Object.assign(rotator as object, {
+			quarantineAccountAfterForbidden: (_account: AccountRuntime, reason: string) => { quarantined.push(reason); },
+			markProviderInvalid: (_account: AccountRuntime, providerId: string) => { invalidated.push(providerId); },
+		});
+		try {
+			const outcome = await withRotation(rotator, "gemini-3.1-pro", {}, makeBody(), async () => "should-not-reach");
 			assert.equal(outcome.ok, false);
-			if (!outcome.ok) {
-				assert.equal(outcome.status, 403);
-			}
-			assert.equal(tracking.markFlagged, 0, "non-flagging 403 must not mark the account");
-			assert.equal(tracking.finishRequest, 1, "non-flagging 403 should release the account once");
+			assert.equal(quarantined.length, 1, "ToS sanction must quarantine the account");
+			assert.match(quarantined[0], /^Quarantined after 403 \(flagged\): .*violation of Terms of Service/);
+			assert.deepEqual(invalidated, [], "ToS sanction uses account quarantine, not provider invalidation");
 		} finally {
 			await upstream.close();
 		}
 	});
 });
 
-describe("proxy e2e: 5xx (non-503)", () => {
-	it("marks the account in error and rotates", async () => {
-		const captures: Capture[] = [];
+describe("proxy e2e: 5xx & single-account Antigravity parity", () => {
+	it("aborts immediately on HTTP 500 without rotating or retrying", async () => {
+		let calls = 0;
 		const upstream = await listen((req, res) => {
-			let body = "";
-			req.on("data", (chunk) => { body += chunk.toString(); });
-			req.on("end", () => {
-				captures.push({ url: req.url || "", headers: req.headers, body });
+			calls += 1;
+			req.resume();
+			req.once("end", () => {
 				res.writeHead(500, { "Content-Type": "application/json" });
 				res.end("internal error");
 			});
 		});
 		endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
 
-		const tracking = { markError: 0, finishRequest: 0 };
-		const rotator = {
-			getActiveAccount: async () => makeAccount("err@example.com"),
-			rotateToNext: async () => null,
-			finishRequest: () => { tracking.finishRequest++; },
-			getSafetyJitterMs: () => 0,
-			recordUpstreamAttempt: () => {},
-			markExhausted: () => {},
-			recordProvider429: () => {},
-			getRetryAfterMs: () => 0,
-			getFlagContext: () => ({
-				timerType: "fresh",
-				accountQuotaPercent: 100,
-				wasProAccount: false,
-				accountRequestsLastHour: 0,
-				poolSize: 1,
-				poolHealthyCount: 1,
-				uptimeSeconds: 0,
-			}),
-			markFlagged: () => {},
-			markError: () => { tracking.markError++; },
-			recordRequest: () => false,
-			recordProxyEvent: () => {},
-			getGlobalDelayMs: () => 0,
-		} as unknown as AccountRotator;
+		const tracking = { markError: 0, finishRequest: 0, rotations: 0 };
+		const rotator = makeRotator(makeAccount("err500@example.com"), tracking, {
+			accounts: [makeAccount("unused@example.com")],
+			accountCount: 2,
+		});
 
 		try {
 			const outcome = await withRotation(
@@ -1418,15 +1464,232 @@ describe("proxy e2e: 5xx (non-503)", () => {
 				async () => "should-not-reach",
 			);
 
-			// After 500 with no replacement, should return 429/503
+			assert.equal(outcome.ok, false);
+			if (!outcome.ok) {
+				assert.equal(outcome.status, 500);
+			}
+			assert.equal(calls, 1);
+			assert.equal(tracking.rotations, 0);
+			assert.equal(tracking.markError, 1);
+			assert.equal(tracking.finishRequest, 1);
+		} finally {
+			await upstream.close();
+		}
+	});
+
+	it("aborts immediately on MODEL_CAPACITY_EXHAUSTED (503 / 429) without rotating or retrying", async () => {
+		for (const status of [503, 429]) {
+			let calls = 0;
+			const upstream = await listen((req, res) => {
+				calls += 1;
+				req.resume();
+				req.once("end", () => {
+					res.writeHead(status, { "Content-Type": "application/json" });
+					res.end(
+						JSON.stringify({
+							error: {
+								message: "No capacity available",
+								details: [{ metadata: { reason: "MODEL_CAPACITY_EXHAUSTED" } }],
+							},
+						}),
+					);
+				});
+			});
+			endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
+
+			const tracking = { markError: 0, finishRequest: 0, rotations: 0 };
+			const rotator = makeRotator(makeAccount("cap@example.com"), tracking, {
+				accounts: [makeAccount("unused@example.com")],
+				accountCount: 2,
+			});
+
+			try {
+				const outcome = await withRotation(
+					rotator,
+					"gemini-3.1-pro",
+					{},
+					makeBody(),
+					async () => "should-not-reach",
+				);
+
+				assert.equal(outcome.ok, false);
+				if (!outcome.ok) {
+					assert.equal(outcome.status, status);
+				}
+				assert.equal(calls, 1);
+				assert.equal(tracking.rotations, 0);
+				assert.equal(tracking.finishRequest, 1);
+			} finally {
+				await upstream.close();
+			}
+		}
+	});
+
+	it("marks the account in error and rotates on retryable 502 when no replacement remains", async () => {
+		const captures: Capture[] = [];
+		const upstream = await listen((req, res) => {
+			let body = "";
+			req.on("data", (chunk) => { body += chunk.toString(); });
+			req.on("end", () => {
+				captures.push({ url: req.url || "", headers: req.headers, body });
+				res.writeHead(502, { "Content-Type": "application/json" });
+				res.end("bad gateway");
+			});
+		});
+		endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
+
+		const tracking = { markError: 0, finishRequest: 0 };
+		const rotator = makeRotator(makeAccount("err502@example.com"), tracking, {
+			accounts: [],
+		});
+
+		try {
+			const outcome = await withRotation(
+				rotator,
+				"gemini-3.1-pro",
+				{},
+				makeBody(),
+				async () => "should-not-reach",
+			);
+
+			// After 502 with no replacement, should return 429/503
 			assert.equal(outcome.ok, false);
 			if (!outcome.ok) {
 				assert.ok([429, 503].includes(outcome.status));
 			}
-			assert.equal(tracking.markError, 1, "500 should call markError");
+			assert.equal(tracking.markError, 1, "502 should call markError");
 			assert.equal(tracking.finishRequest, 1, "5xx should release the account once");
 		} finally {
 			await upstream.close();
+		}
+	});
+
+	it("applies runWithAntigravityApiRetry on single-account network, 429, and 503 failures", async () => {
+		for (const mode of ["network", "429", "503"] as const) {
+			let calls = 0;
+			const upstream = await listen((req, res) => {
+				calls += 1;
+				if (calls <= 2) {
+					if (mode === "network") {
+						res.destroy();
+						return;
+					}
+					req.resume();
+					req.once("end", () => {
+						res.writeHead(mode === "429" ? 429 : 503, {
+							"Content-Type": "application/json",
+						});
+						res.end(
+							mode === "429"
+								? JSON.stringify({ error: { status: "RATE_LIMITED", retryDelay: "0.01s" } })
+								: "PREFILL_QUEUE_OVERLOADED",
+						);
+					});
+					return;
+				}
+				req.resume();
+				req.once("end", () => {
+					res.writeHead(200, { "Content-Type": "text/event-stream" });
+					res.end("data: recovered\n\n");
+				});
+			});
+			endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
+
+			const rotator = makeRotator(makeAccount("single-twin@example.com"), {}, {
+				accountCount: 1,
+				antigravityApiRetry: {
+					enabled: true,
+					maxRetries: 4,
+					initialSleepDurationMs: 1,
+					maxSleepDurationMs: 5,
+				},
+			});
+
+			try {
+				const outcome = await withRotation(
+					rotator,
+					"gemini-3.1-pro",
+					{},
+					makeBody(),
+					async (response) => response.text(),
+				);
+				assert.equal(outcome.ok, true, `Expected ${mode} single-account failure to recover`);
+				assert.equal(calls, 3);
+				if (outcome.ok) {
+					assert.equal(outcome.result, "data: recovered\n\n");
+					assert.equal(outcome.context?.retries, 2);
+				}
+			} finally {
+				await upstream.close();
+			}
+		}
+	});
+
+	it("rotates to another account after exhausting single-account retries on network, 429, and 503 failures", async () => {
+		for (const mode of ["network", "429", "503"] as const) {
+			const attemptsByToken: string[] = [];
+			const upstream = await listen((req, res) => {
+				const auth = String(req.headers.authorization ?? "");
+				attemptsByToken.push(auth);
+				if (auth.includes("token-primary@example.com")) {
+					if (mode === "network") {
+						res.destroy();
+						return;
+					}
+					req.resume();
+					req.once("end", () => {
+						res.writeHead(mode === "429" ? 429 : 503, {
+							"Content-Type": "application/json",
+						});
+						res.end(
+							mode === "429"
+								? JSON.stringify({ error: { status: "RATE_LIMITED", retryDelay: "0.01s" } })
+								: "PREFILL_QUEUE_OVERLOADED",
+						);
+					});
+					return;
+				}
+				req.resume();
+				req.once("end", () => {
+					res.writeHead(200, { "Content-Type": "text/event-stream" });
+					res.end("data: rotated-after-retries\n\n");
+				});
+			});
+			endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
+
+			const tracking = { rotations: 0, markError: 0, markExhausted: 0 };
+			const rotator = makeRotator(makeAccount("primary@example.com"), tracking, {
+				accounts: [makeAccount("backup@example.com")],
+				antigravityApiRetry: {
+					enabled: true,
+					maxRetries: 2,
+					initialSleepDurationMs: 1,
+					maxSleepDurationMs: 5,
+				},
+			});
+
+			try {
+				const outcome = await withRotation(
+					rotator,
+					"gemini-3.1-pro",
+					{},
+					makeBody(),
+					async (response) => response.text(),
+				);
+				assert.equal(outcome.ok, true, `Expected ${mode} to rotate to backup after exhausting primary retries`);
+				assert.equal(tracking.rotations, 1);
+				assert.deepEqual(attemptsByToken, [
+					"Bearer token-primary@example.com",
+					"Bearer token-primary@example.com",
+					"Bearer token-primary@example.com",
+					"Bearer token-backup@example.com",
+				]);
+				if (outcome.ok) {
+					assert.equal(outcome.result, "data: rotated-after-retries\n\n");
+				}
+			} finally {
+				await upstream.close();
+			}
 		}
 	});
 });

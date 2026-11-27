@@ -21,8 +21,6 @@ import {
   MODEL_TIER_ACCESS,
   getModelPricing,
   QUOTA_USER_AGENT,
-  REQUEST_GOOG_API_CLIENT,
-  REQUEST_CLIENT_METADATA,
   ANTIGRAVITY_ENDPOINTS,
   OLLAMA_TAGS_URL,
   OLLAMA_USER_AGENT,
@@ -30,6 +28,7 @@ import {
   DEFAULT_QUOTA_POLL_INTERVAL_MS,
   MAX_QUOTA_POLL_INTERVAL_MS,
   MIN_QUOTA_POLL_INTERVAL_MS,
+  QUOTA_MODEL_KEYS,
   resolveQuotaModelKey,
   resolveDisplayModelKey,
 } from "./types.js";
@@ -48,6 +47,7 @@ import {
   normalizeAccountConfig,
 } from "./account-store.js";
 import { isHostedOAuthConfigured } from "./providers/google-antigravity/oauth.js";
+import { buildAccountAuthWarning } from "./providers/google-antigravity/aicode-eligibility.js";
 import type { RequestBody } from "./proxy.js";
 import { UsagePredictor, type ExhaustionPrediction } from "./providers/ollama/prediction.js";
 import { fetchWithRetry } from "./fetch-with-retry.js";
@@ -229,6 +229,7 @@ interface AccountRequestWaiter {
   signal?: AbortSignal;
   timer: ReturnType<typeof setTimeout>;
   onAbort?: () => void;
+  onLease?: (modelKey: string) => void;
   resolve: (account: AccountRuntime | null) => void;
   reject: (error: unknown) => void;
 }
@@ -239,6 +240,8 @@ const QUOTA_POOL_FOR_KICKSTART_MODEL: Record<string, string> = {
   "claude-sonnet-5-5-low": "claude",
   "claude-sonnet-5-5-medium": "claude",
   "claude-sonnet-4-6": "claude",
+  "gemini-3.8-flash-tiered": "gemini",
+  "gemini-3.8-flash": "gemini",
   "gemini-3-flash": "gemini",
   "gpt-5.6-luna": CODEX_QUOTA_MODEL_KEY,
   // Legacy manual kickstart compatibility. New Ollama quota polling/routes
@@ -277,8 +280,9 @@ export class AccountRotator {
   // Fallback for requests where model can't be resolved
   private defaultIndex = 0;
   private startTime = Date.now();
-  private quotaPollTimer: ReturnType<typeof setInterval> | null = null;
+  private quotaPollTimer: ReturnType<typeof setTimeout> | null = null;
   private quotaInitialPollTimer: ReturnType<typeof setTimeout> | null = null;
+  private quotaPollingStopped = false;
   private quotaPolls = new WeakMap<AccountRuntime, Promise<boolean>>();
   private quotaRepollRequested = new WeakSet<AccountRuntime>();
   private quotaPollCycle: Promise<void> | null = null;
@@ -368,7 +372,7 @@ export class AccountRotator {
     for (const account of this.accounts) {
       if (this.getRoutingRejectionForModel(account, poolKey, now, policy)) continue;
       operationalAccounts++;
-      const access = evaluateAutoModelAccess(account.config, providerId, model);
+      const access = this.evaluateModelAccess(account.config, providerId, model);
       if (access.eligible) return { eligible: true };
       firstReason ??= access.reason;
     }
@@ -802,8 +806,6 @@ export class AccountRotator {
           account.cooldownsByModel,
         )) {
           if (
-            model !== "claude" &&
-            model !== "gemini" &&
             (model === "__default__" ||
               getProviderIdForPoolKey(model) !== DEFAULT_PROVIDER) &&
             cooldown > now + maxCooldown
@@ -820,10 +822,13 @@ export class AccountRotator {
   }
 
   private migratePersistedQuotaStateKeys(): void {
-    const foldDeadlines = (deadlines: Record<string, number>) => {
+    const foldDeadlines = (
+      deadlines: Record<string, number>,
+      resolveKey: (key: string) => string = (key) => this.resolveQuotaStateKey(key),
+    ) => {
       const folded: Record<string, number> = {};
       for (const [key, deadline] of Object.entries(deadlines)) {
-        const canonical = this.resolveQuotaStateKey(key);
+        const canonical = resolveKey(key);
         folded[canonical] = Math.max(folded[canonical] ?? 0, deadline);
       }
       return folded;
@@ -850,7 +855,9 @@ export class AccountRotator {
       modelKey: this.resolveQuotaStateKey(event.modelKey),
     }));
     for (const account of this.accounts) {
-      account.cooldownsByModel = foldDeadlines(account.cooldownsByModel);
+      account.cooldownsByModel = foldDeadlines(account.cooldownsByModel, (key) =>
+        this.resolveAccountQuotaStateKey(account, key),
+      );
     }
   }
 
@@ -1029,29 +1036,112 @@ export class AccountRotator {
   // Quota Polling
   // =========================================================================
 
-  private startQuotaPolling(): void {
+  private getBaseQuotaPollIntervalMs(): number {
     const configuredIntervalMs = this.config.quotaPollIntervalMs;
-    const intervalMs =
-      Number.isFinite(configuredIntervalMs) &&
+    return Number.isFinite(configuredIntervalMs) &&
       configuredIntervalMs >= MIN_QUOTA_POLL_INTERVAL_MS &&
       configuredIntervalMs <= MAX_QUOTA_POLL_INTERVAL_MS
-        ? Math.floor(configuredIntervalMs)
-        : DEFAULT_QUOTA_POLL_INTERVAL_MS;
-    this.log(`Quota polling every ${Math.round(intervalMs / 1000)}s`);
+      ? Math.floor(configuredIntervalMs)
+      : DEFAULT_QUOTA_POLL_INTERVAL_MS;
+  }
 
-    // Initial poll (delayed 2s to allow token refresh first)
-    this.quotaInitialPollTimer = setTimeout(() => this.pollAllQuotas(), 2000);
+  private computeNextQuotaPollDelayMs(
+    baseIntervalMs = this.getBaseQuotaPollIntervalMs(),
+    now = Date.now(),
+    random = Math.random,
+  ): number {
+    const available = this.accounts.filter((a) => !a.disabled && !a.flagged);
+    const hasInFlight = available.some((a) => a.inFlightRequests > 0);
+    const missingInitialQuota = available.some((a) => a.quota.length === 0);
+    const recentActivityWindowMs = 15 * 60_000;
+    const lastUsedAt = available.reduce(
+      (latest, account) => Math.max(latest, account.lastUsed ?? 0),
+      0,
+    );
+    const isRecentlyActive =
+      lastUsedAt > 0 && now - lastUsedAt < recentActivityWindowMs;
 
-    this.quotaPollTimer = setInterval(() => this.pollAllQuotas(), intervalMs);
+    let effectiveBaseMs = baseIntervalMs;
+    if (!hasInFlight && !isRecentlyActive && !this.autoWarmupEnabled && !missingInitialQuota) {
+      const idleMs = lastUsedAt > 0 ? now - lastUsedAt : now - this.startTime;
+      const idleMultiplier = idleMs >= 60 * 60_000 ? 4 : 2;
+      const idleCapMs = Math.max(baseIntervalMs, 30 * 60_000);
+      effectiveBaseMs = Math.min(idleCapMs, baseIntervalMs * idleMultiplier);
+
+      let nextCooldownExpiry = Infinity;
+      for (const account of available) {
+        for (const until of Object.values(account.cooldownsByModel)) {
+          if (until > now && until < nextCooldownExpiry) {
+            nextCooldownExpiry = until;
+          }
+        }
+      }
+      if (Number.isFinite(nextCooldownExpiry)) {
+        effectiveBaseMs = Math.min(
+          effectiveBaseMs,
+          Math.max(baseIntervalMs, nextCooldownExpiry - now),
+        );
+      }
+    }
+
+    const jitterFactor = 0.85 + random() * 0.35;
+    return Math.min(
+      MAX_QUOTA_POLL_INTERVAL_MS,
+      Math.max(MIN_QUOTA_POLL_INTERVAL_MS, Math.round(effectiveBaseMs * jitterFactor)),
+    );
+  }
+
+  private scheduleNextQuotaPoll(): void {
+    if (this.quotaPollingStopped) return;
+    if (this.quotaPollTimer) {
+      clearTimeout(this.quotaPollTimer);
+      this.quotaPollTimer = null;
+    }
+    const delayMs = this.computeNextQuotaPollDelayMs();
+    this.quotaPollTimer = setTimeout(() => {
+      this.quotaPollTimer = null;
+      void this.runScheduledQuotaPoll(false);
+    }, delayMs);
+    this.quotaPollTimer.unref?.();
+  }
+
+  private async runScheduledQuotaPoll(isInitial: boolean): Promise<void> {
+    if (isInitial) {
+      this.quotaInitialPollTimer = null;
+    }
+    if (this.quotaPollingStopped) return;
+    try {
+      await this.pollAllQuotas(true);
+    } finally {
+      if (!this.quotaPollingStopped) {
+        this.scheduleNextQuotaPoll();
+      }
+    }
+  }
+
+  private startQuotaPolling(): void {
+    this.quotaPollingStopped = false;
+    const intervalMs = this.getBaseQuotaPollIntervalMs();
+    this.log(`Quota polling every ${Math.round(intervalMs / 1000)}s (jittered)`);
+
+    // Initial poll (delayed 2-5s to allow token refresh first and avoid fixed cadence)
+    const initialDelayMs = 2000 + Math.floor(Math.random() * 3000);
+    this.quotaInitialPollTimer = setTimeout(() => {
+      void this.runScheduledQuotaPoll(true);
+    }, initialDelayMs);
+    this.quotaInitialPollTimer.unref?.();
+
+    this.scheduleNextQuotaPoll();
   }
 
   stopQuotaPolling(): void {
+    this.quotaPollingStopped = true;
     if (this.quotaInitialPollTimer) {
       clearTimeout(this.quotaInitialPollTimer);
       this.quotaInitialPollTimer = null;
     }
     if (this.quotaPollTimer) {
-      clearInterval(this.quotaPollTimer);
+      clearTimeout(this.quotaPollTimer);
       this.quotaPollTimer = null;
     }
   }
@@ -1100,6 +1190,8 @@ export class AccountRotator {
   private async pollAccountQuotaOnce(account: AccountRuntime): Promise<boolean> {
     let quotaPublished = false;
     const snapshotRevision = dynamicCatalog.snapshotRevision;
+    const cooldownSnapshotAtStart: Record<string, number> = { ...account.cooldownsByModel };
+    const cooldownsBefore = JSON.stringify(account.cooldownsByModel);
     try {
       const quotaCtx: QuotaFetchContext = {
         log: (message) => this.log(message),
@@ -1156,6 +1248,7 @@ export class AccountRotator {
         if (
           !Number.isFinite(resetAt) ||
           resetAt <= now ||
+          account.cooldownsByModel[quota.modelKey] !== cooldownSnapshotAtStart[quota.modelKey] ||
           account.cooldownsByModel[quota.modelKey] === resetAt
         ) {
           continue;
@@ -1163,6 +1256,9 @@ export class AccountRotator {
         account.cooldownsByModel[quota.modelKey] = resetAt;
         cooldownChanged = true;
       }
+    }
+    if (!cooldownChanged && JSON.stringify(account.cooldownsByModel) !== cooldownsBefore) {
+      cooldownChanged = true;
     }
     if (cooldownChanged || snapshotRevision !== dynamicCatalog.snapshotRevision) {
       this.scheduleStateSave();
@@ -1175,22 +1271,29 @@ export class AccountRotator {
     return quotaPublished;
   }
 
-  private pollAllQuotas(): Promise<void> {
+  private pollAllQuotas(scheduled = false): Promise<void> {
     if (this.quotaPollCycle) return this.quotaPollCycle;
-    this.quotaPollCycle = this.pollAllQuotasOnce().finally(() => {
+    this.quotaPollCycle = this.pollAllQuotasOnce(scheduled).finally(() => {
       this.quotaPollCycle = null;
     });
     return this.quotaPollCycle;
   }
 
-  private async pollAllQuotasOnce(): Promise<void> {
+  private async pollAllQuotasOnce(scheduled = false): Promise<void> {
     void this.refreshOllamaCatalogOnce().catch(() => {});
     void this.refreshCodexCatalogOnce().catch(() => {});
 
     const available = this.accounts.filter((a) => !a.disabled && !a.flagged);
     this.reconcileDynamicCatalog();
     let quotaPublished = false;
-    for (const account of available) {
+    for (let i = 0; i < available.length; i++) {
+      if (scheduled && this.quotaPollingStopped) break;
+      if (scheduled && i > 0) {
+        const spacingMs = 250 + Math.floor(Math.random() * 1000);
+        await new Promise((resolve) => setTimeout(resolve, spacingMs));
+        if (this.quotaPollingStopped) break;
+      }
+      const account = available[i];
       if (await this.pollAccountQuota(account)) {
         quotaPublished = true;
       }
@@ -1215,8 +1318,9 @@ export class AccountRotator {
       return;
     }
 
-    // Check per-model quota-based rotation
-    if (this.config.rotateOnQuotaDrop > 0) {
+    // Check per-model quota-based rotation (disabled for quota-aware policies
+    // like sticky-quota and sequential-quota that drain an account to 0%).
+    if (this.config.rotateOnQuotaDrop > 0 && !this.isQuotaAwarePolicy()) {
       for (const [modelKey, mState] of this.modelState.entries()) {
         const account = this.accounts[mState.activeAccountIndex];
         if (!account) continue;
@@ -1289,16 +1393,54 @@ export class AccountRotator {
     });
   }
 
-  // Get quota % for a specific model on an account. Returns -1 if no data.
-  private getModelQuota(account: AccountRuntime, modelKey: string): number {
-    const quotaKey = dynamicCatalog.resolveQuotaPool(modelKey) ??
-      resolveQuotaModelKey(modelKey) ?? modelKey;
-    const q = account.quota.find((q) => q.modelKey === quotaKey) ??
+  private resolveQuotaLookupKey(
+    account: AccountRuntime,
+    modelKey: string,
+  ): string {
+    const accountId = getAccountIdentity(account);
+    const dynamicForAccount = dynamicCatalog.resolveQuotaPoolForAccount(
+      accountId,
+      modelKey,
+    );
+    if (
+      dynamicForAccount &&
+      (account.quota.length === 0 ||
+        account.quota.some((q) => q.modelKey === dynamicForAccount) ||
+        getProviderIdForPoolKey(dynamicForAccount) !== DEFAULT_PROVIDER)
+    ) {
+      return this.resolvePoolKey(account, dynamicForAccount);
+    }
+    if (
+      account.quota.some((q) => q.modelKey === modelKey) ||
+      this.isKnownDynamicPoolKey(modelKey, account)
+    ) {
+      return this.resolvePoolKey(account, modelKey);
+    }
+    const resolved =
+      dynamicForAccount ??
+      resolveQuotaModelKey(modelKey) ??
+      modelKey;
+    return this.resolvePoolKey(account, resolved);
+  }
+
+  private findAccountQuotaRow(
+    account: AccountRuntime,
+    quotaKey: string,
+  ): ModelQuota | undefined {
+    return (
+      account.quota.find((q) => q.modelKey === quotaKey) ??
       (quotaKey.startsWith(`${CODEX_QUOTA_MODEL_KEY}:`)
         ? account.quota.find((candidate) => candidate.modelKey === CODEX_QUOTA_MODEL_KEY)
         : quotaKey.startsWith(`${OPENCODE_ZEN_PROVIDER_ID}:`)
           ? account.quota.find((candidate) => candidate.providerId === OPENCODE_ZEN_PROVIDER_ID)
-          : undefined);
+          : undefined)
+    );
+  }
+
+  // Get quota % for a specific model on an account. Returns -1 if no data.
+  private getModelQuota(account: AccountRuntime, modelKey: string): number {
+    const quotaKey = this.resolveQuotaLookupKey(account, modelKey);
+    const q = this.findAccountQuotaRow(account, quotaKey);
     if (!q && quotaKey === "monthly") {
       // Legacy subscriptions still report explicit session/weekly windows on
       // /api/balance; both windows constrain the same Ollama account.
@@ -1327,14 +1469,8 @@ export class AccountRotator {
     account: AccountRuntime,
     modelKey: string,
   ): ModelQuota["timerType"] {
-    const quotaKey = dynamicCatalog.resolveQuotaPool(modelKey) ??
-      resolveQuotaModelKey(modelKey) ?? modelKey;
-    const q = account.quota.find((q) => q.modelKey === quotaKey) ??
-      (quotaKey.startsWith(`${CODEX_QUOTA_MODEL_KEY}:`)
-        ? account.quota.find((candidate) => candidate.modelKey === CODEX_QUOTA_MODEL_KEY)
-        : quotaKey.startsWith(`${OPENCODE_ZEN_PROVIDER_ID}:`)
-          ? account.quota.find((candidate) => candidate.providerId === OPENCODE_ZEN_PROVIDER_ID)
-          : undefined);
+    const quotaKey = this.resolveQuotaLookupKey(account, modelKey);
+    const q = this.findAccountQuotaRow(account, quotaKey);
     return q?.timerType ?? "fresh";
   }
 
@@ -1367,34 +1503,87 @@ export class AccountRotator {
     if (!hasCredential(account.config, providerId)) return null;
 
     const adapter = getProviderAdapter(providerId);
-    const candidates = adapter.getKickstartModelsForPool
+    const providerOff = isProviderTurnedOff(this.getConfig(), providerId);
+    const rawCandidates = adapter.getKickstartModelsForPool
       ? adapter.getKickstartModelsForPool(poolKey, account)
       : (() => {
           const single = adapter.getKickstartModelForPool(poolKey);
           return single ? [single] : [];
         })();
-    if (candidates.length === 0) return null;
+
+    let upstreamModels = [...rawCandidates];
+    if (providerId === DEFAULT_PROVIDER) {
+      const isCustomPool = !QUOTA_MODEL_KEYS[poolKey];
+      const allOff =
+        upstreamModels.length > 0 &&
+        !providerOff &&
+        upstreamModels.every((model) =>
+          isProviderModelOff(this, providerId, model),
+        );
+      if (upstreamModels.length === 0 || allOff || isCustomPool) {
+        const accountCandidates = dynamicCatalog
+          .getModelsForQuotaPool(poolKey, getAccountIdentity(account))
+          .filter((entry) => !entry.id.toLowerCase().endsWith("-disabled"));
+        if (accountCandidates.length > 0) {
+          const activeCandidates = providerOff || (upstreamModels.length > 0 && !allOff)
+            ? accountCandidates
+            : accountCandidates.filter(
+                (entry) => !isProviderModelOff(this, providerId, entry.id),
+              );
+          if (activeCandidates.length === 0) return null;
+          const preferred = activeCandidates.find((entry) =>
+            /(?:^|-)(?:low|lite|flash|medium)$/i.test(entry.id),
+          );
+          const dynamicIds = [
+            ...(preferred ? [preferred.id] : []),
+            ...activeCandidates
+              .map((entry) => entry.id)
+              .filter((id) => id !== preferred?.id),
+          ];
+          upstreamModels = (allOff || isCustomPool || upstreamModels.length === 0)
+            ? dynamicIds
+            : Array.from(new Set([...dynamicIds, ...upstreamModels]));
+        }
+      }
+    }
+    if (upstreamModels.length === 0) return null;
+
     return {
       poolKey,
       providerId,
       adapter,
-      upstreamModel: candidates[0],
-      upstreamModels: candidates,
+      upstreamModel: upstreamModels[0],
+      upstreamModels,
     };
   }
 
   // Timer priority for a specific model:
-  //   1 (highest) = 5h timer -> only class with hard quota loss if underused before reset
-  //   2           = 7d timer -> already ticking, keep those long windows moving
-  //   3 (lowest)  = fresh -> no visible timer is running yet
+  //   1 (highest) = short rolling window (e.g. <= 6h such as 5h) -> expires soonest
+  //   1.5         = medium window (e.g. daily / 12h)
+  //   2           = weekly / 7d timer -> already ticking, keep those long windows moving
+  //   3 (lowest)  = fresh / monthly -> no visible short/weekly timer is running yet
   private getModelTimerPriority(
     account: AccountRuntime,
     modelKey: string,
   ): number {
-    const type = this.getModelTimerType(account, modelKey);
+    const quotaKey = this.resolveQuotaLookupKey(account, modelKey);
+    const q = this.findAccountQuotaRow(account, quotaKey);
+    const type = q?.timerType ?? "fresh";
     if (type === "5h") return 1;
     if (type === "7d") return 2;
-    return 3;
+    if (type === "fresh" || type === "monthly") return 3;
+    const activeWindow = q?.windows
+      ?.filter((w) => w.active && w.durationMs !== undefined)
+      .sort((a, b) => (a.durationMs ?? Infinity) - (b.durationMs ?? Infinity))[0];
+    const durationMs = activeWindow?.durationMs;
+    if (durationMs !== undefined) {
+      if (durationMs <= 6 * 60 * 60 * 1000) return 1;
+      if (durationMs <= 24 * 60 * 60 * 1000) return 1.5;
+      if (durationMs <= 8 * 24 * 60 * 60 * 1000) return 2;
+      return 2.5;
+    }
+    if (type === "daily" || type === "1d" || type === "24h") return 1.5;
+    return 2;
   }
 
   private isFreshWindowAllowed(
@@ -1452,15 +1641,15 @@ export class AccountRotator {
       hybridScore: number;
     } | null = null;
     const policy = this.config.routingPolicy || "timer-first";
+    const sequentialOrder = this.isQuotaAwarePolicy(policy);
 
-    const candidateIndices =
-      policy === "sequential-quota"
-        ? Array.from({ length: this.accounts.length }, (_, offset) =>
-            excludeIdx >= 0
-              ? (excludeIdx + 1 + offset) % this.accounts.length
-              : offset,
-          )
-        : Array.from({ length: this.accounts.length }, (_, i) => i);
+    const candidateIndices = sequentialOrder
+      ? Array.from({ length: this.accounts.length }, (_, offset) =>
+          excludeIdx >= 0
+            ? (excludeIdx + 1 + offset) % this.accounts.length
+            : offset,
+        )
+      : Array.from({ length: this.accounts.length }, (_, i) => i);
 
     for (const i of candidateIndices) {
       if (i === excludeIdx) continue;
@@ -1490,7 +1679,7 @@ export class AccountRotator {
         tokenSnapshot.tokens < 1
       )
         continue;
-      if (policy === "sequential-quota") return account;
+      if (sequentialOrder) return account;
       const metrics = {
         priority,
         quota,
@@ -1707,7 +1896,7 @@ export class AccountRotator {
     ignoreConcurrency = false,
   ): string | null {
     const projectId = this.getProjectIdForModel(account, modelKey);
-    const quotaStateKey = this.resolveQuotaStateKey(modelKey);
+    const quotaStateKey = this.resolveAccountQuotaStateKey(account, modelKey);
     if (this.isModelBreakerActive(quotaStateKey, now))
       return "model circuit breaker active";
     if (this.isProjectModelBreakerActive(projectId, quotaStateKey, now))
@@ -1776,7 +1965,7 @@ export class AccountRotator {
     if (account.flagged)
       return { reason: "flagged", detail: "account quarantined or flagged" };
     if (autoScope) {
-      const access = evaluateAutoModelAccess(
+      const access = this.evaluateModelAccess(
         account.config,
         autoScope.providerId,
         autoScope.modelId,
@@ -1797,8 +1986,7 @@ export class AccountRotator {
     const defaultCooldown = account.cooldownsByModel["__default__"] ?? 0;
     if (defaultCooldown > now)
       return { reason: "cooldown", detail: "default cooldown active" };
-    const modelCooldown =
-      account.cooldownsByModel[this.resolveQuotaStateKey(modelKey)] ?? 0;
+    const modelCooldown = this.getAccountModelCooldown(account, modelKey);
     if (modelCooldown > now)
       return { reason: "cooldown", detail: "model cooldown active" };
     // Ollama Cloud quota pools impose no per-account
@@ -1913,7 +2101,7 @@ export class AccountRotator {
     },
     policy: Config["routingPolicy"],
   ): boolean {
-    if (policy === "sequential-quota") {
+    if (this.isQuotaAwarePolicy(policy)) {
       return candidate.distance < best.distance;
     }
     if (policy === "hybrid") {
@@ -2159,6 +2347,7 @@ export class AccountRotator {
     signal?: AbortSignal,
     providerId?: string,
     autoScope?: AutoAccountScope,
+    onLease?: (modelKey: string) => void,
   ): Promise<AccountRuntime | null> {
     if (signal?.aborted) return null;
     autoScope ??= this.getExplicitAccessScope(model, providerId);
@@ -2167,12 +2356,12 @@ export class AccountRotator {
       this.hasQueuedRequest(queueKey) ||
       this.isConcurrencySaturated(model, providerId, autoScope)
     ) {
-      return this.enqueueAccountRequest(model, signal, queueKey, providerId, autoScope);
+      return this.enqueueAccountRequest(model, signal, queueKey, providerId, autoScope, onLease);
     }
 
-    const account = await this.tryGetActiveAccount(model, providerId, autoScope);
+    const account = await this.tryGetActiveAccount(model, providerId, autoScope, onLease);
     if (account || !this.isConcurrencySaturated(model, providerId, autoScope)) return account;
-    return this.enqueueAccountRequest(model, signal, queueKey, providerId, autoScope);
+    return this.enqueueAccountRequest(model, signal, queueKey, providerId, autoScope, onLease);
   }
 
   /** Keep fairness within a provider pool without making unrelated providers wait. */
@@ -2191,6 +2380,7 @@ export class AccountRotator {
     queueKey = this.getRequestQueueKey(model),
     providerId?: string,
     autoScope?: AutoAccountScope,
+    onLease?: (modelKey: string) => void,
   ): Promise<AccountRuntime | null> {
     if (signal?.aborted) return Promise.resolve(null);
 
@@ -2201,6 +2391,7 @@ export class AccountRotator {
       waiter.providerId = providerId;
       waiter.autoScope = autoScope;
       waiter.signal = signal;
+      waiter.onLease = onLease;
       waiter.resolve = resolve;
       waiter.reject = reject;
       waiter.timer = setTimeout(() => {
@@ -2301,52 +2492,69 @@ export class AccountRotator {
           ...new Set(this.requestWaiters.map((waiter) => waiter.queueKey)),
         ];
         for (const queueKey of queueKeys) {
-          const waiter = this.requestWaiters.find(
+          const queueWaiters = this.requestWaiters.filter(
             (candidate) => candidate.queueKey === queueKey,
           );
-          if (!waiter) continue;
-          if (waiter.signal?.aborted) {
-            this.settleAccountRequestWaiter(waiter, null);
-            progressed = true;
-            continue;
-          }
-
-          let account: AccountRuntime | null;
-          try {
-            account = await this.tryGetActiveAccount(waiter.model, waiter.providerId, waiter.autoScope);
-          } catch (error) {
-            this.rejectAccountRequestWaiter(waiter, error);
-            progressed = true;
-            continue;
-          }
-
-          if (!this.requestWaiters.includes(waiter)) {
-            if (account) {
-              this.finishRequest(
-                account,
-                waiter.model
-                  ? this.resolveRequestPoolKey(waiter.model, waiter.providerId)
-                  : undefined,
-                waiter.providerId,
-              );
+          for (const waiter of queueWaiters) {
+            if (!this.requestWaiters.includes(waiter)) continue;
+            if (waiter.signal?.aborted) {
+              this.settleAccountRequestWaiter(waiter, null);
+              progressed = true;
+              continue;
             }
-            progressed = true;
-            continue;
-          }
-          if (account) {
-            this.settleAccountRequestWaiter(waiter, account);
-            progressed = true;
-            continue;
-          }
-          if (this.requestWaiterDrainRequested) {
-            progressed = true;
-            continue;
-          }
-          const wakeAt = this.getNextRequestAvailabilityAt(waiter.model, waiter.providerId, waiter.autoScope);
-          if (wakeAt !== null) this.scheduleRequestWaiterWake(wakeAt);
-          if (!this.isConcurrencySaturated(waiter.model, waiter.providerId, waiter.autoScope) && wakeAt === null) {
-            this.settleAccountRequestWaiter(waiter, null);
-            progressed = true;
+
+            let leasedModelKey: string | undefined;
+            let account: AccountRuntime | null;
+            try {
+              account = await this.tryGetActiveAccount(
+                waiter.model,
+                waiter.providerId,
+                waiter.autoScope,
+                (key) => {
+                  leasedModelKey = key;
+                },
+              );
+            } catch (error) {
+              this.rejectAccountRequestWaiter(waiter, error);
+              progressed = true;
+              continue;
+            }
+
+            if (!this.requestWaiters.includes(waiter)) {
+              if (account) {
+                this.finishRequest(
+                  account,
+                  leasedModelKey ??
+                    (waiter.model
+                      ? this.resolveRequestPoolKey(waiter.model, waiter.providerId)
+                      : undefined),
+                  waiter.providerId,
+                );
+              }
+              progressed = true;
+              continue;
+            }
+            if (account) {
+              if (leasedModelKey !== undefined) waiter.onLease?.(leasedModelKey);
+              this.settleAccountRequestWaiter(waiter, account);
+              progressed = true;
+              break;
+            }
+            if (this.requestWaiterDrainRequested) {
+              progressed = true;
+              break;
+            }
+            const wakeAt = this.getNextRequestAvailabilityAt(waiter.model, waiter.providerId, waiter.autoScope);
+            if (wakeAt !== null) this.scheduleRequestWaiterWake(wakeAt);
+            const saturated = this.isConcurrencySaturated(waiter.model, waiter.providerId, waiter.autoScope);
+            if (!saturated && wakeAt === null) {
+              this.settleAccountRequestWaiter(waiter, null);
+              progressed = true;
+              continue;
+            }
+            // Block tail waiters behind a concurrency-saturated head (FIFO fairness),
+            // but let other pools proceed when the head is only parked on a pool cooldown.
+            if (saturated) break;
           }
         }
       } while (progressed || this.requestWaiterDrainRequested);
@@ -2354,6 +2562,59 @@ export class AccountRotator {
       this.drainingRequestWaiters = false;
       if (this.requestWaiterDrainRequested) this.requestWaiterDrain();
     }
+  }
+
+  private getStickyConcurrencyTarget(
+    modelKey: string,
+    now: number,
+    autoScope?: AutoAccountScope,
+  ): AccountRuntime | null {
+    const policy = this.config.routingPolicy || "timer-first";
+    if (policy !== "sticky-quota") return null;
+
+    const state = this.modelState.get(modelKey);
+    const providerId = getProviderIdForPoolKey(modelKey);
+    const isPermanentlyGone = (account: AccountRuntime | undefined): boolean =>
+      !account ||
+      account.disabled ||
+      account.flagged ||
+      Boolean(account.invalidProviders?.[providerId]) ||
+      this.getModelQuota(account, modelKey) === 0;
+    const isEligibleIgnoringConcurrency = (
+      account: AccountRuntime | undefined,
+    ): account is AccountRuntime =>
+      Boolean(
+        account &&
+          this.getRoutingRejectionForModel(
+            account,
+            modelKey,
+            now,
+            policy,
+            true,
+            autoScope,
+          ) === null,
+      );
+
+    if (state) {
+      const preferred =
+        state.stickyAccountIndex !== undefined
+          ? this.accounts[state.stickyAccountIndex]
+          : undefined;
+      if (!isPermanentlyGone(preferred) && isEligibleIgnoringConcurrency(preferred)) {
+        return preferred;
+      }
+      const current = this.accounts[state.activeAccountIndex];
+      if (current && current !== preferred && isEligibleIgnoringConcurrency(current)) {
+        return current;
+      }
+      return null;
+    }
+
+    const defaultAcc = this.accounts[this.defaultIndex];
+    if (isEligibleIgnoringConcurrency(defaultAcc)) {
+      return defaultAcc;
+    }
+    return this.accounts.find((account) => isEligibleIgnoringConcurrency(account)) ?? null;
   }
 
   private isConcurrencySaturated(
@@ -2366,6 +2627,27 @@ export class AccountRotator {
     const modelKey = model ? this.resolveRequestPoolKey(model, providerId) : null;
     if (!modelKey) return false;
     const policy = this.config.routingPolicy || "timer-first";
+
+    if (policy === "sticky-quota") {
+      const stickyTarget = this.getStickyConcurrencyTarget(modelKey, now, autoScope);
+      if (stickyTarget) {
+        const stickyRejection = this.getRoutingRejectionForModel(
+          stickyTarget,
+          modelKey,
+          now,
+          policy,
+          false,
+          autoScope,
+        );
+        if (
+          stickyRejection &&
+          (stickyRejection.reason === "account-concurrency" ||
+            stickyRejection.reason === "project-concurrency")
+        ) {
+          return true;
+        }
+      }
+    }
 
     let concurrencyBlocked = false;
     for (const account of this.accounts) {
@@ -2406,12 +2688,31 @@ export class AccountRotator {
     model?: string,
     providerId?: string,
     autoScope?: AutoAccountScope,
+    onLease?: (modelKey: string) => void,
   ): Promise<AccountRuntime | null> {
     const now = Date.now();
     if (this.accounts.length === 0) return null;
     if (this.isProtectivePauseActive(now)) return null;
 
     const modelKey = model ? this.resolveRequestPoolKey(model, providerId) : null;
+    const account = await this.tryGetActiveAccountWithKey(
+      modelKey,
+      now,
+      providerId,
+      autoScope,
+    );
+    if (account) {
+      onLease?.(modelKey ?? "__default__");
+    }
+    return account;
+  }
+
+  private async tryGetActiveAccountWithKey(
+    modelKey: string | null,
+    now: number,
+    providerId?: string,
+    autoScope?: AutoAccountScope,
+  ): Promise<AccountRuntime | null> {
     const state = modelKey ? this.modelState.get(modelKey) : null;
     const idx = state?.activeAccountIndex ?? this.defaultIndex;
     const current = this.accounts[idx];
@@ -2448,14 +2749,14 @@ export class AccountRotator {
         return this.rotateModelForRequest(modelKey, now, idx, autoScope);
       }
     }
-    if (modelKey && hasActiveRequests) {
+    if (modelKey && hasActiveRequests && policy !== "sticky-quota") {
       const leastLoaded = this.pickLeastLoadedModelAccount(modelKey, now, autoScope);
       if (leastLoaded && leastLoaded !== current) {
         return this.rotateModelForRequest(modelKey, now, idx, autoScope);
       }
     }
 
-    if (modelKey && state && !hasActiveRequests) {
+    if (modelKey && state && (!hasActiveRequests || policy === "sticky-quota")) {
       try {
         const restored = await this.restorePreferredModelAccount(
           modelKey,
@@ -2468,6 +2769,27 @@ export class AccountRotator {
       } catch (error) {
         if (!this.isCodexPoolKey(modelKey)) throw error;
         return this.rotateModelForRequest(modelKey, now, idx, autoScope);
+      }
+    }
+
+    if (modelKey && policy === "sticky-quota") {
+      const stickyTarget = this.getStickyConcurrencyTarget(modelKey, now, autoScope);
+      if (stickyTarget) {
+        const stickyRejection = this.getRoutingRejectionForModel(
+          stickyTarget,
+          modelKey,
+          now,
+          policy,
+          false,
+          autoScope,
+        );
+        if (
+          stickyRejection &&
+          (stickyRejection.reason === "account-concurrency" ||
+            stickyRejection.reason === "project-concurrency")
+        ) {
+          return null;
+        }
       }
     }
 
@@ -2600,9 +2922,16 @@ export class AccountRotator {
     }
 
     const preferred = this.accounts[preferredIndex];
-    if (this.getModelQuota(preferred, modelKey) === 0) {
-      // A zero quota is a permanent hand-off for this rotation cycle. The
-      // next selected account becomes the new preference in rotateModel().
+    const providerId = getProviderIdForPoolKey(modelKey);
+    if (
+      !preferred ||
+      preferred.disabled ||
+      preferred.flagged ||
+      Boolean(preferred.invalidProviders?.[providerId]) ||
+      this.getModelQuota(preferred, modelKey) === 0
+    ) {
+      // A zero quota or permanent account unavailability is a hand-off for this
+      // rotation cycle. The next selected account becomes the new preference.
       state.stickyAccountIndex = undefined;
       this.scheduleStateSave();
       return null;
@@ -2630,9 +2959,11 @@ export class AccountRotator {
     forRequest = false,
     autoScope?: AutoAccountScope,
   ): Promise<AccountRuntime | null> {
-    const best = forRequest
-      ? this.pickLeastLoadedModelAccount(modelKey, now, autoScope)
-      : this.pickBestModelAccount(modelKey, now, excludeIdx, autoScope);
+    const policy = this.config.routingPolicy || "timer-first";
+    const best =
+      forRequest && !this.isQuotaAwarePolicy(policy)
+        ? this.pickLeastLoadedModelAccount(modelKey, now, autoScope)
+        : this.pickBestModelAccount(modelKey, now, excludeIdx, autoScope);
 
     if (best) {
       const previous = this.modelState.get(modelKey);
@@ -2643,10 +2974,16 @@ export class AccountRotator {
           preferredIndex === undefined
             ? undefined
             : this.accounts[preferredIndex];
+        const providerId = getProviderIdForPoolKey(modelKey);
+        const preferredPermanentlyGone =
+          !preferred ||
+          preferred.disabled ||
+          preferred.flagged ||
+          Boolean(preferred.invalidProviders?.[providerId]) ||
+          this.getModelQuota(preferred, modelKey) === 0;
         if (
           preferredIndex !== undefined &&
-          preferred &&
-          this.getModelQuota(preferred, modelKey) !== 0 &&
+          !preferredPermanentlyGone &&
           (preferredIndex !== previous.activeAccountIndex ||
             !this.isAvailableForModel(preferred, modelKey, now, autoScope))
         ) {
@@ -2859,6 +3196,10 @@ export class AccountRotator {
     return modelKey
       ? this.rotateModel(modelKey, Date.now(), excludeIdx, false, autoScope)
       : this.rotateDefault(Date.now(), false, excludeIdx);
+  }
+
+  private evaluateModelAccess(account: AccountConfig, providerId: string, model: string) {
+    return evaluateAutoModelAccess(account, providerId, model, undefined, undefined, this.config.quotaPollIntervalMs);
   }
 
   private getExplicitAccessScope(model?: string, providerId?: string): AutoAccountScope | undefined {
@@ -3405,13 +3746,26 @@ export class AccountRotator {
             candidate.providerId === undefined),
       );
       if (quota) {
+        const resetIso = new Date(now + cooldownMs).toISOString();
         quota.percentRemaining = 0;
-        quota.resetTime = new Date(now + cooldownMs).toISOString();
+        quota.resetTime = resetIso;
         quota.timerType = quota.modelKey === "monthly"
           ? "monthly"
           : cooldownMs < 6 * 60 * 60 * 1000
             ? "5h"
             : "7d";
+        if (quota.windows?.length) {
+          const targetWin = quota.windows.find(
+            (w) =>
+              (quota.timerType === "5h" && w.window === "5h") ||
+              (quota.timerType === "7d" && (w.window === "weekly" || w.window === "7d")),
+          ) ?? quota.windows[0];
+          if (targetWin) {
+            targetWin.percentRemaining = 0;
+            targetWin.resetTime = resetIso;
+            targetWin.active = true;
+          }
+        }
       }
     }
 
@@ -3590,6 +3944,15 @@ export class AccountRotator {
     await this.saveState();
     this.log(`${email}: quarantined by operator`, "warn");
     return true;
+  }
+
+  /** Takes the whole account out of rotation after an unequivocal account-level 403 sanction. */
+  quarantineAccountAfterForbidden(account: AccountRuntime, reason: string): void {
+    account.flagged = true;
+    account.lastError = reason;
+    this.reconcileDynamicCatalog();
+    this.log(`${account.config.email}: quarantined after 403`, "warn");
+    this.scheduleStateSave();
   }
 
   async restoreAccount(email: string): Promise<boolean> {
@@ -3940,6 +4303,9 @@ export class AccountRotator {
       if (providerId === "google-antigravity" || providerId === DEFAULT_PROVIDER) {
         account.accessToken = snapshotAccount.accessToken;
         account.tokenExpires = snapshotAccount.tokenExpires;
+        if (snapshotAccount.tokenScopes !== undefined) {
+          account.tokenScopes = snapshotAccount.tokenScopes;
+        }
         if (snapshotAccount.config.refreshToken !== undefined) {
           account.config.refreshToken = snapshotAccount.config.refreshToken;
         }
@@ -4048,7 +4414,7 @@ export class AccountRotator {
     const providerId = getProviderIdForPoolKey(modelKey);
     if (
       autoScope &&
-      !evaluateAutoModelAccess(
+      !this.evaluateModelAccess(
         account.config,
         autoScope.providerId,
         autoScope.modelId,
@@ -4059,8 +4425,7 @@ export class AccountRotator {
     if (account.invalidProviders?.[providerId]) return false;
     if (this.isProviderOffForAccount(account, providerId)) return false;
     if ((account.providerCooldowns?.[providerId] ?? 0) > now) return false;
-    const modelCooldown =
-      account.cooldownsByModel[this.resolveQuotaStateKey(modelKey)] ?? 0;
+    const modelCooldown = this.getAccountModelCooldown(account, modelKey);
     if (modelCooldown > now) return false;
     // Ollama Cloud quota pools impose no per-account concurrency
     // limit. Antigravity keeps it so long streams don't pile up on a
@@ -4258,10 +4623,50 @@ export class AccountRotator {
     );
   }
 
+  private isKnownDynamicPoolKey(modelKey: string, account?: AccountRuntime): boolean {
+    const normalized = modelKey.trim().toLowerCase();
+    if (!normalized) return false;
+    if (account && account.quota.some((q) => q.modelKey.toLowerCase() === normalized)) {
+      return true;
+    }
+    if (this.accounts.some((a) => a.quota.some((q) => q.modelKey.toLowerCase() === normalized))) {
+      return true;
+    }
+    return dynamicCatalog.hasQuotaPool(normalized, account ? getAccountIdentity(account) : undefined);
+  }
+
   private resolveQuotaStateKey(modelKey: string): string {
-    return dynamicCatalog.resolveQuotaPool(modelKey) ??
-      resolveQuotaModelKey(modelKey) ??
-      modelKey;
+    const normalized = modelKey.trim().toLowerCase();
+    const dynamicPool = dynamicCatalog.resolveQuotaPool(modelKey);
+    if (dynamicPool) return dynamicPool;
+    if (this.isKnownDynamicPoolKey(normalized)) return normalized;
+    return resolveQuotaModelKey(modelKey) ?? modelKey;
+  }
+
+  private resolveAccountQuotaStateKey(account: AccountRuntime, modelKey: string): string {
+    const normalized = modelKey.trim().toLowerCase();
+    const accountId = getAccountIdentity(account);
+    const accountPool = dynamicCatalog.resolveQuotaPoolForAccount(accountId, modelKey);
+    if (
+      accountPool &&
+      (account.quota.length === 0 ||
+        account.quota.some((q) => q.modelKey === accountPool) ||
+        getProviderIdForPoolKey(accountPool) !== DEFAULT_PROVIDER)
+    ) {
+      return accountPool;
+    }
+    if (this.isKnownDynamicPoolKey(normalized, account)) return normalized;
+    return this.resolveQuotaStateKey(modelKey);
+  }
+
+  private getAccountModelCooldown(account: AccountRuntime, modelKey: string): number {
+    const accountPoolKey = this.resolveAccountPoolKey(account, modelKey);
+    const accountStateKey = this.resolveAccountQuotaStateKey(account, modelKey);
+    return Math.max(
+      account.cooldownsByModel[accountPoolKey] ?? 0,
+      account.cooldownsByModel[accountStateKey] ?? 0,
+      account.cooldownsByModel[modelKey] ?? 0,
+    );
   }
 
   /** Map a candidate key (model name or pool key) to the account's pool key. */
@@ -4280,17 +4685,34 @@ export class AccountRotator {
   private resolveAccountPoolKey(account: AccountRuntime, key: string): string {
     const kickstartPool = QUOTA_POOL_FOR_KICKSTART_MODEL[key];
     if (kickstartPool) return this.resolvePoolKey(account, kickstartPool);
+    const accountId = getAccountIdentity(account);
+    const accountPool = dynamicCatalog.resolveQuotaPoolForAccount(accountId, key);
+    if (
+      accountPool &&
+      (account.quota.length === 0 ||
+        account.quota.some((quota) => quota.modelKey === accountPool) ||
+        getProviderIdForPoolKey(accountPool) !== DEFAULT_PROVIDER)
+    ) {
+      return this.resolvePoolKey(account, accountPool);
+    }
     const dynamicPool = dynamicCatalog.resolveQuotaPool(key);
-    if (dynamicPool) return this.resolvePoolKey(account, dynamicPool);
+    if (
+      dynamicPool &&
+      (account.quota.length === 0 ||
+        account.quota.some((quota) => quota.modelKey === dynamicPool))
+    ) {
+      return this.resolvePoolKey(account, dynamicPool);
+    }
     if (
       Object.values(QUOTA_POOL_FOR_KICKSTART_MODEL).includes(key) ||
       account.quota.some((quota) => quota.modelKey === key) ||
+      this.isKnownDynamicPoolKey(key, account) ||
       getProviderIdForPoolKey(key) !== DEFAULT_PROVIDER
     ) {
       return this.resolvePoolKey(account, key);
     }
     const modelPool = this.resolvePoolKeyForModel(key) ?? resolveQuotaModelKey(key);
-    return this.resolvePoolKey(account, modelPool ?? "__default__");
+    return this.resolvePoolKey(account, modelPool ?? dynamicPool ?? "__default__");
   }
 
   private isRoutableForModel(
@@ -4333,7 +4755,7 @@ export class AccountRotator {
       if (this.getProviderEligibilityRejection(account, modelKey, now)?.reason === "provider-ineligible") continue;
       if (
         autoScope &&
-        !evaluateAutoModelAccess(
+        !this.evaluateModelAccess(
           account.config,
           autoScope.providerId,
           autoScope.modelId,
@@ -4352,15 +4774,18 @@ export class AccountRotator {
       if (providerCooldown > now) retryTimes.push(providerCooldown);
       if (this.isDailySafetyStopped(account, now))
         retryTimes.push(dailyResetAt);
+      const accountQuotaStateKey = this.resolveAccountQuotaStateKey(account, modelKey);
+      const accountModelBreaker = this.modelBreakers[accountQuotaStateKey] ?? 0;
+      if (accountModelBreaker > now) retryTimes.push(accountModelBreaker);
       const cooldown = Math.max(
-        account.cooldownsByModel[quotaStateKey] ?? 0,
+        this.getAccountModelCooldown(account, modelKey),
         account.cooldownsByModel.__default__ ?? 0,
       );
       if (cooldown > now) retryTimes.push(cooldown);
       const projectId = this.getProjectIdForModel(account, modelKey);
       if (projectId) {
         const projectBreaker =
-          this.projectModelBreakers[projectModelKey(projectId, quotaStateKey)] ?? 0;
+          this.projectModelBreakers[projectModelKey(projectId, accountQuotaStateKey)] ?? 0;
         if (projectBreaker > now) retryTimes.push(projectBreaker);
       }
       if ((this.config.routingPolicy || "timer-first") === "hybrid") {
@@ -4459,6 +4884,7 @@ export class AccountRotator {
         allowFreshWindowStartsOverride: a.allowFreshWindowStartsOverride,
         effectiveFreshWindowStartsAllowed:
           this.isEffectiveFreshWindowAllowed(a),
+        authWarning: buildAccountAuthWarning(a),
       };
     });
 
@@ -4661,9 +5087,43 @@ export class AccountRotator {
       };
     };
 
+    const previousAccounts = this.accounts;
     const mergedAccounts = normalized.accounts.map(matchAndReuseAccount);
     this.config = { ...normalized, accounts: mergedAccounts.map((account) => account.config) };
     this.accounts = mergedAccounts;
+
+    const remapIndex = (oldIndex: number): number => {
+      const prev = previousAccounts[oldIndex];
+      return prev ? mergedAccounts.indexOf(prev) : -1;
+    };
+    for (const [modelKey, mState] of this.modelState.entries()) {
+      const mappedSticky =
+        mState.stickyAccountIndex !== undefined ? remapIndex(mState.stickyAccountIndex) : -1;
+      mState.stickyAccountIndex = mappedSticky >= 0 ? mappedSticky : undefined;
+
+      const mappedActive = remapIndex(mState.activeAccountIndex);
+      if (mappedActive >= 0) {
+        mState.activeAccountIndex = mappedActive;
+      } else if (mergedAccounts.length === 0) {
+        this.modelState.delete(modelKey);
+      } else {
+        mState.activeAccountIndex =
+          mappedSticky >= 0
+            ? mappedSticky
+            : Math.min(Math.max(0, mState.activeAccountIndex), mergedAccounts.length - 1);
+        mState.requestsOnActiveAccount = 0;
+      }
+    }
+    const mappedDefault = remapIndex(this.defaultIndex);
+    this.defaultIndex =
+      mappedDefault >= 0
+        ? mappedDefault
+        : mergedAccounts.length > 0
+          ? Math.min(Math.max(0, this.defaultIndex), mergedAccounts.length - 1)
+          : 0;
+    const mappedCursor = remapIndex(this.requestCursorIndex);
+    this.requestCursorIndex = mappedCursor >= 0 ? mappedCursor : 0;
+
     applyConfigOverrides(this.config);
     this.reconcileDynamicCatalog();
     this.requestWaiterDrain();
@@ -4720,19 +5180,20 @@ export class AccountRotator {
   }
 
   async addOrUpdateAccount(accountConfig: AccountConfig): Promise<void> {
-    const receivesCodexCredential = accountConfig.credentials?.some(
+    const normalizedConfig = normalizeAccountConfig(accountConfig);
+    const receivesCodexCredential = normalizedConfig.credentials?.some(
       (credential) => credential.provider === "openai-codex",
     );
     const existingIndex = this.accounts.findIndex(
-      (account) => account.config.email === accountConfig.email,
+      (account) => account.config.email === normalizedConfig.email,
     );
     if (existingIndex >= 0) {
       const existing = this.accounts[existingIndex];
       existing.config = {
         ...existing.config,
-        ...accountConfig,
-        credentials: mergeCredentials(existing.config.credentials, accountConfig.credentials),
-        tier: accountConfig.tier || existing.config.tier || "unknown",
+        ...normalizedConfig,
+        credentials: mergeCredentials(existing.config.credentials, normalizedConfig.credentials),
+        tier: normalizedConfig.tier || existing.config.tier || "unknown",
       };
       existing.disabled = false;
       existing.flagged = false;
@@ -4741,9 +5202,14 @@ export class AccountRotator {
       existing.accessToken = null;
       existing.tokenExpires = 0;
       const updatedProviders = new Set<string>(
-        (accountConfig.credentials ?? []).map((credential) => credential.provider),
+        (normalizedConfig.credentials ?? []).map((credential) => credential.provider),
       );
-      if (accountConfig.refreshToken) updatedProviders.add(DEFAULT_PROVIDER);
+      if (normalizedConfig.refreshToken) updatedProviders.add(DEFAULT_PROVIDER);
+      if (updatedProviders.has(DEFAULT_PROVIDER)) {
+        delete existing.tokenScopes;
+        delete existing.aicodeEligibility;
+        delete existing.aicodeState;
+      }
       if (receivesCodexCredential) updatedProviders.add("openai-codex");
       for (const pid of updatedProviders) {
         if (existing.invalidProviders) {
@@ -4760,10 +5226,10 @@ export class AccountRotator {
         }
       }
       this.config.accounts[existingIndex] = existing.config;
-      this.log(`${accountConfig.email}: account updated via hosted login`);
+      this.log(`${normalizedConfig.email}: account updated via hosted login`);
     } else {
       const runtime: AccountRuntime = {
-        config: { ...accountConfig, tier: accountConfig.tier || "unknown" },
+        config: { ...normalizedConfig, tier: normalizedConfig.tier || "unknown" },
         accessToken: null,
         tokenExpires: 0,
         requestsSinceRotation: 0,
@@ -5280,8 +5746,6 @@ export class AccountRotator {
               "Content-Type": "application/json",
               Authorization: `Bearer ${account.accessToken}`,
               "User-Agent": QUOTA_USER_AGENT,
-              "X-Goog-Api-Client": REQUEST_GOOG_API_CLIENT,
-              "Client-Metadata": REQUEST_CLIENT_METADATA,
             },
             body,
             signal: controller.signal,

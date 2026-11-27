@@ -4,6 +4,7 @@ import { classifyAccessObservation } from "./access-evidence.js";
 import { getCachedOllamaContextWindow } from "./providers/ollama/context-window.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
 import {
   type CompressionHeaderOptions,
   buildRotatorResponseHeaders,
@@ -26,10 +27,12 @@ import { PayloadTooLargeError, readLimitedBody } from "./body-limit.js";
 import { logger, redactSensitive } from "./logger.js";
 import {
   createStreamIdleGuard,
+  startSseKeepalive,
   waitForResponseDrain,
 } from "./stream-guards.js";
 import type { AccountRotator } from "./rotator.js";
 import {
+  attachClientAbortController,
   withRotation,
   flattenHeaders,
   type RequestBody,
@@ -343,6 +346,7 @@ const VALIDATION_LOG_MAX_CHARS = 200;
 export interface CompatStreamOptions {
   idleTimeoutMs?: number;
   backpressureTimeoutMs?: number;
+  keepaliveIntervalMs?: number;
 }
 
 export function logValidationFailure(scope: string, payload: unknown): void {
@@ -888,6 +892,10 @@ export async function streamCompatSse(
     "X-Accel-Buffering": "no",
     ...rotatorHeaders,
   });
+  const stopKeepalive = startSseKeepalive(
+    res,
+    options.keepaliveIntervalMs ?? rotator?.getConfig?.()?.sseKeepaliveIntervalMs,
+  );
 
   if (format === "openai") {
     res.write(
@@ -1200,31 +1208,19 @@ export async function streamCompatSse(
     if (!nodeStream.destroyed) nodeStream.destroy(error);
   }, options.idleTimeoutMs);
 
-  try {
-    for await (const chunk of nodeStream) {
-      if (reqClosed) {
-        break;
-      }
-      idleGuard.reset();
-      if (firstByteMs === undefined) firstByteMs = Date.now() - streamStartMs;
-      const str = chunk.toString();
-      tailBuffer += str;
-      let newlineIdx;
-      while ((newlineIdx = tailBuffer.indexOf("\n")) >= 0) {
-        const line = tailBuffer.slice(0, newlineIdx).trim();
-        tailBuffer = tailBuffer.slice(newlineIdx + 1);
-
-        if (upstream === "ollama") {
-          if (line) emitOllamaLine(line);
-          continue;
-        }
-        if (upstream === "opencode-zen") {
-          if (line) emitOpenAiSseLine(line);
-          continue;
-        }
-        if (!line.startsWith("data:")) continue;
-        const payload = line.slice(5).trim();
-        if (!payload || payload === "[DONE]") continue;
+  const decoder = new StringDecoder("utf8");
+  const processCompatLine = (line: string): void => {
+    if (upstream === "ollama") {
+      if (line) emitOllamaLine(line);
+      return;
+    }
+    if (upstream === "opencode-zen") {
+      if (line) emitOpenAiSseLine(line);
+      return;
+    }
+    if (!line.startsWith("data:")) return;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]") return;
 
         try {
           const parsed = JSON.parse(payload) as Record<string, unknown>;
@@ -1380,8 +1376,34 @@ export async function streamCompatSse(
         } catch {
           // Ignore malformed JSON chunks
         }
+  };
+
+  try {
+    for await (const chunk of nodeStream) {
+      if (reqClosed) {
+        break;
+      }
+      idleGuard.reset();
+      if (firstByteMs === undefined) firstByteMs = Date.now() - streamStartMs;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+      tailBuffer += decoder.write(buf);
+      let newlineIdx;
+      while ((newlineIdx = tailBuffer.indexOf("\n")) >= 0) {
+        const line = tailBuffer.slice(0, newlineIdx).trim();
+        tailBuffer = tailBuffer.slice(newlineIdx + 1);
+        processCompatLine(line);
       }
       await waitForResponseDrain(res, options.backpressureTimeoutMs);
+    }
+    if (!reqClosed) {
+      tailBuffer += decoder.end();
+      if (tailBuffer.length > 0) {
+        for (const rawLine of tailBuffer.split("\n")) {
+          const line = rawLine.trim();
+          if (line) processCompatLine(line);
+        }
+        tailBuffer = "";
+      }
     }
   } catch (err) {
     if (!reqClosed) {
@@ -1393,6 +1415,7 @@ export async function streamCompatSse(
     }
   } finally {
     idleGuard.clear();
+    stopKeepalive();
     req.off("close", closeUpstreamForClient);
     responseEvents.off?.("close", closeUpstreamForClient);
   }
@@ -1634,6 +1657,10 @@ export async function streamResponsesSse(
     "X-Accel-Buffering": "no",
     ...rotatorHeaders,
   });
+  const stopKeepalive = startSseKeepalive(
+    res,
+    options.keepaliveIntervalMs ?? rotator?.getConfig?.()?.sseKeepaliveIntervalMs,
+  );
   const emptyCompletion: CompatCompletion = {
     text: "",
     thinkingText: undefined,
@@ -1988,29 +2015,19 @@ export async function streamResponsesSse(
       // Ignore malformed NDJSON lines
     }
   };
-  try {
-    for await (const chunk of nodeStream) {
-      if (reqClosed) {
-        break;
-      }
-      idleGuard.reset();
-      if (firstByteMs === undefined) firstByteMs = Date.now() - streamStartMs;
-      tailBuffer += chunk.toString();
-      let newlineIdx;
-      while ((newlineIdx = tailBuffer.indexOf("\n")) >= 0) {
-        const line = tailBuffer.slice(0, newlineIdx).trim();
-        tailBuffer = tailBuffer.slice(newlineIdx + 1);
-        if (upstream === "ollama") {
-          if (line) emitOllamaLine(line);
-          continue;
-        }
-        if (upstream === "opencode-zen") {
-          emitOpenCodeZenLine(line);
-          continue;
-        }
-        if (!line.startsWith("data:")) continue;
-        const payload = line.slice(5).trim();
-        if (!payload || payload === "[DONE]") continue;
+  const decoder = new StringDecoder("utf8");
+  const processResponsesLine = (line: string): void => {
+    if (upstream === "ollama") {
+      if (line) emitOllamaLine(line);
+      return;
+    }
+    if (upstream === "opencode-zen") {
+      emitOpenCodeZenLine(line);
+      return;
+    }
+    if (!line.startsWith("data:")) return;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]") return;
         try {
           const parsed = JSON.parse(payload) as Record<string, unknown>;
           const response = isRecord(parsed.response) ? parsed.response : parsed;
@@ -2196,8 +2213,34 @@ export async function streamResponsesSse(
         } catch {
           // Ignore malformed JSON chunks
         }
+  };
+
+  try {
+    for await (const chunk of nodeStream) {
+      if (reqClosed) {
+        break;
+      }
+      idleGuard.reset();
+      if (firstByteMs === undefined) firstByteMs = Date.now() - streamStartMs;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+      tailBuffer += decoder.write(buf);
+      let newlineIdx;
+      while ((newlineIdx = tailBuffer.indexOf("\n")) >= 0) {
+        const line = tailBuffer.slice(0, newlineIdx).trim();
+        tailBuffer = tailBuffer.slice(newlineIdx + 1);
+        processResponsesLine(line);
       }
       await waitForResponseDrain(res, options.backpressureTimeoutMs);
+    }
+    if (!reqClosed) {
+      tailBuffer += decoder.end();
+      if (tailBuffer.length > 0) {
+        for (const rawLine of tailBuffer.split("\n")) {
+          const line = rawLine.trim();
+          if (line) processResponsesLine(line);
+        }
+        tailBuffer = "";
+      }
     }
   } catch (err) {
     if (!reqClosed) {
@@ -2209,6 +2252,7 @@ export async function streamResponsesSse(
     }
   } finally {
     idleGuard.clear();
+    stopKeepalive();
     req.off("close", closeUpstreamForClient);
     responseEvents.off?.("close", closeUpstreamForClient);
   }
@@ -2328,10 +2372,7 @@ async function completeResponsesViaRotator(
 }> {
   const startedAt = Date.now();
   const createdAt = Math.floor(Date.now() / 1000);
-  const controller = new AbortController();
-  const abort = (): void => controller.abort();
-  req.once("aborted", abort);
-  if (typeof res.once === "function") res.once("close", abort);
+  const { controller, cleanup } = attachClientAbortController(req, res);
   const outcome = await withRotation(
     rotator,
     body.model,
@@ -2370,7 +2411,7 @@ async function completeResponsesViaRotator(
       return completion;
     },
     controller.signal,
-  );
+  ).finally(cleanup);
   if (!outcome.ok) {
     recordCompatFailure(rotator, body, outcome, startedAt, options);
     return {
@@ -2390,6 +2431,18 @@ async function completeResponsesViaRotator(
     context: outcome.context,
     compressionStats: options?.compressionStats,
   };
+}
+
+function logCompatFailure(
+  providerName: "OpenAI" | "Anthropic",
+  status: number,
+  model: string,
+): void {
+  const summary =
+    status === 499
+      ? `${providerName} compat request aborted before completion status=499`
+      : `${providerName} compat upstream failed status=${status}`;
+  compatLogger.warn(`${summary} model=${model}`);
 }
 
 class NonOkOutcomeError extends Error {
@@ -2427,11 +2480,7 @@ async function completeViaRotator(
   const enabled = cfg?.idempotencyEnabled === true;
   const windowMs = cfg?.idempotencyWindowMs ?? 2000;
   const shouldDedup = enabled && streamMode === "none" && !idempotencyManager.isOptedOut(req);
-  const controller = new AbortController();
-  const abort = (): void => controller.abort();
-  req.once("aborted", abort);
-  if (typeof res.once === "function") res.once("close", abort);
-  if (req.aborted || res.destroyed) abort();
+  const { controller, cleanup } = attachClientAbortController(req, res);
 
   const runWithRotation = () =>
     withRotation(
@@ -2553,8 +2602,7 @@ async function completeViaRotator(
       outcome = await runWithRotation();
     }
   } finally {
-    req.off("aborted", abort);
-    if (typeof res.off === "function") res.off("close", abort);
+    cleanup();
   }
 
   if (!outcome.ok) {
@@ -3383,9 +3431,7 @@ async function handleChatCompletions(
     return;
   }
   if (result.status !== 200) {
-    compatLogger.warn(
-      `OpenAI compat upstream failed status=${result.status} model=${validation.value.model}`,
-    );
+    logCompatFailure("OpenAI", result.status, validation.value.model);
     if (!res.headersSent) {
       const retrySec = extractRetryAfterSeconds(result.errorText);
       const headers: Record<string, string> = retrySec ? { "Retry-After": String(retrySec) } : {};
@@ -3895,9 +3941,7 @@ export async function handleAnthropicMessages(
     },
   );
   if (result.status !== 200) {
-    compatLogger.warn(
-      `Anthropic compat upstream failed status=${result.status} model=${validation.value.model}`,
-    );
+    logCompatFailure("Anthropic", result.status, validation.value.model);
     if (!res.headersSent) {
       const retrySec = extractRetryAfterSeconds(result.errorText);
       const headers: Record<string, string> = retrySec ? { "Retry-After": String(retrySec) } : {};

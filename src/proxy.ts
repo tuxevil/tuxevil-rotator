@@ -1,6 +1,6 @@
 import { serveAccessProbe } from "./access-probe.js";
 import { requiresAntigravityAccessPolicy } from "./auto-model-access.js";
-import { observeAccessAttempt, logAccessPolicyShadow } from "./access-evidence.js";
+import { classifyAccessObservation, observeAccessAttempt, logAccessPolicyShadow } from "./access-evidence.js";
 import { serveModelAccessApi, serveProviderPlanApi } from "./model-access-api.js";
 import { createUsageLimitsHandler, USAGE_LIMITS_PATH } from "./usage-limits.js";
 import { carriesUsageReadToken } from "./usage-limits-auth.js";
@@ -50,6 +50,36 @@ import {
 import { isDynamicallyAvailableAntigravityModel } from "./providers/google-antigravity/catalog.js";
 import { dynamicCatalog } from "./providers/google-antigravity/dynamic-catalog.js";
 export { forwardRequest, SseEventAccumulator, extractUsageFromSseEvent };
+
+/**
+ * Links client disconnect events (`aborted`/`close`) to an AbortController,
+ * ignoring normal `close` after `res.writableEnded` so finished responses do not
+ * emit synthetic 499s, and detaches listeners on `finish` or explicit `cleanup()`.
+ */
+export function attachClientAbortController(
+  req: IncomingMessage,
+  res: ServerResponse,
+): { controller: AbortController; signal: AbortSignal; cleanup: () => void } {
+  const controller = new AbortController();
+  const cleanup = (): void => {
+    req.off("aborted", abort);
+    if (typeof res.off === "function") {
+      res.off("close", abort);
+      res.off("finish", cleanup);
+    }
+  };
+  const abort = (): void => {
+    cleanup();
+    if (!res.writableEnded) controller.abort();
+  };
+  req.once("aborted", abort);
+  if (typeof res.once === "function") {
+    res.once("close", abort);
+    res.once("finish", cleanup);
+  }
+  if (req.aborted || res.destroyed) abort();
+  return { controller, signal: controller.signal, cleanup };
+}
 import {
   serveStatusApi,
   serveConfigApi,
@@ -103,7 +133,11 @@ import {
 import { requireAdmin } from "./admin-auth.js";
 import { getMaxBodyBytes, PayloadTooLargeError, readLimitedBody } from "./body-limit.js";
 import { validateConfig, validateProxyRequestBody } from "./validators.js";
-import { calculateBackoffMs } from "./fetch-with-retry.js";
+import {
+  calculateContinuationBackoffMs,
+  isRetryableFetchError,
+  type AntigravityApiRetryOptions,
+} from "./fetch-with-retry.js";
 import { logger } from "./logger.js";
 import {
   trackFeature,
@@ -216,20 +250,24 @@ import {
 import { applyConfigDefaults } from "./account-store.js";
 import {
   classifyRateLimitReason,
+  hasTransientBackendOverloadMarker,
+  isAntigravityRetryableError,
+  isModelCapacityExhaustedError,
   parseRetryAfterMs,
   RESOURCE_EXHAUSTED_FALLBACK_MS,
 } from "./rate-limit-parser.js";
 import { authenticateVirtualKey, sendAuthErrorResponse } from "./key-auth.js";
 import { logSpend } from "./spend-logger.js";
 import { hashKey } from "./virtual-keys.js";
-import { STREAM_BACKPRESSURE_TIMEOUT_MS } from "./stream-guards.js";
+import { STREAM_BACKPRESSURE_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, startSseKeepalive } from "./stream-guards.js";
 
 const proxyLogger = logger.child("proxy");
 const GENERIC_UPSTREAM_ERROR = "Upstream request failed";
 
-const DEFAULT_STREAM_RECOVERY_MAX_RETRIES = 2;
+// Twin to Antigravity model_api/common/continuation.NewStream (maxRetries = 3,
+// maxContinuations = 32, idleTimeout = 600s via STREAM_IDLE_TIMEOUT_MS).
+const DEFAULT_STREAM_RECOVERY_MAX_RETRIES = 3;
 const MAX_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes max cooldown
-const STREAM_IDLE_TIMEOUT_MS = 2 * 60 * 1000; // Release account if a stream goes silent.
 const LARGE_CONTEXT_WARN_BYTES = 1 * 1024 * 1024;
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -266,6 +304,47 @@ function getStreamRecoveryMaxRetries(rotator: AccountRotator): number {
   return configured;
 }
 
+type InlineAntigravityRetryConfig = Partial<
+  Omit<AntigravityApiRetryOptions<ForwardedResponse>, "fn">
+>;
+
+function buildAntigravityApiRetryConfig(
+  rotator: AccountRotator,
+): InlineAntigravityRetryConfig | null {
+  const cfg = rotator.getConfig?.();
+  const override = cfg?.antigravityApiRetry;
+  if (
+    override?.enabled === false ||
+    override?.maxRetries === 0 ||
+    cfg?.streamRecoveryMaxRetries === 0
+  ) {
+    return null;
+  }
+  return override ? { ...override } : {};
+}
+
+function shouldUseInlineAntigravityApiRetry(
+  rotator: AccountRotator,
+  account: AccountRuntime,
+  modelKey: string,
+  providerId: string,
+): boolean {
+  if (providerId !== DEFAULT_PROVIDER) return false;
+  const retryCfg = buildAntigravityApiRetryConfig(rotator);
+  if (!retryCfg) return false;
+  if (rotator.getConfig?.().antigravityApiRetry?.enabled === true) {
+    return true;
+  }
+  if (typeof rotator.getAccountCount !== "function") {
+    return false;
+  }
+  if (rotator.getAccountCount() <= 1) {
+    return true;
+  }
+  const healthyCount = rotator.getFlagContext?.(account, modelKey)?.poolHealthyCount;
+  return typeof healthyCount === "number" && healthyCount <= 1;
+}
+
 export interface RequestBody {
   project: string;
   model: string;
@@ -282,6 +361,8 @@ export interface RequestBody {
   selectionMode?: "typesafe" | "deterministic" | "shadow" | "disabled";
   selectionConfidence?: number;
   selectionReason?: string;
+  /** Internal flag: skip adding coding-assistant system prompt or <USER_REQUEST> wrapping (e.g. dedicated audio transcription). */
+  preservePrompt?: boolean;
   [key: string]: unknown;
 }
 
@@ -363,6 +444,13 @@ export type UpstreamAction =
   | { kind: "bad-request"; errorText: string; endpoint: string }
   | { kind: "server-error-503"; errorText: string; endpoint: string }
   | {
+      kind: "non-retryable-error";
+      httpStatus: number;
+      errorText: string;
+      endpoint: string;
+      reason: string;
+    }
+  | {
       kind: "rotate-on-5xx";
       httpStatus: number;
       errorText: string;
@@ -383,8 +471,17 @@ export async function classifyUpstreamResponse(
   modelKey: string,
   providerId = DEFAULT_PROVIDER,
 ): Promise<UpstreamAction> {
-  if (response.status === 429) {
+  if (response.status === 429 || response.status === 402) {
     const errorText = await response.text().catch(() => "");
+    if (providerId === DEFAULT_PROVIDER && isModelCapacityExhaustedError(errorText)) {
+      return {
+        kind: "non-retryable-error",
+        httpStatus: response.status,
+        errorText,
+        endpoint,
+        reason: "MODEL_CAPACITY_EXHAUSTED",
+      };
+    }
     const rateLimitReason = classifyRateLimitReason(errorText, response.status);
     const providerResourceExhausted = rateLimitReason === "quota-exhausted";
     const cooldownMs = providerResourceExhausted
@@ -412,6 +509,9 @@ export async function classifyUpstreamResponse(
 
   if (response.status === 403) {
     const errorText = await response.text().catch(() => "");
+    if (isModelScopedForbidden(errorText, providerId, model)) {
+      return { kind: "forbidden", errorText, endpoint };
+    }
     const lower = errorText.toLowerCase();
     const flagPatternsLocal = [
       "infring",
@@ -443,17 +543,61 @@ export async function classifyUpstreamResponse(
 
   if (response.status === 503) {
     const errorText = await response.text().catch(() => "");
+    if (providerId === DEFAULT_PROVIDER && isModelCapacityExhaustedError(errorText)) {
+      return {
+        kind: "non-retryable-error",
+        httpStatus: 503,
+        errorText,
+        endpoint,
+        reason: "MODEL_CAPACITY_EXHAUSTED",
+      };
+    }
     return { kind: "server-error-503", errorText, endpoint };
   }
 
-  if (response.status >= 500) {
+  if (response.status >= 500 || response.status === 408) {
     const errorText = await response.text().catch(() => "");
+    if (providerId === DEFAULT_PROVIDER) {
+      if (isModelCapacityExhaustedError(errorText)) {
+        return {
+          kind: "non-retryable-error",
+          httpStatus: response.status,
+          errorText,
+          endpoint,
+          reason: "MODEL_CAPACITY_EXHAUSTED",
+        };
+      }
+      if (response.status === 500 && !hasTransientBackendOverloadMarker(errorText)) {
+        return {
+          kind: "non-retryable-error",
+          httpStatus: 500,
+          errorText,
+          endpoint,
+          reason: "HTTP_500",
+        };
+      }
+    }
     return {
       kind: "rotate-on-5xx",
       httpStatus: response.status,
       errorText,
       endpoint,
     };
+  }
+
+  if (response.status === 499) {
+    const errorText = await response.text().catch(() => "");
+    return {
+      kind: "non-retryable-error",
+      httpStatus: 499,
+      errorText,
+      endpoint,
+      reason: "HTTP_499",
+    };
+  }
+  if (response.status >= 400) {
+    const errorText = await response.text().catch(() => "");
+    return { kind: "bad-request", errorText, endpoint };
   }
 
   // Reference parameters to satisfy "all parameters are used" without changing behavior.
@@ -505,6 +649,7 @@ type UpstreamActionHandlerOptions = {
   logRequestEnd: (status: string | number, extra?: string) => void;
   rotateAndRelease: () => Promise<AccountRuntime | null>;
   canRetry: boolean;
+  ranSingleAccountApiRetry?: boolean;
   writeLog: (message: string, level?: "info" | "warn" | "error") => void;
   recordFailureAttempt?: (statusCode: number) => void;
 };
@@ -546,6 +691,61 @@ function buildNoReplacementDecision(
     `All accounts exhausted or disabled: ${reason}`,
     { noReplacementReason: reason },
   );
+}
+
+function isModelScopedForbidden(errorText: string, providerId: string, model: string): boolean {
+  const kind = classifyAccessObservation(403, errorText, false, providerId, model);
+  return kind === "entitlement" || kind === "client-restriction";
+}
+
+/**
+ * Google Antigravity's account-level ToS sanction, e.g. "This service has been
+ * disabled in this account for violation of Terms of Service".
+ */
+export function isAntigravityAccountSanction(providerId: string, errorText: string): boolean {
+  return (
+    providerId === DEFAULT_PROVIDER &&
+    /violation of (the )?terms of service/i.test(errorText)
+  );
+}
+
+/**
+ * A provider 403 takes only the failing provider credential out of rotation;
+ * sibling provider credentials on the same account stay eligible. Only an
+ * Antigravity ToS sanction quarantines the whole account.
+ */
+async function invalidateProviderAfterForbidden(
+  options: UpstreamActionHandlerOptions,
+  cause: "flagged" | "forbidden",
+): Promise<UpstreamActionDecision> {
+  const { action, provider, rotator, account, label, rotateAndRelease } = options;
+  const errorText = "errorText" in action ? action.errorText : "";
+  const accountSanction = isAntigravityAccountSanction(provider.id, errorText);
+  if (accountSanction) {
+    rotator.quarantineAccountAfterForbidden(
+      account,
+      `Quarantined after 403 (${cause}): ${errorText.slice(0, 300)}`,
+    );
+  } else {
+    rotator.markProviderInvalid(
+      account,
+      provider.id,
+      `Provider ${cause === "flagged" ? "flagged" : "rejected"} (403): ${errorText.slice(0, 300)}`,
+    );
+  }
+  if (!options.canRetry) {
+    return buildFailureDecision(options, 403, errorText);
+  }
+  const nextAccount = await rotateAndRelease();
+  if (!nextAccount) {
+    return buildNoReplacementDecision(
+      options,
+      accountSanction
+        ? `no replacement account remained after ${label} was quarantined with 403`
+        : `no replacement account remained after ${label} ${provider.id} was invalidated with 403`,
+    );
+  }
+  return { kind: "retry" };
 }
 
 async function handleUpstreamAccountAction(
@@ -608,7 +808,8 @@ async function handleUpstreamAccountAction(
     const shouldRetryProviderRateLimit =
       provider.id === "openai-codex" ||
       provider.id === "opencode-zen" ||
-      action.providerResourceExhausted;
+      action.providerResourceExhausted ||
+      Boolean(options.ranSingleAccountApiRetry);
     if (
       shouldRetryProviderRateLimit &&
       options.canRetry &&
@@ -617,7 +818,7 @@ async function handleUpstreamAccountAction(
       const nextAccount = await rotateAndRelease();
       if (nextAccount) {
         writeLog(
-          `[${label}] RESOURCE_EXHAUSTED is account-scoped; retrying with the next eligible account`,
+          `[${label}] ${action.providerResourceExhausted ? "RESOURCE_EXHAUSTED" : "429 retries exhausted"} on ${label}; rotating to the next eligible account`,
           "warn",
         );
         return { kind: "retry" };
@@ -682,6 +883,11 @@ async function handleUpstreamAccountAction(
   }
 
   if (action.kind === "flagged-403") {
+    if (isModelScopedForbidden(action.errorText, provider.id, model)) {
+      writeLog(`[${label}] 403: ${action.errorText.slice(0, 200)}`, "warn");
+      logRequestEnd(403, `endpoint=${action.endpoint}`);
+      return buildFailureDecision(options, 403, action.errorText);
+    }
     writeLog(`[${label}] FLAGGED: ${action.errorText.slice(0, 200)}`, "error");
     recordFailureAttempt?.(403);
     logRequestEnd(403, `endpoint=${action.endpoint}`);
@@ -705,31 +911,18 @@ async function handleUpstreamAccountAction(
       uptimeSeconds: ctx403.uptimeSeconds,
       timeSinceLastFlagSeconds: -1,
     });
-    // Provider-scoped invalidation: a 403 with flag patterns (suspended,
-    // banned, etc.) indicates the upstream provider rejected this credential.
-    // Only the failing provider is taken out; sibling providers remain active.
-    rotator.markProviderInvalid(
-      account,
-      provider.id,
-      `Provider flagged (403): ${action.errorText.slice(0, 300)}`,
-    );
-    if (!options.canRetry) {
-      return buildFailureDecision(options, 403, action.errorText);
-    }
-    const nextAccount = await rotateAndRelease();
-    if (!nextAccount) {
-      return buildNoReplacementDecision(
-        options,
-        `no replacement account remained after ${label} provider was invalidated with 403`,
-      );
-    }
-    return { kind: "retry" };
+    return invalidateProviderAfterForbidden(options, "flagged");
   }
 
   if (action.kind === "forbidden") {
     writeLog(`[${label}] 403: ${action.errorText.slice(0, 200)}`, "warn");
     logRequestEnd(403, `endpoint=${action.endpoint}`);
-    return buildFailureDecision(options, 403, action.errorText);
+    // Plan/entitlement 403s concern one model, not the account; access
+    // evidence already excludes the account for that model.
+    if (isModelScopedForbidden(action.errorText, provider.id, model)) {
+      return buildFailureDecision(options, 403, action.errorText);
+    }
+    return invalidateProviderAfterForbidden(options, "forbidden");
   }
 
   if (action.kind === "not-found") {
@@ -748,6 +941,22 @@ async function handleUpstreamAccountAction(
     );
     logRequestEnd(400, `endpoint=${action.endpoint}`);
     return buildFailureDecision(options, 400, action.errorText);
+  }
+
+  if (action.kind === "non-retryable-error") {
+    writeLog(
+      `[${label}] Aborting non-retryable upstream error (${action.reason}, HTTP ${action.httpStatus}): ${action.errorText.slice(0, 200)}`,
+      "warn",
+    );
+    recordFailureAttempt?.(action.httpStatus);
+    logRequestEnd(action.httpStatus, `endpoint=${action.endpoint}`);
+    if (action.reason !== "HTTP_499") {
+      rotator.markError(
+        account,
+        `${action.httpStatus}: ${action.errorText.slice(0, 200)}`,
+      );
+    }
+    return buildFailureDecision(options, action.httpStatus, action.errorText);
   }
 
   if (action.kind === "server-error-503") {
@@ -848,6 +1057,7 @@ async function streamResponseBody(
   responseStatus: number,
   responseHeaders: Record<string, string>,
   accumulator: StreamAccumulator = new SseEventAccumulator(),
+  keepaliveIntervalMs?: number,
 ): Promise<{
   inputTokens: number;
   outputTokens: number;
@@ -883,8 +1093,27 @@ async function streamResponseBody(
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
     let backpressureTimer: ReturnType<typeof setTimeout> | null = null;
     let waitingForDrain = false;
+    let stopKeepalive = (): void => {};
+
+    const contentType =
+      Object.entries(responseHeaders).find(
+        ([key]) => key.toLowerCase() === "content-type",
+      )?.[1] ?? "";
+    const isSse = contentType.toLowerCase().includes("text/event-stream");
+    const ensureHeadersSent = (flush = false): void => {
+      if (!res.headersSent && !res.destroyed && !res.writableEnded) {
+        res.writeHead(responseStatus, responseHeaders);
+        if (flush) res.flushHeaders?.();
+      }
+    };
+    if (isSse && !res.destroyed && !res.writableEnded) {
+      stopKeepalive = startSseKeepalive(res, keepaliveIntervalMs, () => {
+        ensureHeadersSent(true);
+      });
+    }
 
     const cleanup = (): void => {
+      stopKeepalive();
       if (idleTimer) clearTimeout(idleTimer);
       if (backpressureTimer) clearTimeout(backpressureTimer);
       nodeStream.off("data", onData);
@@ -963,10 +1192,12 @@ async function streamResponseBody(
         const error = new Error(
           `idle timeout after ${Math.round(STREAM_IDLE_TIMEOUT_MS / 1000)}s`,
         );
-        if (hasForwardedBytes) emitStreamError(error);
-        finish(
-          error.message,
-        );
+        if (!hasForwardedBytes && !res.headersSent) {
+          failBeforeFlush(error);
+        } else {
+          emitStreamError(error);
+          finish(error.message);
+        }
         if (!nodeStream.destroyed) nodeStream.destroy();
       }, STREAM_IDLE_TIMEOUT_MS);
     };
@@ -976,7 +1207,7 @@ async function streamResponseBody(
       resetIdleTimer();
       // Forward to client immediately (real-time streaming preserved)
       if (!res.destroyed && !res.writableEnded) {
-        if (!res.headersSent) res.writeHead(responseStatus, responseHeaders);
+        ensureHeadersSent(false);
         hasForwardedBytes = true;
         if (!res.write(chunk)) pauseForBackpressure();
       }
@@ -986,9 +1217,12 @@ async function streamResponseBody(
         if (usage) firstUsage = usage;
       }
     };
-    const onEnd = (): void => finish();
+    const onEnd = (): void => {
+      ensureHeadersSent(false);
+      finish();
+    };
     const onError = (err: Error): void => {
-      if (!hasForwardedBytes) {
+      if (!hasForwardedBytes && !res.headersSent) {
         failBeforeFlush(err);
       } else {
         emitStreamError(err);
@@ -996,7 +1230,7 @@ async function streamResponseBody(
       }
     };
     const onClose = (): void => {
-      if (!hasForwardedBytes) {
+      if (!hasForwardedBytes && !res.headersSent) {
         failBeforeFlush(new Error("upstream stream closed before response data"));
       } else {
         emitStreamError(new Error("upstream stream closed before response completion"));
@@ -1113,7 +1347,7 @@ export async function benchmarkAccount(
       account,
       benchmarkSpec.body.model,
       rotator,
-    ).forwardRequest(account, benchmarkSpec.body, {}, signal);
+    ).forwardRequest(account, benchmarkSpec.body, {}, signal, { apiRetry: false });
     ttfbMs = Date.now() - startedAt;
     const raw = await forwarded.response.text();
     const latencyMs = Date.now() - startedAt;
@@ -1339,11 +1573,23 @@ export async function withRotation<T>(
 
   const maxRetries = getStreamRecoveryMaxRetries(rotator);
   const maxAttempts = maxRetries + 1;
+  const apiRetriedAccounts = new Set<string>();
+  let forceSingleAccountApiRetry = false;
+  let extraSingleAccountRetries = 0;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (requestIsOff()) return modelOffOutcome();
     const admissionStartedMs = Date.now();
-    const account = await rotator.getActiveAccount(model, signal, providerId, autoScope);
+    let grantedModelKey: string | undefined;
+    const account = await rotator.getActiveAccount(
+      model,
+      signal,
+      providerId,
+      autoScope,
+      (key) => {
+        grantedModelKey = key;
+      },
+    );
     if (!account) {
       if (signal?.aborted) {
         return { ok: false, status: 499, errorText: "Client closed request" };
@@ -1355,7 +1601,7 @@ export async function withRotation<T>(
     const label = account.config.label || account.config.email;
     // Release this admission's pool even if later settings or catalog updates
     // change routing while token validation or the upstream request awaits.
-    const modelKey = routingModelKey(rotator, model, providerId);
+    const modelKey = grantedModelKey ?? routingModelKey(rotator, model, providerId);
     const displayModelKey = observedModelKey(
       rotator,
       body.displayModel || model,
@@ -1431,11 +1677,32 @@ export async function withRotation<T>(
       }
       if (rotator.getConfig?.().modelAccessShadow === true) logAccessPolicyShadow(account.config, provider.id, model, originalHeaders);
       rotator.recordUpstreamAttempt(account);
+      const accountRetryKey = account.config.email || label;
+      const alreadyApiRetriedAccount = apiRetriedAccounts.has(accountRetryKey);
+      const inlineRetryCfg =
+        !alreadyApiRetriedAccount &&
+        (forceSingleAccountApiRetry ||
+          shouldUseInlineAntigravityApiRetry(rotator, account, modelKey, provider.id))
+          ? buildAntigravityApiRetryConfig(rotator)
+          : null;
+      forceSingleAccountApiRetry = false;
+      const ranApiRetryThisAttempt = Boolean(inlineRetryCfg);
+      if (ranApiRetryThisAttempt) apiRetriedAccounts.add(accountRetryKey);
       const forwarded = await provider.forwardRequest(
         account,
         { ...body },
         originalHeaders,
         signal,
+        {
+          apiRetry: inlineRetryCfg
+            ? {
+                ...inlineRetryCfg,
+                onRetry: () => {
+                  extraSingleAccountRetries += 1;
+                },
+              }
+            : false,
+        },
       );
       const { response, endpoint } = forwarded;
       accessHttpStatus = response.status;
@@ -1447,7 +1714,7 @@ export async function withRotation<T>(
         requestId,
         requestStartMs,
         endpoint,
-        retries: attempt,
+        retries: attempt + extraSingleAccountRetries,
         providerId: provider.id,
         requestedModel: body.displayModel || model,
         selectedModel: model,
@@ -1499,9 +1766,33 @@ export async function withRotation<T>(
           logRequestEnd,
           rotateAndRelease,
           canRetry: attempt < maxRetries,
+          ranSingleAccountApiRetry: ranApiRetryThisAttempt,
           writeLog: (message, level = "info") => log(message, rotator, level),
         });
         if (decision.kind === "retry") continue;
+        if (
+          attempt < maxRetries &&
+          (decision.actionKind !== "rate-limited" ||
+            Boolean(decision.noReplacementReason)) &&
+          decision.actionKind !== "non-retryable-error" &&
+          decision.actionKind !== "flagged-401" &&
+          decision.actionKind !== "flagged-403" &&
+          decision.actionKind !== "forbidden" &&
+          decision.actionKind !== "not-found" &&
+          decision.actionKind !== "bad-request" &&
+          provider.id === DEFAULT_PROVIDER &&
+          !apiRetriedAccounts.has(accountRetryKey) &&
+          typeof rotator.getAccountCount === "function" &&
+          buildAntigravityApiRetryConfig(rotator) !== null &&
+          isAntigravityRetryableError({
+            status: response.status,
+            errorText: action.errorText,
+            headers: response.headers,
+          })
+        ) {
+          forceSingleAccountApiRetry = true;
+          continue;
+        }
         return failureDecisionToOutcome(decision);
       }
 
@@ -1576,13 +1867,41 @@ export async function withRotation<T>(
             requestId,
             requestStartMs,
             endpoint: "unknown",
-            retries: attempt,
+            retries: attempt + extraSingleAccountRetries,
           },
           totalMs: Date.now() - requestStartMs,
         };
       }
+      const transportRetryKey = account.config.email || label;
       const nextAccount = await rotateAndRelease();
       if (!nextAccount) {
+        if (apiRetriedAccounts.has(transportRetryKey)) {
+          return {
+            ok: false,
+            status: 502,
+            errorText: "All retry attempts failed",
+            context: {
+              account,
+              label,
+              modelKey,
+              displayModelKey,
+              requestId,
+              requestStartMs,
+              endpoint: "unknown",
+              retries: attempt + extraSingleAccountRetries,
+            },
+            totalMs: Date.now() - requestStartMs,
+          };
+        }
+        if (
+          providerId === DEFAULT_PROVIDER &&
+          typeof rotator.getAccountCount === "function" &&
+          isRetryableFetchError(err) &&
+          buildAntigravityApiRetryConfig(rotator) !== null
+        ) {
+          forceSingleAccountApiRetry = true;
+          continue;
+        }
         const waited = await sleepTransportRetry(
           requestId,
           label,
@@ -1623,7 +1942,8 @@ async function sleepTransportRetry(
   signal?: AbortSignal,
 ): Promise<boolean> {
   if (signal?.aborted) return false;
-  const backoffMs = calculateBackoffMs(attempt, 500, 5_000);
+  // Twin to Antigravity continuation.sleepForMidStreamRetry: 100ms base -> 5s cap, [0.5, 1.0) jitter.
+  const backoffMs = calculateContinuationBackoffMs(attempt + 1);
   log(
     `[${requestId}] Retrying after transport error on current account ${label} in ${backoffMs}ms (attempt ${attempt + 1}/${maxRetries})`,
     rotator,
@@ -1763,15 +2083,7 @@ async function handleProxyRequest(
     return;
   }
   const apiKeyHash = auth.key?.tokenHash || (auth.rawKey ? hashKey(auth.rawKey) : null);
-  const clientController = new AbortController();
-  const abortClient = (): void => clientController.abort();
-  const removeAbortListeners = (): void => {
-    req.off("aborted", abortClient);
-    res.off("close", abortClient);
-  };
-  req.once("aborted", abortClient);
-  res.once("close", abortClient);
-  res.once("finish", removeAbortListeners);
+  const { controller: clientController } = attachClientAbortController(req, res);
 
   const proxyLog = (
     msg: string,
@@ -1888,17 +2200,24 @@ async function handleProxyRequest(
     : undefined;
   const maxRetries = getStreamRecoveryMaxRetries(rotator);
   const maxAttempts = maxRetries + 1;
+  const apiRetriedAccounts = new Set<string>();
+  let forceSingleAccountApiRetry = false;
+  let extraSingleAccountRetries = 0;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (requestIsOff()) {
       sendModelOff();
       return;
     }
     const admissionStartedMs = Date.now();
+    let grantedModelKey: string | undefined;
     const account = await rotator.getActiveAccount(
       body.model,
       clientController.signal,
       providerId,
       accessScope,
+      (key) => {
+        grantedModelKey = key;
+      },
     );
     if (!account) {
       if (clientController.signal.aborted || res.destroyed) return;
@@ -1911,7 +2230,7 @@ async function handleProxyRequest(
     }
 
     const label = account.config.label || account.config.email;
-    const modelKey = routingModelKey(rotator, body.model, providerId);
+    const modelKey = grantedModelKey ?? routingModelKey(rotator, body.model, providerId);
     const displayModelKey = observedModelKey(rotator, body.model); // metrics/logs
     const queueWaitMs = Date.now() - admissionStartedMs;
     const requestId = `${modelKey}-${Date.now().toString(36)}-${attempt + 1}`;
@@ -2003,11 +2322,32 @@ async function handleProxyRequest(
       }
       if (rotator.getConfig?.().modelAccessShadow === true) logAccessPolicyShadow(account.config, provider.id, body.model, flattenHeaders(req.headers));
       rotator.recordUpstreamAttempt(account);
+      const accountRetryKey = account.config.email || label;
+      const alreadyApiRetriedAccount = apiRetriedAccounts.has(accountRetryKey);
+      const inlineRetryCfg =
+        !alreadyApiRetriedAccount &&
+        (forceSingleAccountApiRetry ||
+          shouldUseInlineAntigravityApiRetry(rotator, account, modelKey, provider.id))
+          ? buildAntigravityApiRetryConfig(rotator)
+          : null;
+      forceSingleAccountApiRetry = false;
+      const ranApiRetryThisAttempt = Boolean(inlineRetryCfg);
+      if (ranApiRetryThisAttempt) apiRetriedAccounts.add(accountRetryKey);
       const forwarded = await provider.forwardRequest(
         account,
         { ...body },
         flattenHeaders(req.headers),
         clientController.signal,
+        {
+          apiRetry: inlineRetryCfg
+            ? {
+                ...inlineRetryCfg,
+                onRetry: () => {
+                  extraSingleAccountRetries += 1;
+                },
+              }
+            : false,
+        },
       );
       const { response, endpoint } = forwarded;
       accessHttpStatus = response.status;
@@ -2019,7 +2359,7 @@ async function handleProxyRequest(
         requestId,
         requestStartMs,
         endpoint,
-        retries: attempt,
+        retries: attempt + extraSingleAccountRetries,
         providerId: provider.id,
         requestedModel: body.displayModel || body.model,
         selectedModel: body.model,
@@ -2052,17 +2392,39 @@ async function handleProxyRequest(
           logRequestEnd,
           rotateAndRelease,
           canRetry: attempt < maxRetries,
+          ranSingleAccountApiRetry: ranApiRetryThisAttempt,
           writeLog: proxyLog,
           recordFailureAttempt: recordOutcome,
         });
         if (decision.kind === "retry") continue;
+        if (
+          attempt < maxRetries &&
+          (decision.actionKind !== "rate-limited" ||
+            Boolean(decision.noReplacementReason)) &&
+          decision.actionKind !== "non-retryable-error" &&
+          decision.actionKind !== "flagged-401" &&
+          decision.actionKind !== "flagged-403" &&
+          decision.actionKind !== "forbidden" &&
+          decision.actionKind !== "not-found" &&
+          decision.actionKind !== "bad-request" &&
+          provider.id === DEFAULT_PROVIDER &&
+          !apiRetriedAccounts.has(accountRetryKey) &&
+          typeof rotator.getAccountCount === "function" &&
+          buildAntigravityApiRetryConfig(rotator) !== null &&
+          isAntigravityRetryableError({
+            status: response.status,
+            errorText: action.errorText,
+            headers: response.headers,
+          })
+        ) {
+          forceSingleAccountApiRetry = true;
+          continue;
+        }
         sendFailureDecision(decision);
         return;
       }
 
       // Success or non-error client response
-      const shouldRotate = rotator.recordRequest(account, body.model, providerId);
-
       const responseHeaders: Record<string, string> = {};
       response.headers.forEach((value, key) => {
         if (
@@ -2079,7 +2441,7 @@ async function handleProxyRequest(
         ttfbMs: Date.now() - requestStartMs,
         healthScore: account.healthScore,
         routingPolicy: rotator?.getConfig?.()?.routingPolicy || "timer-first",
-        retries: attempt,
+        retries: attempt + extraSingleAccountRetries,
         requestedModel: body.displayModel || body.model,
         selectedProvider: provider.id,
         modelSelection: body.selectionMode,
@@ -2088,6 +2450,7 @@ async function handleProxyRequest(
       });
       Object.assign(responseHeaders, rotatorHeaders);
 
+      let shouldRotate = false;
       try {
         const usage = await streamResponseBody(
           response.body,
@@ -2098,7 +2461,9 @@ async function handleProxyRequest(
           response.status,
           responseHeaders,
           provider.createStreamAccumulator(),
+          rotator.getConfig?.()?.sseKeepaliveIntervalMs,
         );
+        shouldRotate = rotator.recordRequest(account, body.model, providerId);
         const totalMs = Date.now() - requestStartMs;
         const ttfbMs = usage?.firstByteMs ?? totalMs;
         const outcomeStatus = usage?.streamError ? 502 : response.status;
@@ -2176,8 +2541,23 @@ async function handleProxyRequest(
         res.end(JSON.stringify({ error: GENERIC_UPSTREAM_ERROR }));
         return;
       }
+      const transportRetryKey = account.config.email || label;
       const nextAccount = await rotateAndRelease();
       if (!nextAccount) {
+        if (apiRetriedAccounts.has(transportRetryKey)) {
+          res.writeHead(502, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: GENERIC_UPSTREAM_ERROR }));
+          return;
+        }
+        if (
+          providerId === DEFAULT_PROVIDER &&
+          typeof rotator.getAccountCount === "function" &&
+          isRetryableFetchError(err) &&
+          buildAntigravityApiRetryConfig(rotator) !== null
+        ) {
+          forceSingleAccountApiRetry = true;
+          continue;
+        }
         const waited = await sleepTransportRetry(
           requestId,
           label,
@@ -2211,6 +2591,12 @@ async function handleCodeAssistPassthrough(
   rotator: AccountRotator,
   action: CodeAssistAction,
 ): Promise<void> {
+  const initialAuth = await authenticateVirtualKey(req);
+  if (!initialAuth.authenticated) {
+    sendAuthErrorResponse(res, initialAuth);
+    return;
+  }
+
   let bodyBuffer: Buffer;
   try {
     bodyBuffer = await readLimitedBody(req);
@@ -2235,6 +2621,23 @@ async function handleCodeAssistPassthrough(
     return;
   }
 
+  const targetModel =
+    typeof (body as Record<string, unknown>).model === "string"
+      ? ((body as Record<string, unknown>).model as string).trim()
+      : "";
+  if (
+    targetModel &&
+    initialAuth.key?.models &&
+    initialAuth.key.models.length > 0 &&
+    !initialAuth.key.models.includes("*")
+  ) {
+    const modelAuth = await authenticateVirtualKey(req, targetModel);
+    if (!modelAuth.authenticated) {
+      sendAuthErrorResponse(res, modelAuth);
+      return;
+    }
+  }
+
   const provider = getProviderAdapter(DEFAULT_PROVIDER);
   if (!provider.forwardCodeAssistRequest) {
     res.writeHead(501, { "Content-Type": "application/json" });
@@ -2242,23 +2645,21 @@ async function handleCodeAssistPassthrough(
     return;
   }
 
-  const clientController = new AbortController();
-  const abortClient = (): void => clientController.abort();
-  const removeAbortListeners = (): void => {
-    req.off("aborted", abortClient);
-    res.off("close", abortClient);
-  };
-  req.once("aborted", abortClient);
-  res.once("close", abortClient);
-  res.once("finish", removeAbortListeners);
+  const { controller: clientController } = attachClientAbortController(req, res);
 
   const maxRetries = getStreamRecoveryMaxRetries(rotator);
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     let account: AccountRuntime | null;
+    let grantedModelKey: string | undefined;
     try {
       account = await rotator.getActiveAccount(
         CODE_ASSIST_ROUTING_MODEL,
         clientController.signal,
+        DEFAULT_PROVIDER,
+        undefined,
+        (key) => {
+          grantedModelKey = key;
+        },
       );
     } catch {
       if (clientController.signal.aborted || res.destroyed) return;
@@ -2273,15 +2674,14 @@ async function handleCodeAssistPassthrough(
       return;
     }
 
+    const releaseModelKey =
+      grantedModelKey ??
+      routingModelKey(rotator, CODE_ASSIST_ROUTING_MODEL, DEFAULT_PROVIDER);
     let accountReleased = false;
     const releaseCurrentAccount = (): void => {
       if (accountReleased) return;
       accountReleased = true;
-      rotator.finishRequest(
-        account,
-        resolveQuotaModelKey(CODE_ASSIST_ROUTING_MODEL) ?? undefined,
-        DEFAULT_PROVIDER,
-      );
+      rotator.finishRequest(account, releaseModelKey, DEFAULT_PROVIDER);
     };
 
     try {
@@ -2329,6 +2729,14 @@ async function handleCodeAssistPassthrough(
     } finally {
       releaseCurrentAccount();
     }
+  }
+}
+
+function decodePathSegment(segment: string): string | null {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return null;
   }
 }
 
@@ -2642,37 +3050,62 @@ export function startProxy(
 
     if (method === "POST" && pathname.startsWith("/api/enable/")) {
       if (!requireAdmin(req, res)) return;
-      const email = decodeURIComponent(pathname.slice("/api/enable/".length));
+      const email = decodePathSegment(pathname.slice("/api/enable/".length));
+      if (email === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+        return;
+      }
       void serveEnableApi(res, rotator, email);
       return;
     }
 
     if (method === "POST" && pathname.startsWith("/api/disable/")) {
       if (!requireAdmin(req, res)) return;
-      const email = decodeURIComponent(pathname.slice("/api/disable/".length));
+      const email = decodePathSegment(pathname.slice("/api/disable/".length));
+      if (email === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+        return;
+      }
       void serveDisableApi(res, rotator, email);
       return;
     }
 
     if (method === "POST" && pathname.startsWith("/api/quarantine/")) {
       if (!requireAdmin(req, res)) return;
-      const email = decodeURIComponent(pathname.slice("/api/quarantine/".length));
+      const email = decodePathSegment(pathname.slice("/api/quarantine/".length));
+      if (email === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+        return;
+      }
       void serveQuarantineApi(res, rotator, email);
       return;
     }
 
     if (method === "POST" && pathname.startsWith("/api/restore/")) {
       if (!requireAdmin(req, res)) return;
-      const email = decodeURIComponent(pathname.slice("/api/restore/".length));
+      const email = decodePathSegment(pathname.slice("/api/restore/".length));
+      if (email === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+        return;
+      }
       void serveRestoreApi(res, rotator, email);
       return;
     }
 
     if (method === "POST" && pathname.startsWith("/api/remove-account/")) {
       if (!requireAdmin(req, res)) return;
-      const email = decodeURIComponent(
+      const email = decodePathSegment(
         pathname.slice("/api/remove-account/".length),
       );
+      if (email === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+        return;
+      }
       void serveRemoveAccountApi(res, rotator, email);
       return;
     }
@@ -2691,8 +3124,13 @@ export function startProxy(
         );
         return;
       }
-      const email = decodeURIComponent(rest.slice(0, lastSlash));
-      const tier = decodeURIComponent(rest.slice(lastSlash + 1));
+      const email = decodePathSegment(rest.slice(0, lastSlash));
+      const tier = decodePathSegment(rest.slice(lastSlash + 1));
+      if (email === null || tier === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+        return;
+      }
       void serveSetTierApi(res, rotator, email, tier);
       return;
     }
@@ -2701,13 +3139,18 @@ export function startProxy(
       if (!requireAdmin(req, res)) return;
       const rest = pathname.slice("/api/clear-inflight/".length);
       const firstSlash = rest.indexOf("/");
-      const email = decodeURIComponent(
+      const email = decodePathSegment(
         firstSlash >= 0 ? rest.slice(0, firstSlash) : rest,
       );
       const modelKey =
         firstSlash >= 0
-          ? decodeURIComponent(rest.slice(firstSlash + 1))
+          ? decodePathSegment(rest.slice(firstSlash + 1))
           : undefined;
+      if (email === null || modelKey === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+        return;
+      }
       serveClearInFlightApi(res, rotator, email, modelKey);
       return;
     }
@@ -2716,7 +3159,12 @@ export function startProxy(
       if (!requireAdmin(req, res)) return;
       const rest = pathname.slice("/api/clear-breaker/".length);
       const modelKey =
-        rest && rest !== "all" ? decodeURIComponent(rest) : undefined;
+        rest && rest !== "all" ? decodePathSegment(rest) : undefined;
+      if (modelKey === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+        return;
+      }
       void serveClearBreakerApi(res, rotator, modelKey);
       return;
     }
@@ -2740,7 +3188,12 @@ export function startProxy(
       if (!requireAdmin(req, res)) return;
       const rest = pathname.slice("/api/account-fresh-window-starts/".length);
       const lastSlash = rest.lastIndexOf("/");
-      const email = decodeURIComponent(rest.slice(0, lastSlash));
+      const email = decodePathSegment(rest.slice(0, lastSlash));
+      if (email === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+        return;
+      }
       const enabled = rest.slice(lastSlash + 1) === "on";
       void serveAccountFreshWindowStartsApi(res, rotator, email, enabled);
       return;
@@ -2752,12 +3205,22 @@ export function startProxy(
       const firstSlash = rest.indexOf("/");
       if (firstSlash >= 0) {
         // /api/kickstart/:email/:modelKey
-        const email = decodeURIComponent(rest.slice(0, firstSlash));
-        const modelKey = decodeURIComponent(rest.slice(firstSlash + 1));
+        const email = decodePathSegment(rest.slice(0, firstSlash));
+        const modelKey = decodePathSegment(rest.slice(firstSlash + 1));
+        if (email === null || modelKey === null) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+          return;
+        }
         serveKickstartApi(res, rotator, email, modelKey);
       } else {
         // /api/kickstart/:email — kickstart all fresh timers
-        const email = decodeURIComponent(rest);
+        const email = decodePathSegment(rest);
+        if (email === null) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+          return;
+        }
         serveKickstartApi(res, rotator, email);
       }
       return;
@@ -2825,7 +3288,12 @@ export function startProxy(
 
     if (pathname.startsWith("/api/keys/")) {
       if (!requireAdmin(req, res)) return;
-      const hash = decodeURIComponent(pathname.slice("/api/keys/".length));
+      const hash = decodePathSegment(pathname.slice("/api/keys/".length));
+      if (hash === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid URL encoding" }));
+        return;
+      }
       if (method === "GET") {
         void serveGetVirtualKeyApi(res, hash);
         return;
@@ -2953,7 +3421,19 @@ export function startProxy(
       /^\/v1\/responses\/([^/]+)(?:\/(cancel|input_items))?$/,
     );
     if (responseMatch) {
-      const responseId = decodeURIComponent(responseMatch[1]);
+      const responseId = decodePathSegment(responseMatch[1]);
+      if (responseId === null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: {
+              message: "Invalid response id encoding",
+              type: "invalid_request_error",
+            },
+          }),
+        );
+        return;
+      }
       const action = responseMatch[2] || "";
       if (method === "GET" && !action)
         return handleOpenAIResponsesRetrieve(req, res, responseId);
@@ -3086,6 +3566,9 @@ export function startProxy(
     }
     socket.destroy();
   });
+
+  // Node's 300s default requestTimeout aborts valid 600s streams and 240s retry sleeps with 499.
+  server.requestTimeout = 0;
 
   const originalClose = server.close.bind(server);
   server.close = ((callback?: (err?: Error) => void) => {

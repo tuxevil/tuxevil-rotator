@@ -4,8 +4,6 @@
 
 import {
   ANTIGRAVITY_ENDPOINTS,
-  REQUEST_CLIENT_METADATA,
-  REQUEST_GOOG_API_CLIENT,
   REQUEST_USER_AGENT,
   applyModelAlias,
 } from "../../types.js";
@@ -16,9 +14,22 @@ import type { TokenUsage } from "../adapter.js";
 import { DEFAULT_PROVIDER, getProviderProjectId } from "../credential-helpers.js";
 import { getAccountProxyDispatcher } from "../proxy-dispatcher.js";
 import {
+  ANTIGRAVITY_HEADERS_TIMEOUT_MS,
   fetchWithHeadersTimeout,
+  isRetryableFetchError,
+  runWithAntigravityApiRetry,
+  type AntigravityApiRetryOptions,
   type RequestInitWithDispatcher,
 } from "../../fetch-with-retry.js";
+import {
+  extractRetryDelayMs,
+  isAntigravityRetryableError,
+} from "../../rate-limit-parser.js";
+import { applyAntigravityTwinPayload } from "./twin-payload.js";
+import {
+  forwardAicodeRequestOnce,
+  resolveAicodeTarget,
+} from "./aicode-forward.js";
 
 const forwardLogger = logger.child("google-forward");
 
@@ -261,7 +272,7 @@ const BENCHMARK_MAX_OUTPUT_TOKENS = 16;
 const BENCHMARK_TIMEOUT_MS = 30_000;
 
 function benchmarkRequestBody(account: AccountRuntime): RequestBody {
-  return {
+  return applyAntigravityTwinPayload({
     project: getProviderProjectId(account.config, DEFAULT_PROVIDER),
     model: BENCHMARK_MODEL,
     request: {
@@ -275,7 +286,7 @@ function benchmarkRequestBody(account: AccountRuntime): RequestBody {
         maxOutputTokens: BENCHMARK_MAX_OUTPUT_TOKENS,
       },
     },
-  };
+  });
 }
 
 function benchmarkUsage(raw: string): { outputTokens: number } | null {
@@ -316,6 +327,217 @@ export const GOOGLE_BENCHMARK_CONSTANTS = {
   timeoutMs: BENCHMARK_TIMEOUT_MS,
 } as const;
 
+export interface ForwardRequestOptions {
+  /**
+   * Controls Antigravity single-account / non-rotating retry handling via
+   * `runWithAntigravityApiRetry`. Defaults to true for standalone calls; pass
+   * `{ apiRetry: false }` when an outer multi-account rotation loop owns retries.
+   */
+  apiRetry?:
+    | boolean
+    | Partial<Omit<AntigravityApiRetryOptions<ForwardedResponse>, "fn">>;
+}
+
+/**
+ * Strict Antigravity CCPA wire header allowlist (twin to `ccpahttp` +
+ * `codeassistclient.setHeaders`): never leak third-party SDK or proxy headers.
+ */
+export function buildAntigravityWireHeaders(
+  account: AccountRuntime,
+  originalHeaders: Record<string, string>,
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${account.accessToken ?? ""}`,
+    "User-Agent": REQUEST_USER_AGENT,
+  };
+  let requestReason = "";
+  let userProjectHeader = "";
+  for (const [key, value] of Object.entries(originalHeaders)) {
+    const lower = key.toLowerCase();
+    if (lower === "x-goog-request-reason" && typeof value === "string" && value.trim()) {
+      requestReason = value.trim();
+    } else if (lower === "x-goog-user-project" && typeof value === "string" && value.trim()) {
+      userProjectHeader = value.trim();
+    }
+  }
+  requestReason ||= process.env.GOOG_REQUEST_REASON?.trim() || "";
+  // Never default to the account projectId: Google-managed Antigravity projects
+  // lack the Cloud Code Private API for billing and answer 403 PERMISSION_DENIED.
+  userProjectHeader ||= process.env.GOOG_USER_PROJECT?.trim() || "";
+  if (requestReason) {
+    headers["X-Goog-Request-Reason"] = requestReason;
+  }
+  if (userProjectHeader) {
+    headers["X-Goog-User-Project"] = userProjectHeader;
+  }
+  return headers;
+}
+
+class RetryableAntigravityHttpError extends Error {
+  readonly status: number;
+  readonly serverRetryDelayMs?: number;
+  readonly fallbackResult: ForwardedResponse;
+
+  constructor(
+    status: number,
+    message: string,
+    serverRetryDelayMs: number | undefined,
+    fallbackResult: ForwardedResponse,
+  ) {
+    super(message);
+    this.name = "RetryableAntigravityHttpError";
+    this.status = status;
+    this.serverRetryDelayMs = serverRetryDelayMs;
+    this.fallbackResult = fallbackResult;
+  }
+}
+
+async function forwardRequestOnce(
+  account: AccountRuntime,
+  forwardHeaders: Record<string, string>,
+  requestBody: string,
+  signal?: AbortSignal,
+): Promise<ForwardedResponse> {
+  // Try endpoints with cascade only on 404 (missing route), never replaying 401/403
+  for (
+    let endpointIdx = 0;
+    endpointIdx < ANTIGRAVITY_ENDPOINTS.length;
+    endpointIdx++
+  ) {
+    const endpoint = ANTIGRAVITY_ENDPOINTS[endpointIdx];
+    const url = `${endpoint}/v1internal:streamGenerateContent?alt=sse`;
+    const isProd = endpointIdx === ANTIGRAVITY_ENDPOINTS.length - 1;
+
+    const controller = !isProd ? new AbortController() : undefined;
+    const timeout = controller
+      ? setTimeout(() => controller.abort(), 10_000)
+      : undefined;
+    try {
+      const requestSignal =
+        controller?.signal && signal
+          ? AbortSignal.any([controller.signal, signal])
+          : signal ?? controller?.signal;
+
+      const response = await fetchWithHeadersTimeout(url, {
+        method: "POST",
+        headers: forwardHeaders,
+        body: requestBody,
+        signal: requestSignal,
+        timeoutMs: ANTIGRAVITY_HEADERS_TIMEOUT_MS,
+        dispatcher: getAccountProxyDispatcher(account, "google-antigravity"),
+      } as RequestInitWithDispatcher);
+
+      if (
+        response.status === 404 &&
+        endpointIdx < ANTIGRAVITY_ENDPOINTS.length - 1
+      ) {
+        forwardLogger.log("info",
+          `Endpoint ${endpoint} returned ${response.status}, cascading...`,
+        );
+        await response.body?.cancel().catch(() => undefined);
+        continue;
+      }
+
+      return { response, endpoint };
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      if (endpointIdx < ANTIGRAVITY_ENDPOINTS.length - 1) {
+        forwardLogger.log("info",
+          `Endpoint ${endpoint} failed: ${
+            err instanceof Error ? err.message : err
+          }, cascading...`,
+        );
+        continue;
+      }
+      throw err;
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  }
+
+  throw new Error("All endpoints failed");
+}
+
+const ERROR_BODY_READ_TIMEOUT_MS = 500;
+const ERROR_BODY_MAX_BYTES = 262_144;
+
+async function readBoundedErrorResponseText(
+  response: Response,
+  signal?: AbortSignal,
+  timeoutMs = ERROR_BODY_READ_TIMEOUT_MS,
+  maxBytes = ERROR_BODY_MAX_BYTES,
+): Promise<{ text: string; truncatedOrTimedOut: boolean }> {
+  const cloned = response.clone();
+  if (!cloned.body) {
+    const text = await cloned.text().catch(() => "");
+    return { text, truncatedOrTimedOut: false };
+  }
+  const reader = cloned.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let totalBytes = 0;
+  let truncatedOrTimedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+
+  const deadline = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), timeoutMs);
+    timer.unref?.();
+  });
+  const aborted = signal
+    ? new Promise<"abort">((resolve) => {
+        if (signal.aborted) {
+          resolve("abort");
+          return;
+        }
+        onAbort = () => resolve("abort");
+        signal.addEventListener("abort", onAbort, { once: true });
+      })
+    : null;
+
+  try {
+    while (true) {
+      const racers: Array<Promise<ReadableStreamReadResult<Uint8Array> | "timeout" | "abort">> = [
+        reader.read(),
+        deadline,
+      ];
+      if (aborted) racers.push(aborted);
+      const step = await Promise.race(racers);
+      if (step === "timeout" || step === "abort") {
+        truncatedOrTimedOut = true;
+        break;
+      }
+      if (step.done) break;
+      const chunk = step.value;
+      if (chunk.byteLength > 0) {
+        const remaining = maxBytes - totalBytes;
+        if (remaining <= 0) {
+          truncatedOrTimedOut = true;
+          break;
+        }
+        const slice = chunk.byteLength > remaining ? chunk.subarray(0, remaining) : chunk;
+        totalBytes += slice.byteLength;
+        text += decoder.decode(slice, { stream: true });
+        if (totalBytes >= maxBytes) {
+          truncatedOrTimedOut = true;
+          break;
+        }
+      }
+    }
+    text += decoder.decode();
+  } catch {
+    // Ignore stream read errors on error payloads; return whatever was buffered.
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
+    // Do not await branch cancel before the caller cancels the original body;
+    // in WHATWG ReadableStream tee(), awaiting one branch can wait for the other.
+    void reader.cancel().catch(() => undefined);
+  }
+  return { text, truncatedOrTimedOut };
+}
+
 /**
  * Forward a request to the real Antigravity endpoint with credential swapping.
  */
@@ -324,6 +546,7 @@ export async function forwardRequest(
   body: RequestBody,
   originalHeaders: Record<string, string>,
   signal?: AbortSignal,
+  options?: ForwardRequestOptions,
 ): Promise<ForwardedResponse> {
   // Swap credentials
   body.project = getProviderProjectId(account.config, DEFAULT_PROVIDER);
@@ -340,122 +563,122 @@ export async function forwardRequest(
     selectionMode: _selectionMode,
     selectionConfidence: _selectionConfidence,
     selectionReason: _selectionReason,
-    ...bodyToForward
+    preservePrompt,
+    ...strippedBody
   } = body;
+  const bodyToForward = applyAntigravityTwinPayload(strippedBody, {
+    skipPromptInjection: preservePrompt === true,
+  });
   const requestBody = JSON.stringify(bodyToForward);
+  const forwardHeaders = buildAntigravityWireHeaders(account, originalHeaders);
 
-  // Build headers: keep originals but swap Authorization
-  const forwardHeaders: Record<string, string> = {
-    ...originalHeaders,
-    "Content-Type": "application/json",
-    Accept: "text/event-stream",
+  const executeOnce = async (): Promise<ForwardedResponse> => {
+    const aicodeTarget = await resolveAicodeTarget(
+      account,
+      body.model,
+      originalHeaders,
+      signal,
+    );
+    if (aicodeTarget) {
+      const { result, scopeInsufficientFallback } = await forwardAicodeRequestOnce(
+        account,
+        aicodeTarget,
+        bodyToForward,
+        originalHeaders,
+        signal,
+        readBoundedErrorResponseText,
+      );
+      if (!scopeInsufficientFallback) {
+        return result;
+      }
+    }
+    return forwardRequestOnce(account, forwardHeaders, requestBody, signal);
   };
-  // Remove original authorization (any case), provider-set headers, and
-  // hop-by-hop headers per RFC 7230 §6.1. The hop-by-hop list prevents
-  // leaking client IP (X-Forwarded-For) and prevents IP spoofing in
-  // upstream logs (Via).
-  const HOP_BY_HOP = new Set([
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailers",
-    "transfer-encoding",
-    "upgrade",
-    // Forwarding / proxying artefacts that should never reach the upstream
-    "x-forwarded-for",
-    "x-forwarded-host",
-    "x-forwarded-proto",
-    "x-forwarded-port",
-    "x-real-ip",
-    "forwarded",
-    "via",
-  ]);
-  for (const key of Object.keys(forwardHeaders)) {
-    const lowerKey = key.toLowerCase();
-    if (
-      HOP_BY_HOP.has(lowerKey) ||
-      lowerKey === "authorization" ||
-      lowerKey === "user-agent" ||
-      lowerKey === "x-goog-api-client" ||
-      lowerKey === "client-metadata"
-    ) {
-      delete forwardHeaders[key];
-    }
+
+  const retrySpec = options?.apiRetry;
+  if (retrySpec === false) {
+    return executeOnce();
   }
-  forwardHeaders["Authorization"] = `Bearer ${account.accessToken}`;
-  forwardHeaders["User-Agent"] = REQUEST_USER_AGENT;
-  forwardHeaders["X-Goog-Api-Client"] = REQUEST_GOOG_API_CLIENT;
-  forwardHeaders["Client-Metadata"] = REQUEST_CLIENT_METADATA;
-  // Claude models on Cloud Code Assist (Antigravity) require this beta header to
-  // return interleaved thinking blocks. Mirrors pi-mono's needsClaudeThinkingBetaHeader.
-  if (/^claude-/i.test(body.model)) {
-    forwardHeaders["anthropic-beta"] = "interleaved-thinking-2025-05-14";
-  }
-  delete forwardHeaders["host"];
-  delete forwardHeaders["connection"];
-  delete forwardHeaders["transfer-encoding"];
-  delete forwardHeaders["content-length"];
 
-  // Try endpoints with cascade on 401/403/404
-  for (
-    let endpointIdx = 0;
-    endpointIdx < ANTIGRAVITY_ENDPOINTS.length;
-    endpointIdx++
-  ) {
-    const endpoint = ANTIGRAVITY_ENDPOINTS[endpointIdx];
-    const url = `${endpoint}/v1internal:streamGenerateContent?alt=sse`;
-    const isProd = endpointIdx === ANTIGRAVITY_ENDPOINTS.length - 1;
+  const retryOptions =
+    typeof retrySpec === "object" && retrySpec !== null ? retrySpec : {};
+  const label = account.config.label || account.config.email;
 
-    try {
-      const controller = !isProd ? new AbortController() : undefined;
-      const timeout = controller
-        ? setTimeout(() => controller.abort(), 10_000)
-        : undefined;
-      const requestSignal =
-        controller?.signal && signal
-          ? AbortSignal.any([controller.signal, signal])
-          : signal ?? controller?.signal;
-
-      const response = await fetchWithHeadersTimeout(url, {
-        method: "POST",
-        headers: forwardHeaders,
-        body: requestBody,
-        signal: requestSignal,
-        dispatcher: getAccountProxyDispatcher(account, "google-antigravity"),
-      } as RequestInitWithDispatcher);
-      if (timeout) clearTimeout(timeout);
-
-      if (
-        (response.status === 401 ||
-          response.status === 403 ||
-          response.status === 404) &&
-        endpointIdx < ANTIGRAVITY_ENDPOINTS.length - 1
-      ) {
-        forwardLogger.log("info",
-          `Endpoint ${endpoint} returned ${response.status}, cascading...`,
+  try {
+    return await runWithAntigravityApiRetry({
+      ...retryOptions,
+      signal: retryOptions.signal ?? signal,
+      classifyError: (error) => {
+        if (error instanceof RetryableAntigravityHttpError) {
+          return {
+            retryable: true,
+            serverRetryDelayMs: error.serverRetryDelayMs,
+          };
+        }
+        return { retryable: isRetryableFetchError(error) };
+      },
+      onRetry: (info) => {
+        forwardLogger.log(
+          "warn",
+          `[${label}] Single-account Antigravity retry #${info.attempt + 1} in ${info.delayMs}ms`,
         );
-        response.text().catch(() => {});
-        continue;
-      }
-
-      return { response, endpoint };
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      if (endpointIdx < ANTIGRAVITY_ENDPOINTS.length - 1) {
-        forwardLogger.log("info",
-          `Endpoint ${endpoint} failed: ${
-            err instanceof Error ? err.message : err
-          }, cascading...`,
-        );
-        continue;
-      }
-      throw err;
+        retryOptions.onRetry?.(info);
+      },
+      fn: async () => {
+        const result = await executeOnce();
+        const status = result.response.status;
+        if (status === 408 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504) {
+          const { text: errorText, truncatedOrTimedOut } = await readBoundedErrorResponseText(
+            result.response,
+            signal,
+          );
+          if (signal?.aborted) {
+            await result.response.body?.cancel().catch(() => undefined);
+            throw signal.reason ?? new DOMException("Aborted", "AbortError");
+          }
+          if (
+            isAntigravityRetryableError({
+              status,
+              errorText,
+              headers: result.response.headers,
+            })
+          ) {
+            const serverRetryDelayMs =
+              extractRetryDelayMs(errorText, result.response.headers) ?? undefined;
+            const fallbackResponse = new Response(errorText, {
+              status: result.response.status,
+              statusText: result.response.statusText,
+              headers: result.response.headers,
+            });
+            await result.response.body?.cancel().catch(() => undefined);
+            throw new RetryableAntigravityHttpError(
+              status,
+              errorText || `HTTP ${status}`,
+              serverRetryDelayMs,
+              { response: fallbackResponse, endpoint: result.endpoint },
+            );
+          }
+          if (truncatedOrTimedOut) {
+            await result.response.body?.cancel().catch(() => undefined);
+            return {
+              endpoint: result.endpoint,
+              response: new Response(errorText, {
+                status: result.response.status,
+                statusText: result.response.statusText,
+                headers: result.response.headers,
+              }),
+            };
+          }
+        }
+        return result;
+      },
+    });
+  } catch (err) {
+    if (err instanceof RetryableAntigravityHttpError) {
+      return err.fallbackResult;
     }
+    throw err;
   }
-
-  throw new Error("All endpoints failed");
 }
 
 export function createGoogleStreamAccumulator(): SseEventAccumulator {

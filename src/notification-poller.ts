@@ -22,7 +22,15 @@ export function resolveTelemetryBase(raw: string | undefined): string {
 	try {
 		const url = new URL(candidate);
 		if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("unsupported protocol");
-		return url.origin;
+		let pathname = url.pathname.replace(/\/+$/, "");
+		if (pathname.endsWith("/v1/events")) {
+			pathname = pathname.slice(0, -"/v1/events".length);
+		} else if (pathname.endsWith("/v1/notifications")) {
+			pathname = pathname.slice(0, -"/v1/notifications".length);
+		} else if (pathname.endsWith("/events")) {
+			pathname = pathname.slice(0, -"/events".length);
+		}
+		return `${url.origin}${pathname}`;
 	} catch {
 		notifLogger.log(
 			"warn",

@@ -16,7 +16,8 @@ import {
   quotaProvider,
   rejectionLabel,
   tierLabel,
-  TIMER_LABELS,
+  timerLabel,
+  windowShortLabel,
 } from "../lib/status.js";
 import { actions } from "../state/actions.js";
 import { masker, now, overview } from "../state/store.js";
@@ -35,6 +36,7 @@ import {
   StatusPill,
 } from "../components/ui.js";
 import { accountMenuItems } from "./Accounts.js";
+import { openAddAccount } from "./shared.js";
 import { BASE, providerPath } from "../state/router.js";
 
 export function AccountDetail({ email, onClose }: { email: string; onClose: () => void }): JSX.Element {
@@ -102,6 +104,8 @@ export function AccountDetail({ email, onClose }: { email: string; onClose: () =
       </section>
 
       {account.lastError && <ErrorBlock message={account.lastError} />}
+
+      {account.authWarning && <AuthWarningBlock warning={account.authWarning} />}
 
       <ProviderProblems account={account} />
 
@@ -195,6 +199,27 @@ function TierSelect({ account }: { account: DashboardAccount }): JSX.Element {
   );
 }
 
+function AuthWarningBlock({ warning }: { warning: NonNullable<DashboardAccount["authWarning"]> }): JSX.Element {
+  return (
+    <section class="callout tone-warn" role="status">
+      <Icon name="warning" size={16} />
+      <div>
+        <strong>Re-authentication required</strong>
+        <p>{warning.message}</p>
+        <p class="callout-hint">
+          Matched rules:
+          {warning.rules.personalConsumer ? " personal consumer" : ""}
+          {warning.rules.inferenceTrafficMigration ? " · enable-inference-traffic-migration active" : ""}
+          {warning.rules.missingAicodeScope ? " · missing aicode scope" : ""}.
+        </p>
+        <Button size="sm" variant="primary" onClick={openAddAccount}>
+          Re-authenticate
+        </Button>
+      </div>
+    </section>
+  );
+}
+
 function ErrorBlock({ message }: { message: string }): JSX.Element {
   const hint = errorHint(message);
   return (
@@ -263,8 +288,30 @@ function QuotaRow({ account, quota, inactive }: { account: DashboardAccount; quo
           {quota.credits.purchasedUsd > 0 && <> · {formatUsd(quota.credits.purchasedUsd)} purchased credits</>}
         </p>
       )}
+      {quota.windows && quota.windows.length > 0 && (
+        <ul class="quota-windows">
+          {quota.windows.map((win) => {
+            const winResetAt = win.resetTime ? Date.parse(win.resetTime) : null;
+            return (
+              <li key={win.id} class="quota-window-row" title={win.description || win.label}>
+                <span class="quota-window-label">{windowShortLabel(win)}</span>
+                <Meter value={win.percentRemaining} label={`${quota.displayName} ${win.label}`} size="sm" />
+                <span class="num quota-window-pct">{win.percentRemaining}%</span>
+                <span class="quota-window-reset muted">
+                  {win.active && winResetAt && winResetAt > now.value ? (
+                    <>resets in <Countdown until={winResetAt} /></>
+                  ) : (
+                    "Idle"
+                  )}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {quota.groupDescription && <p class="cell-sub">{quota.groupDescription}</p>}
       <div class="quota-meta">
-        <span>{TIMER_LABELS[quota.timerType] ?? quota.timerType}</span>
+        <span>{timerLabel(quota.timerType)}</span>
         {quota.timerType !== "fresh" && resetAt && resetAt > now.value && (
           <span>
             resets in <Countdown until={resetAt} />

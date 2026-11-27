@@ -4,6 +4,7 @@ import type { QuotaFetchContext } from "../adapter.js";
 import { getAccountProxyDispatcher } from "../proxy-dispatcher.js";
 import { getCodexAccountId, getCodexTokenState } from "./credentials.js";
 import { CODEX_PROVIDER_ID } from "./oauth.js";
+import { formatQuotaResetRemaining } from "../credential-helpers.js";
 import { sortQuotaPools } from "../registry.js";
 
 export const CODEX_QUOTA_MODEL_KEY = "openai-codex";
@@ -262,7 +263,7 @@ function applyQuotaRows(account: AccountRuntime, snapshot: CodexQuotaSnapshot, o
   account.lastPollByProvider[CODEX_PROVIDER_ID] = codexRows
     .map((q) => {
       const remain = q.resetTime
-        ? Math.round((new Date(q.resetTime).getTime() - Date.now()) / 60000) + "m"
+        ? formatQuotaResetRemaining(q.resetTime)
         : "no_reset";
       return `[${q.modelKey}: ${q.timerType} ${q.percentRemaining}% in ${remain}]`;
     })

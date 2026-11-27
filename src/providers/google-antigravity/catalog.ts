@@ -28,10 +28,12 @@ export interface AntigravityModelSpec {
 export const ANTIGRAVITY_CONTEXT_WINDOWS: Record<string, number> = {
   // Anthropic Claude 5.5 family — 1M context window per Anthropic docs.
   "claude-opus-5-5": 1_000_000,
+  "claude-opus-5-5-max": 1_000_000,
   "claude-opus-5-5-high": 1_000_000,
   "claude-opus-5-5-medium": 1_000_000,
   "claude-opus-5-5-low": 1_000_000,
   "claude-sonnet-5-5": 1_000_000,
+  "claude-sonnet-5-5-max": 1_000_000,
   "claude-sonnet-5-5-high": 1_000_000,
   "claude-sonnet-5-5-medium": 1_000_000,
   "claude-sonnet-5-5-low": 1_000_000,
@@ -82,6 +84,9 @@ export const ANTIGRAVITY_CONTEXT_WINDOWS: Record<string, number> = {
   "gemini-3.8-flash-medium": 1_000_000,
   "gemini-3.8-flash-low": 1_000_000,
   "gemini-3.7-flash": 1_000_000,
+  "gemini-3.7-flash-high": 1_000_000,
+  "gemini-3.7-flash-medium": 1_000_000,
+  "gemini-3.7-flash-low": 1_000_000,
   "gemini-3.7-flash-tiered": 1_000_000,
   "gemini-3.6-flash": 1_000_000,
   "gemini-3.6-flash-high": 1_000_000,
@@ -97,6 +102,7 @@ export const ANTIGRAVITY_CONTEXT_WINDOWS: Record<string, number> = {
   "gemini-3.1-pro-high": 1_000_000,
   "gemini-3.1-pro-low": 1_000_000,
   "gemini-3.1-pro-preview": 1_000_000,
+  "gemini-3.1-pro-preview-customtools": 1_000_000,
   // Google Gemini 2.5 — 1M context window per Google docs.
   "gemini-2.5-pro": 1_000_000,
   "gemini-2.5-flash": 1_000_000,

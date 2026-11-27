@@ -1,5 +1,6 @@
 import { rotatorEnv } from "./env.js";
 import { normalizeAccountConfig } from "./config-normalize.js";
+import { DEFAULT_SSE_KEEPALIVE_INTERVAL_MS } from "./stream-guards.js";
 import {
 	DEFAULT_QUOTA_POLL_INTERVAL_MS,
 	MAX_QUOTA_POLL_INTERVAL_MS,
@@ -16,6 +17,11 @@ function safeQuotaPollIntervalMs(value: number | undefined): number {
 	) {
 		return DEFAULT_QUOTA_POLL_INTERVAL_MS;
 	}
+	return Math.floor(value);
+}
+
+function safeSseKeepaliveIntervalMs(value: number | undefined): number {
+	if (value === undefined || !Number.isFinite(value) || value < 0) return DEFAULT_SSE_KEEPALIVE_INTERVAL_MS;
 	return Math.floor(value);
 }
 
@@ -55,6 +61,7 @@ export function applyConfigDefaults(config: Config): Config {
 		idempotencyEnabled: config.idempotencyEnabled ?? true,
 		idempotencyWindowMs: config.idempotencyWindowMs ?? 2000,
 		streamRecoveryMaxRetries: safeStreamRecoveryMaxRetries(config.streamRecoveryMaxRetries),
+		sseKeepaliveIntervalMs: safeSseKeepaliveIntervalMs(config.sseKeepaliveIntervalMs),
 		compressionMode: config.compressionMode ?? "off",
 		modelSpecs: config.modelSpecs,
 		modelAliases: config.modelAliases,

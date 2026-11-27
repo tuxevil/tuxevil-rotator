@@ -80,7 +80,7 @@ it("applies the dated Antigravity Free legacy-model window", () => {
 
 it("applies the documented Gemini 4 plan distinctions", () => {
   const store = new AccessEvidenceStore();
-  for (const [plan, expected] of [["free", [false, false, false]], ["pro-paid", [true, false, true]], ["ultra", [true, true, true]]] as const) {
+  for (const [plan, expected] of [["free", [false, false, false]], ["pro-paid", [true, true, true]], ["ultra", [true, true, true]]] as const) {
     const account = { email: `${plan}@test`, credentials: [{ provider: "google-antigravity", refreshToken: plan }] };
     store.declarePlan(account, "google-antigravity", plan, now);
     for (const [i, model] of ["gemini-4-argon-high", "gemini-4-carbon-high", "gemini-4-hydrogen-high"].entries()) {

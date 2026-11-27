@@ -8,6 +8,7 @@ import {
 } from "../src/compat.js";
 import { cacheThoughtSignature, thoughtSignatureCache } from "../src/compat/cache.js";
 import { validateMessages } from "../src/providers/google-antigravity/translators.js";
+import { ANTIGRAVITY_IDENTITY_PROMPT } from "../src/types.js";
 
 describe("OpenAI Compat Tool Calling", () => {
 	it("converts basic messages without tools to multi-turn format", () => {
@@ -24,10 +25,13 @@ describe("OpenAI Compat Tool Calling", () => {
 		assert.strictEqual(result.model, "claude-sonnet-4-6");
 		
 		const request = result.request as any;
-		assert.strictEqual(request.systemInstruction.role, "system");
-		assert.strictEqual(request.systemInstruction.parts[0].text, "You are a helpful assistant");
+		assert.strictEqual(request.systemInstruction.role, undefined);
+		assert.strictEqual(
+			request.systemInstruction.parts[0].text,
+			`${ANTIGRAVITY_IDENTITY_PROMPT}\n\nYou are a helpful assistant`,
+		);
 		assert.deepStrictEqual(request.contents, [
-			{ role: "user", parts: [{ text: "Hello" }] }
+			{ role: "user", parts: [{ text: "<USER_REQUEST>\nHello\n</USER_REQUEST>" }] }
 		]);
 		assert.strictEqual(request.tools, undefined);
 	});
@@ -361,7 +365,7 @@ describe("OpenAI Compat Tool Calling", () => {
 		const request = result.request as any;
 
 		assert.deepStrictEqual(request.contents, [
-			{ role: "user", parts: [{ text: "What is the weather in NYC?" }] },
+			{ role: "user", parts: [{ text: "<USER_REQUEST>\nWhat is the weather in NYC?\n</USER_REQUEST>" }] },
 			{ role: "model", parts: [{ functionCall: { id: "call_123", name: "get_weather", args: { location: "NYC" } } }] },
 			{ role: "user", parts: [{ functionResponse: { id: "call_123", name: "get_weather", response: { temp: 72 } } }] }
 		]);
@@ -534,7 +538,7 @@ data: [DONE]
 			const contents = (result.request as { contents: Array<{ role: string; parts: unknown[] }> }).contents;
 			assert.equal(contents.at(-1)?.role, "user");
 			assert.match(JSON.stringify(contents), /Context: The assistant used tools/);
-			assert.match(JSON.stringify(contents.at(-1)?.parts), /Continue from the previous assistant message/);
+			assert.match(JSON.stringify(contents.at(-1)?.parts), /"text":"Continue"/);
 		} finally {
 			thoughtSignatureCache.delete(callId);
 		}

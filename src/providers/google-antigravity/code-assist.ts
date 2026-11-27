@@ -1,14 +1,13 @@
 import {
+	ANTIGRAVITY_CLIENT_METADATA,
 	ANTIGRAVITY_ENDPOINTS,
-	REQUEST_CLIENT_METADATA,
-	REQUEST_GOOG_API_CLIENT,
-	REQUEST_USER_AGENT,
 } from "../../types.js";
 import type { AccountRuntime } from "../../types.js";
 import type { ForwardedResponse } from "../../proxy.js";
 import { fetchWithRetry } from "../../fetch-with-retry.js";
 import { DEFAULT_PROVIDER, getProviderProjectId } from "../credential-helpers.js";
 import { getAccountProxyDispatcher } from "../proxy-dispatcher.js";
+import { buildAntigravityWireHeaders } from "./forward.js";
 
 export const CODE_ASSIST_ACTIONS = [
 	"loadCodeAssist",
@@ -43,8 +42,14 @@ export function validateCodeAssistPayload(
 ): void {
 	const object = requireObjectBody(action, body);
 	if (action === "onboardUser") {
-		if (typeof object.tier_id !== "string" || object.tier_id.trim() === "") {
-			throw new Error("Code Assist onboardUser requires tier_id");
+		const tierId =
+			typeof object.tierId === "string" && object.tierId.trim()
+				? object.tierId.trim()
+				: typeof object.tier_id === "string" && object.tier_id.trim()
+					? object.tier_id.trim()
+					: "";
+		if (!tierId) {
+			throw new Error("Code Assist onboardUser requires tierId");
 		}
 	}
 	if (action === "countTokens") {
@@ -57,37 +62,28 @@ export function validateCodeAssistPayload(
 	}
 }
 
-function buildHeaders(
-	account: AccountRuntime,
-	originalHeaders: Record<string, string>,
-): Record<string, string> {
-	const headers: Record<string, string> = { ...originalHeaders };
-	const hopByHop = new Set([
-		"authorization",
-		"connection",
-		"content-length",
-		"host",
-		"keep-alive",
-		"proxy-authenticate",
-		"proxy-authorization",
-		"te",
-		"trailers",
-		"transfer-encoding",
-		"upgrade",
-		"user-agent",
-		"x-goog-api-client",
-		"client-metadata",
-	]);
-	for (const key of Object.keys(headers)) {
-		if (hopByHop.has(key.toLowerCase())) delete headers[key];
+function normalizeClientMetadata(raw: unknown): Record<string, unknown> {
+	if (!isRecord(raw)) return { ...ANTIGRAVITY_CLIENT_METADATA };
+	const normalized: Record<string, unknown> = { ...raw };
+	const renamePairs: Array<[string, string]> = [
+		["ide_type", "ideType"],
+		["ide_version", "ideVersion"],
+		["plugin_version", "pluginVersion"],
+		["update_channel", "updateChannel"],
+		["duet_project", "duetProject"],
+		["plugin_type", "pluginType"],
+		["ide_name", "ideName"],
+	];
+	for (const [snake, camel] of renamePairs) {
+		if (snake in normalized) {
+			if (!(camel in normalized)) normalized[camel] = normalized[snake];
+			delete normalized[snake];
+		}
 	}
-	headers.Authorization = `Bearer ${account.accessToken ?? ""}`;
-	headers["Content-Type"] = "application/json";
-	headers.Accept = "application/json";
-	headers["User-Agent"] = REQUEST_USER_AGENT;
-	headers["X-Goog-Api-Client"] = REQUEST_GOOG_API_CLIENT;
-	headers["Client-Metadata"] = REQUEST_CLIENT_METADATA;
-	return headers;
+	return {
+		...ANTIGRAVITY_CLIENT_METADATA,
+		...normalized,
+	};
 }
 
 function buildUpstreamBody(
@@ -95,18 +91,36 @@ function buildUpstreamBody(
 	action: CodeAssistAction,
 	body: Record<string, unknown>,
 ): Record<string, unknown> {
+	const normalizedBody: Record<string, unknown> = { ...body };
+	if (action === "onboardUser") {
+		if (!("tierId" in normalizedBody) && typeof normalizedBody.tier_id === "string") {
+			normalizedBody.tierId = normalizedBody.tier_id;
+		}
+		delete normalizedBody.tier_id;
+		if (
+			!("cloudaicompanionProject" in normalizedBody) &&
+			typeof normalizedBody.cloudaicompanion_project === "string"
+		) {
+			normalizedBody.cloudaicompanionProject =
+				normalizedBody.cloudaicompanion_project;
+		}
+		delete normalizedBody.cloudaicompanion_project;
+		normalizedBody.metadata = normalizeClientMetadata(normalizedBody.metadata);
+	} else if (action === "loadCodeAssist") {
+		normalizedBody.metadata = normalizeClientMetadata(normalizedBody.metadata);
+	}
 	const projectScoped = new Set([
 		"fetchAvailableModels",
 		"countTokens",
 		"retrieveUserQuota",
 		"retrieveUserQuotaSummary",
 	]);
-	if (!projectScoped.has(action)) return { ...body };
+	if (!projectScoped.has(action)) return normalizedBody;
 	const projectId = getProviderProjectId(account.config, DEFAULT_PROVIDER);
 	if (!projectId) {
 		throw new Error(`Code Assist ${action} requires the active account projectId`);
 	}
-	return { ...body, project: projectId };
+	return { ...normalizedBody, project: projectId };
 }
 
 export async function forwardCodeAssistRequest(
@@ -122,7 +136,7 @@ export async function forwardCodeAssistRequest(
 		action,
 		body as Record<string, unknown>,
 	);
-	const headers = buildHeaders(account, originalHeaders);
+	const headers = buildAntigravityWireHeaders(account, originalHeaders);
 	let lastError: unknown;
 
 	for (let index = 0; index < ANTIGRAVITY_ENDPOINTS.length; index++) {
@@ -141,9 +155,7 @@ export async function forwardCodeAssistRequest(
 				},
 			);
 			if (
-				(response.status === 401 ||
-					response.status === 403 ||
-					response.status === 404) &&
+				response.status === 404 &&
 				index < ANTIGRAVITY_ENDPOINTS.length - 1
 			) {
 				await response.body?.cancel().catch(() => undefined);

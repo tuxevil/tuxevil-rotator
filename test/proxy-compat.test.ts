@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { openAIToAntigravityBody, resetResponsesStoreForTests } from "../src/compat.js";
 import {
+	attachClientAbortController,
 	classifyUpstreamResponse,
 	forwardRequest,
 	providerAdapterForModel,
@@ -14,6 +15,7 @@ import {
 } from "../src/proxy.js";
 import {
 	ANTIGRAVITY_ENDPOINTS,
+	ANTIGRAVITY_BUILD_CL,
 	ANTIGRAVITY_VERSION,
 	DEFAULT_ANTIGRAVITY_USER_AGENT,
 	setEffortRoutingOverride,
@@ -55,9 +57,11 @@ afterEach(() => {
 });
 
 it("builds the modern quota User-Agent from the configured Antigravity version", () => {
+	const expectedOsType = process.platform === "win32" ? "windows" : process.platform;
+	const expectedArch = process.arch === "x64" ? "amd64" : process.arch;
 	assert.equal(
 		DEFAULT_ANTIGRAVITY_USER_AGENT,
-		`antigravity/hub/${ANTIGRAVITY_VERSION} (aidev_client; os_type=darwin; arch=arm64)`,
+		`antigravity/hub/${ANTIGRAVITY_VERSION} (os_type=${expectedOsType}; arch=${expectedArch}; aidev_client; cl=${ANTIGRAVITY_BUILD_CL})`,
 	);
 });
 
@@ -233,14 +237,15 @@ describe("proxy compat integration", () => {
 			assert.equal(capturesProd.length, 1);
 			assert.match(capturesDaily[0].url, /v1internal:streamGenerateContent\?alt=sse/);
 			assert.match(capturesDaily[0].body, /"systemInstruction"/);
-			assert.match(capturesDaily[0].body, /"contents":\[\{"role":"user","parts":\[\{"text":"ping"\}\]\}\]/);
+			assert.match(capturesDaily[0].body, /<USER_REQUEST>\\nping\\n<\/USER_REQUEST>/);
 			assert.match(capturesDaily[0].body, /"userAgent":"antigravity"/);
 			assert.equal(JSON.parse(capturesDaily[0].body).requestedModel, undefined);
 			assert.equal(JSON.parse(capturesDaily[0].body).catalogModel, undefined);
 			assert.equal(capturesDaily[0].headers.authorization, "Bearer access-token");
 			assert.equal(capturesDaily[0].headers["user-agent"], DEFAULT_ANTIGRAVITY_USER_AGENT);
-			assert.equal(capturesDaily[0].headers["x-goog-api-client"], "google-cloud-sdk vscode_cloudshelleditor/0.1");
-			assert.equal(capturesDaily[0].headers["client-metadata"], "{\"ideType\":\"ANTIGRAVITY\",\"platform\":\"MACOS\",\"pluginType\":\"GEMINI\"}");
+			assert.equal(capturesDaily[0].headers["x-goog-api-client"], undefined);
+			assert.equal(capturesDaily[0].headers["client-metadata"], undefined);
+			assert.equal(capturesDaily[0].headers["anthropic-beta"], undefined);
 		} finally {
 			await closeServer(daily.server);
 			await closeServer(prod.server);
@@ -285,9 +290,18 @@ describe("proxy compat integration", () => {
 				selectionMode: "typesafe",
 				selectionConfidence: 0.9,
 				selectionReason: "typesafe-selected",
-			}, { "user-agent": "OpenAI/1.0.0" });
+			}, {
+				"user-agent": "OpenAI/1.0.0",
+				"content-type": "application/json",
+				accept: "application/json",
+				expect: "100-continue",
+			});
 			assert.equal(forwarded.endpoint, daily.url);
 			assert.doesNotMatch(capturesDaily[0].body, /selectionReason/);
+			assert.equal(capturesDaily[0].headers["content-type"], "application/json");
+			assert.notEqual(capturesDaily[0].headers["accept"], "text/event-stream");
+			assert.notEqual(capturesDaily[0].headers["accept"], "application/json");
+			assert.equal(capturesDaily[0].headers["expect"], undefined);
 
 			const outcome = await withRotation(
 				createRotatorStub(account),
@@ -363,7 +377,7 @@ describe("classifyUpstreamResponse", () => {
 		assert.equal(action.kind, "rate-limited");
 		if (action.kind === "rate-limited") {
 			assert.equal(action.providerResourceExhausted, true);
-			assert.equal(action.cooldownMs, 4_815_000);
+			assert.equal(action.cooldownMs, 4_814_000);
 			assert.match(action.errorText, /quota exceeded/);
 		}
 	});
@@ -396,7 +410,7 @@ describe("classifyUpstreamResponse", () => {
 		assert.equal(action.kind, "rate-limited");
 		if (action.kind === "rate-limited") {
 			assert.equal(action.providerResourceExhausted, true);
-			assert.equal(action.cooldownMs, 2_447_512_000);
+			assert.equal(action.cooldownMs, 2_447_511_000);
 		}
 	});
 
@@ -518,6 +532,21 @@ describe("classifyUpstreamResponse", () => {
 			fakeModelKey,
 		);
 		assert.equal(action.kind, "success");
+	});
+
+	it("classifies upstream 499 as non-retryable HTTP_499 without rewriting to 400", async () => {
+		const action = await classifyUpstreamResponse(
+			response(499, JSON.stringify({ error: { message: "client cancelled" } })),
+			"https://api.example.com",
+			fakeAccount,
+			"gemini",
+			fakeModelKey,
+		);
+		assert.equal(action.kind, "non-retryable-error");
+		if (action.kind === "non-retryable-error") {
+			assert.equal(action.httpStatus, 499);
+			assert.equal(action.reason, "HTTP_499");
+		}
 	});
 });
 
@@ -845,6 +874,13 @@ describe("effort-based routing endpoint e2e", () => {
 			assert.equal(upstreamCaptures.length, 1);
 			const upstreamBody = JSON.parse(upstreamCaptures[0].body);
 			assert.equal(upstreamBody.model, "gemini-3.8-flash-medium");
+			assert.match(String(upstreamBody.requestId), /^agent\/[0-9a-f-]{36}$/);
+			assert.match(String(upstreamBody.userPromptId), /^[0-9a-f-]{36}$/);
+			assert.equal(upstreamBody.userAgent, "antigravity");
+			assert.equal(upstreamBody.requestType, "agent");
+			assert.match(String(upstreamBody.request?.sessionId), /^-?\d+$/);
+			assert.equal("role" in (upstreamBody.request?.systemInstruction ?? {}), false);
+			assert.equal(upstreamBody.request?.contents?.[0]?.parts?.[0]?.text, "<USER_REQUEST>\nping\n</USER_REQUEST>");
 		} finally {
 			proxy.closeAllConnections?.();
 			await closeServer(proxy);
@@ -1289,6 +1325,13 @@ describe("effort-based routing endpoint e2e", () => {
 			assert.equal(upstreamCaptures.length, 1);
 			const upstreamBody = JSON.parse(upstreamCaptures[0].body);
 			assert.equal(upstreamBody.model, "gemini-3.8-flash-medium");
+			assert.match(String(upstreamBody.requestId), /^agent\/[0-9a-f-]{36}$/);
+			assert.match(String(upstreamBody.userPromptId), /^[0-9a-f-]{36}$/);
+			assert.equal(upstreamBody.userAgent, "antigravity");
+			assert.equal(upstreamBody.requestType, "agent");
+			assert.match(String(upstreamBody.request?.sessionId), /^-?\d+$/);
+			assert.equal("role" in (upstreamBody.request?.systemInstruction ?? {}), false);
+			assert.equal(upstreamBody.request?.contents?.[0]?.parts?.[0]?.text, "<USER_REQUEST>\nping\n</USER_REQUEST>");
 		} finally {
 			proxy.closeAllConnections?.();
 			await closeServer(proxy);
@@ -1352,5 +1395,142 @@ describe("effort-based routing endpoint e2e", () => {
 			await closeServer(proxy);
 			await closeServer(upstream.server);
 		}
+	});
+
+	it("disables Node requestTimeout on startProxy and preserves upstream 499 without marking account error", async () => {
+		const upstream = await listenServer((req, res) => {
+			req.resume();
+			req.on("end", () => {
+				res.writeHead(499, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ error: { message: "Client closed request upstream" } }));
+			});
+		});
+		endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
+
+		const tracking: Tracking = { requestLogs: [], latencies: [], tokenUsage: [] };
+		const markErrors: string[] = [];
+		const baseRotator = createE2eRotator(createAccount(), tracking);
+		const rotator = Object.assign(baseRotator, {
+			markError: (_account: AccountRuntime, message: string) => {
+				markErrors.push(message);
+			},
+		}) as unknown as AccountRotator;
+
+		const proxy = startProxy(rotator, 0, "127.0.0.1");
+		await once(proxy, "listening");
+		const port = (proxy.address() as AddressInfo).port;
+
+		try {
+			assert.equal(proxy.requestTimeout, 0);
+
+			const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					model: "gemini-3-flash",
+					messages: [{ role: "user", content: "ping" }],
+				}),
+			});
+			assert.equal(res.status, 499);
+			assert.equal(markErrors.length, 0);
+		} finally {
+			proxy.closeAllConnections?.();
+			await closeServer(proxy);
+			await closeServer(upstream.server);
+		}
+	});
+
+	it("attachClientAbortController ignores close after writableEnded and cleans up listeners", () => {
+		const req = Object.assign(new EventEmitter(), { aborted: false }) as unknown as IncomingMessage;
+		const res = Object.assign(new EventEmitter(), {
+			writableEnded: false,
+			destroyed: false,
+		}) as unknown as ServerResponse;
+
+		const { signal, cleanup } = attachClientAbortController(req, res);
+		assert.equal(signal.aborted, false);
+		assert.equal(req.listenerCount("aborted"), 1);
+		assert.equal(res.listenerCount("close"), 1);
+		assert.equal(res.listenerCount("finish"), 1);
+
+		(res as unknown as { writableEnded: boolean }).writableEnded = true;
+		res.emit("close");
+		assert.equal(signal.aborted, false);
+		assert.equal(req.listenerCount("aborted"), 0);
+		assert.equal(res.listenerCount("close"), 0);
+		assert.equal(res.listenerCount("finish"), 0);
+		cleanup();
+
+		const req2 = Object.assign(new EventEmitter(), { aborted: false }) as unknown as IncomingMessage;
+		const res2 = Object.assign(new EventEmitter(), {
+			writableEnded: false,
+			destroyed: false,
+		}) as unknown as ServerResponse;
+		const second = attachClientAbortController(req2, res2);
+		res2.emit("close");
+		assert.equal(second.signal.aborted, true);
+		assert.equal(req2.listenerCount("aborted"), 0);
+		assert.equal(res2.listenerCount("close"), 0);
+		assert.equal(res2.listenerCount("finish"), 0);
+	});
+
+	it("aborts in-flight /v1/responses streaming upstream cleanly when client disconnects prematurely", async () => {
+		let upstreamSawAbort = false;
+		let upstreamStarted!: () => void;
+		const startedPromise = new Promise<void>((resolve) => {
+			upstreamStarted = resolve;
+		});
+		const upstream = await listenServer((req, res) => {
+			req.resume();
+			req.on("close", () => {
+				if (!res.writableEnded) upstreamSawAbort = true;
+			});
+			res.writeHead(200, { "Content-Type": "text/event-stream" });
+			res.write('data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"partial"}]}}]}}\n\n');
+			upstreamStarted();
+		});
+		endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
+
+		const tracking: Tracking = { requestLogs: [], latencies: [], tokenUsage: [] };
+		const rotator = createE2eRotator(createAccount(), tracking);
+		const proxy = startProxy(rotator, 0, "127.0.0.1");
+		await once(proxy, "listening");
+		const port = (proxy.address() as AddressInfo).port;
+
+		try {
+			const ac = new AbortController();
+			const fetchPromise = fetch(`http://127.0.0.1:${port}/v1/responses`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					model: "gemini-3-flash",
+					stream: true,
+					input: "ping",
+				}),
+				signal: ac.signal,
+			}).catch((err: unknown) => err);
+
+			await startedPromise;
+			ac.abort();
+			const err = await fetchPromise;
+			assert.ok(err instanceof Error);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			assert.equal(upstreamSawAbort, true);
+		} finally {
+			proxy.closeAllConnections?.();
+			await closeServer(proxy);
+			await closeServer(upstream.server);
+		}
+	});
+});
+
+describe("isAntigravityAccountSanction", () => {
+	it("matches only the Google Antigravity Terms of Service sanction", async () => {
+		const { isAntigravityAccountSanction } = await import("../src/proxy.js");
+		const tos = "This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product.";
+		assert.equal(isAntigravityAccountSanction("google-antigravity", tos), true);
+		assert.equal(isAntigravityAccountSanction("ollama", tos), false);
+		assert.equal(isAntigravityAccountSanction("google-antigravity", "Resource not accessible by integration"), false);
+		assert.equal(isAntigravityAccountSanction("google-antigravity", "Account suspended for policy infringement"), false);
 	});
 });

@@ -1,5 +1,17 @@
 import { logger, redactSensitive } from "../../logger.js";
-import { applyModelAlias, getEffortRoutingRule } from "../../types.js";
+import {
+  applyModelAlias,
+  getEffortRoutingRule,
+} from "../../types.js";
+import {
+  applyAntigravityTwinPayload,
+  composeAntigravitySystemInstruction,
+  computeAntigravityRequestId,
+  computeAntigravitySessionId,
+  getAntigravitySystemPromptMode,
+  wrapAntigravityUserRequest,
+  type AntigravitySystemPromptMode,
+} from "./twin-payload.js";
 import {
   CLAUDE_THINKING_BUDGET_EFFORTS,
   CLAUDE_THINKING_DISABLED_EFFORT,
@@ -1334,7 +1346,9 @@ export function openAIToAntigravityBody(
 
   // Google rejects compatibility requests whose final contents turn is a
   // model turn. Claude additionally needs dangling tool-call turns removed;
-  // other models keep the call history but still need a user turn to resume.
+  // other models keep the call history and append Antigravity's "Continue"
+  // user turn (matching core.ensureRequestEndsWithUserTurn).
+  let appendedContinueTurn = false;
   while (contents.at(-1)?.role === "model") {
     const lastContent = contents.at(-1);
     const hasFunctionCall =
@@ -1346,12 +1360,9 @@ export function openAIToAntigravityBody(
     }
     contents.push({
       role: "user",
-      parts: [
-        {
-          text: "Continue from the previous assistant message. Do not repeat completed tool calls unless new user input asks for them.",
-        },
-      ],
+      parts: [{ text: "Continue" }],
     });
+    appendedContinueTurn = true;
     break;
   }
 
@@ -1381,13 +1392,13 @@ export function openAIToAntigravityBody(
   let thinkingConfigObj: Record<string, unknown> | undefined;
   if (modelFamily === "claude" && isThinking && !forcesToolUse(input.tool_choice)) {
     if (modelSpec.thinkingBudget === -1) {
-      thinkingConfigObj = { include_thoughts: true };
+      thinkingConfigObj = { includeThoughts: true };
     } else {
       const normalized = normalizeFixedThinking(modelSpec, maxOutputTokens);
       if (normalized.budget !== undefined) {
         thinkingConfigObj = {
-          include_thoughts: true,
-          thinking_budget: normalized.budget,
+          includeThoughts: true,
+          thinkingBudget: normalized.budget,
         };
       }
       if (maxOutputTokens !== normalized.maxOutputTokens) {
@@ -1451,35 +1462,22 @@ export function openAIToAntigravityBody(
     ...(thinkingConfigObj ? { thinkingConfig: thinkingConfigObj } : {}),
   };
 
+  const sessionSeed =
+    (typeof input.user === "string" && input.user.trim()) ||
+    JSON.stringify(contents[0]?.parts ?? "antigravity");
   const request: Record<string, unknown> = {
     contents,
     generationConfig,
+    sessionId: computeAntigravitySessionId(sessionSeed),
   };
 
-  if (systemParts.length > 0) {
-    if (!isClaude && isThinking) {
-      const firstTurn = contents[0];
-      if (
-        firstTurn &&
-        firstTurn.role === "user" &&
-        (firstTurn.parts[0] as any)?.text !== undefined
-      ) {
-        (firstTurn.parts[0] as any).text =
-          systemParts.join("\n\n") + "\n\n" + (firstTurn.parts[0] as any).text;
-      } else if (firstTurn && firstTurn.role === "user") {
-        firstTurn.parts.unshift({ text: systemParts.join("\n\n") + "\n\n" });
-      } else {
-        contents.unshift({
-          role: "user",
-          parts: [{ text: systemParts.join("\n\n") }],
-        });
-      }
-    } else {
-      request.systemInstruction = {
-        role: "system",
-        parts: [{ text: systemParts.join("\n\n") }],
-      };
-    }
+  // Antigravity ALWAYS carries system instructions in request.systemInstruction
+  // (never rewritten into fake user/model turns in contents).
+  const rawSystemText = systemParts.join("\n\n").trim();
+  if (rawSystemText) {
+    request.systemInstruction = {
+      parts: [{ text: rawSystemText }],
+    };
   }
 
   if (geminiTools.length > 0) request.tools = geminiTools;
@@ -1487,19 +1485,30 @@ export function openAIToAntigravityBody(
 
   const mappedModel = applyModelAlias(effortTarget);
 
-  return {
-    project: "compat-placeholder",
-    model: mappedModel,
-    displayModel: requestedModel,
-    requestedModel,
-    // The catalog id after effort routing, before upstream aliasing, so the
-    // Models page switches can be checked against it.
-    catalogModel: effortTarget,
-    userAgent: "antigravity",
-    requestType: "agent",
-    request,
-  };
+  return applyAntigravityTwinPayload(
+    {
+      project: "compat-placeholder",
+      model: mappedModel,
+      displayModel: requestedModel,
+      requestedModel,
+      // The catalog id after effort routing, before upstream aliasing, so the
+      // Models page switches can be checked against it.
+      catalogModel: effortTarget,
+      request,
+    },
+    { skipTrailingContinueWrap: appendedContinueTurn },
+  );
 }
+
+export {
+  applyAntigravityTwinPayload,
+  composeAntigravitySystemInstruction,
+  computeAntigravityRequestId,
+  computeAntigravitySessionId,
+  getAntigravitySystemPromptMode,
+  wrapAntigravityUserRequest,
+  type AntigravitySystemPromptMode,
+};
 
 export function convertAnthropicToolsToOpenAI(
   tools: unknown,

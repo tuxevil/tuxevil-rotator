@@ -181,6 +181,9 @@ export function ModelAccessPanel(): JSX.Element {
   const meta = result?.decision
     ? [PLAN_SOURCE[result.planSource ?? "unknown"], catalogText, clientMatters ? "Client declared, not verified" : null, "Does not grant access"].filter(Boolean).join(" · ")
     : null;
+  const routingText = result?.routing
+    ? `Routing: ${result.routing.eligible ? "eligible" : "excluded"} (${result.routing.reason})`
+    : null;
 
   return (
     <Panel
@@ -272,6 +275,7 @@ export function ModelAccessPanel(): JSX.Element {
             <>
               <p class="access-reason">{result.decision.reason}</p>
               <p class="access-meta">{meta}</p>
+              {routingText && <p class="access-meta">{routingText}</p>}
             </>
           ) : null}
           {accountId && plan && (

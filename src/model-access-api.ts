@@ -6,9 +6,10 @@ import type { ServerResponse, IncomingMessage } from "node:http";
 import type { Config } from "./types.js";
 import { getAccountIdentity } from "./account-identity.js";
 import { MODEL_ACCESS_RULES, evaluateModelAccess, type AccessDecision } from "./model-access.js";
+import { evaluateAutoModelAccess, type AutoModelAccessDecision } from "./auto-model-access.js";
 
 export interface AccessAccount { id: string; label: string; providers: string[]; inferredPlan: string; providerPlans: Omit<ProviderPlanEvidence, "credential">[]; observations: Omit<AccessObservation, "credential">[]; providerCatalogs: ProviderCatalogEvidence[] }
-export interface AccessReport { informational: true; rules: typeof MODEL_ACCESS_RULES; accounts: AccessAccount[]; decision?: AccessDecision; accountId?: string; catalogAvailability?: { state: "advertised" | "not-advertised" | "unknown"; source: string | null; observedAt: number | null; expiresAt: number | null }; planSource?: "query-assumption" | "single-provider-account" | "provider-declaration" | "unknown" }
+export interface AccessReport { informational: true; rules: typeof MODEL_ACCESS_RULES; accounts: AccessAccount[]; decision?: AccessDecision; accountId?: string; catalogAvailability?: { state: "advertised" | "not-advertised" | "unknown"; source: string | null; observedAt: number | null; expiresAt: number | null }; planSource?: "query-assumption" | "single-provider-account" | "provider-declaration" | "unknown"; routing?: Pick<AutoModelAccessDecision, "eligible" | "reason" | "catalog"> }
 export function buildModelAccessReport(config: Config, params: URLSearchParams): AccessReport {
   const accounts = config.accounts.map(account => {
     const providers = [...new Set(account.credentials?.map(c => c.provider) ?? [account.provider ?? "google-antigravity"])];
@@ -36,6 +37,13 @@ export function buildModelAccessReport(config: Config, params: URLSearchParams):
   const catalog = account?.providerCatalogs.find(c => c.provider === provider);
   report.catalogAvailability = { state: catalog ? advertisedModelState(catalog, model) : "unknown", source: catalog?.source ?? null, observedAt: catalog?.observedAt ?? null, expiresAt: catalog?.expiresAt ?? null };
   report.decision = evaluateModelAccess({ provider, model, plan, client: params.get("client") ?? undefined, at: params.get("at") ?? undefined });
+  // Routing decides from the account's live catalog first; report that verdict
+  // so the plan-table explanation cannot be mistaken for the routing outcome.
+  const accountConfig = accountId ? config.accounts.find(a => getAccountIdentity(a) === accountId) : undefined;
+  if (accountConfig && !params.get("plan") && !params.get("at")) {
+    const { eligible, reason, catalog: source } = evaluateAutoModelAccess(accountConfig, provider, model, undefined, undefined, config.quotaPollIntervalMs);
+    report.routing = { eligible, reason, ...(source ? { catalog: source } : {}) };
+  }
   return report;
 }
 export function serveModelAccessApi(res: ServerResponse, config: Config, params: URLSearchParams): void {

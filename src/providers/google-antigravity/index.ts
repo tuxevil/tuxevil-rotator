@@ -36,6 +36,7 @@ import {
   KICKSTART_MODEL_FOR_QUOTA_POOL,
   KICKSTART_FALLBACK_MODELS_FOR_QUOTA_POOL,
   KICKSTART_PRO_MODELS_FOR_QUOTA_POOL,
+  REQUEST_USER_AGENT,
   applyModelAlias,
   resolveQuotaModelKey,
 } from "../../types.js";
@@ -46,6 +47,7 @@ import {
 } from "../../account-identity.js";
 import { fetchWithRetry } from "../../fetch-with-retry.js";
 import { logger } from "../../logger.js";
+import { DEFAULT_PROVIDER, getProviderProjectId } from "../credential-helpers.js";
 import { getAccountProxyDispatcher } from "../proxy-dispatcher.js";
 
 const providerLog = logger.child("provider/google");
@@ -72,7 +74,10 @@ async function ensureGoogleToken(account: AccountRuntime): Promise<void> {
   const oauth = getOAuthClientConfig();
   const response = await fetchWithRetry(TOKEN_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": REQUEST_USER_AGENT,
+    },
       body: new URLSearchParams({
       client_id: oauth.clientId,
       client_secret: oauth.clientSecret,
@@ -88,9 +93,13 @@ async function ensureGoogleToken(account: AccountRuntime): Promise<void> {
   const data = (await response.json()) as {
     access_token: string;
     expires_in: number;
+    scope?: string;
   };
   account.accessToken = data.access_token;
   account.tokenExpires = now + data.expires_in * 1000 - 5 * 60 * 1000;
+  if (typeof data.scope === "string" && data.scope.trim()) {
+    account.tokenScopes = data.scope.trim().split(/\s+/).filter(Boolean);
+  }
   account.consecutiveErrors = 0;
 }
 
@@ -174,18 +183,70 @@ export const googleAntigravityAdapter: ProviderAdapter = {
   },
   createStreamAccumulator: createGoogleStreamAccumulator,
 
-  getKickstartModelForPool(quotaModelKey: string): string | undefined {
-    return (
-      KICKSTART_MODEL_FOR_QUOTA_POOL[quotaModelKey] ??
-      KICKSTART_MODEL_FOR_QUOTA_POOL[resolveQuotaModelKey(quotaModelKey) ?? ""]
+  async forwardKickstartRequest(
+    account: AccountRuntime,
+    model: string,
+    signal?: AbortSignal,
+  ) {
+    return forwardRequest(
+      account,
+      {
+        project: getProviderProjectId(account.config, DEFAULT_PROVIDER),
+        model,
+        request: {
+          contents: [{ role: "user", parts: [{ text: "." }] }],
+          generationConfig: { maxOutputTokens: 1 },
+        },
+      },
+      {},
+      signal,
+      { apiRetry: false },
     );
+  },
+
+  getKickstartModelForPool(quotaModelKey: string): string | undefined {
+    const known = KICKSTART_MODEL_FOR_QUOTA_POOL[quotaModelKey];
+    if (known) return known;
+    const dynamicCandidates = dynamicCatalog
+      .getModelsForQuotaPool(quotaModelKey)
+      .filter((entry) => !entry.id.toLowerCase().endsWith("-disabled"));
+    if (dynamicCandidates.length > 0) {
+      const preferred = dynamicCandidates.find((entry) =>
+        /(?:^|-)(?:low|lite|flash|medium)$/i.test(entry.id),
+      );
+      return (preferred ?? dynamicCandidates[0]).id;
+    }
+    if (dynamicCatalog.hasQuotaPool(quotaModelKey)) return undefined;
+    return KICKSTART_MODEL_FOR_QUOTA_POOL[resolveQuotaModelKey(quotaModelKey) ?? ""];
   },
 
   getKickstartModelsForPool(
     quotaModelKey: string,
     account?: AccountRuntime,
   ): string[] {
-    const pool = KICKSTART_MODEL_FOR_QUOTA_POOL[quotaModelKey]
+    const directPrimary = KICKSTART_MODEL_FOR_QUOTA_POOL[quotaModelKey];
+    const accountId = account ? getAccountIdentity(account) : undefined;
+    if (!directPrimary) {
+      const dynamicCandidates = dynamicCatalog
+        .getModelsForQuotaPool(quotaModelKey, accountId)
+        .filter((entry) => !entry.id.toLowerCase().endsWith("-disabled"));
+      if (dynamicCandidates.length > 0) {
+        const preferred = dynamicCandidates.filter((entry) =>
+          /(?:^|-)(?:low|lite|flash|medium)$/i.test(entry.id),
+        );
+        const rest = dynamicCandidates.filter(
+          (entry) => !/(?:^|-)(?:low|lite|flash|medium)$/i.test(entry.id),
+        );
+        return [...preferred, ...rest].map((entry) => entry.id);
+      }
+      if (
+        dynamicCatalog.hasQuotaPool(quotaModelKey, accountId) ||
+        account?.quota.some((q) => q.modelKey === quotaModelKey)
+      ) {
+        return [];
+      }
+    }
+    const pool = directPrimary
       ? quotaModelKey
       : resolveQuotaModelKey(quotaModelKey) ?? "";
     const primary = KICKSTART_MODEL_FOR_QUOTA_POOL[pool];

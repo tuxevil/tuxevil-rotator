@@ -135,6 +135,9 @@ export interface ProviderAdapter {
     body: RequestBody,
     originalHeaders: Record<string, string>,
     signal?: AbortSignal,
+    options?: {
+      apiRetry?: boolean | Record<string, unknown>;
+    },
   ): Promise<ForwardedResponse>;
   /** Forward one allowlisted non-generation Code Assist operation. */
   forwardCodeAssistRequest?(

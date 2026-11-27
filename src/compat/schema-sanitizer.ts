@@ -90,9 +90,70 @@ function sanitizeSchemaProperties(
 	value: Record<string, unknown>,
 	sanitize: (schema: unknown) => unknown,
 ): Record<string, unknown> {
-	return Object.fromEntries(
-		Object.entries(value).map(([k, v]) => [k, sanitize(v)]),
-	);
+	const result: Record<string, unknown> = {};
+	for (const [k, v] of Object.entries(value)) {
+		Object.defineProperty(result, k, {
+			value: sanitize(v),
+			enumerable: true,
+			writable: true,
+			configurable: true,
+		});
+	}
+	return result;
+}
+
+function mergePropertyMaps(
+	base: Record<string, unknown> | undefined,
+	incoming: Record<string, unknown>,
+	overwrite = true,
+): Record<string, unknown> {
+	const merged: Record<string, unknown> = {};
+	if (base) {
+		for (const [k, v] of Object.entries(base)) {
+			Object.defineProperty(merged, k, {
+				value: v,
+				enumerable: true,
+				writable: true,
+				configurable: true,
+			});
+		}
+	}
+	for (const [k, v] of Object.entries(incoming)) {
+		if (!overwrite && Object.hasOwn(merged, k)) continue;
+		Object.defineProperty(merged, k, {
+			value: v,
+			enumerable: true,
+			writable: true,
+			configurable: true,
+		});
+	}
+	return merged;
+}
+
+function mergeSchemaFragment(
+	out: Record<string, unknown>,
+	fragment: Record<string, unknown>,
+): void {
+	for (const [k, v] of Object.entries(fragment)) {
+		if (k === "properties" && isRecord(v)) {
+			out["properties"] = mergePropertyMaps(
+				isRecord(out["properties"]) ? out["properties"] : undefined,
+				v,
+			);
+			continue;
+		}
+		if (k === "required" && Array.isArray(v)) {
+			const existing = Array.isArray(out["required"]) ? out["required"] : [];
+			out["required"] = [...new Set([...existing, ...v])];
+			continue;
+		}
+		Object.defineProperty(out, k, {
+			value: v,
+			enumerable: true,
+			writable: true,
+			configurable: true,
+		});
+	}
 }
 
 function sanitizeSchemaItems(
@@ -260,14 +321,9 @@ export function sanitizeClaudeViaGeminiSchema(schema: unknown): unknown {
 					const nullIdx = cleaned.findIndex((v) => v.type === "null" && Object.keys(v).length === 1);
 					if (nullIdx !== -1) {
 						const nonNull = cleaned.filter((_, i) => i !== nullIdx);
-						if (nonNull.length === 1) {
-							Object.assign(out, nonNull[0], { nullable: true });
-							continue;
-						}
-						if (nonNull.length > 1) {
-							// Multiple non-null variants + null → collapse non-null variants,
-							// then mark nullable. Still lossy but preserves nullability.
-							Object.assign(out, nonNull[0], { nullable: true });
+						if (nonNull.length >= 1) {
+							mergeSchemaFragment(out, nonNull[0]);
+							out["nullable"] = true;
 							continue;
 						}
 					}
@@ -282,7 +338,7 @@ export function sanitizeClaudeViaGeminiSchema(schema: unknown): unknown {
 					for (const variant of cleaned) {
 						for (const [vk, vv] of Object.entries(variant)) {
 							if (vk === "properties" && isRecord(vv)) {
-								mergedProperties = { ...mergedProperties, ...vv };
+								mergedProperties = mergePropertyMaps(mergedProperties, vv);
 							} else if (vk === "required" && Array.isArray(vv)) {
 								mergedRequired = [...new Set([...mergedRequired, ...vv])];
 							} else {
@@ -292,7 +348,7 @@ export function sanitizeClaudeViaGeminiSchema(schema: unknown): unknown {
 					}
 					if (Object.keys(mergedProperties).length > 0) merged["properties"] = mergedProperties;
 					if (mergedRequired.length > 0) merged["required"] = mergedRequired;
-					Object.assign(out, merged);
+					mergeSchemaFragment(out, merged);
 					continue;
 				}
 
@@ -303,12 +359,10 @@ export function sanitizeClaudeViaGeminiSchema(schema: unknown): unknown {
 					(v) => v.type === "object" && isRecord(v.properties),
 				);
 				if (allObjects && cleaned.length > 1) {
-					const unionProperties: Record<string, unknown> = {};
+					let unionProperties: Record<string, unknown> = {};
 					for (const variant of cleaned) {
 						const props = variant.properties as Record<string, unknown>;
-						for (const [pk, pv] of Object.entries(props)) {
-							if (!(pk in unionProperties)) unionProperties[pk] = pv;
-						}
+						unionProperties = mergePropertyMaps(unionProperties, props, false);
 					}
 					// Only keep required fields that exist in ALL variants
 					const allRequired = cleaned.map((v) =>
@@ -324,7 +378,7 @@ export function sanitizeClaudeViaGeminiSchema(schema: unknown): unknown {
 					} else {
 						delete base["required"];
 					}
-					Object.assign(out, base);
+					mergeSchemaFragment(out, base);
 					continue;
 				}
 
@@ -333,7 +387,7 @@ export function sanitizeClaudeViaGeminiSchema(schema: unknown): unknown {
 				// during the round-trip to Claude, causing JSON Schema draft 2020-12
 				// validation failures. Collapsing is lossy but functional — the tool
 				// still works, just with a narrower accepted input type.
-				Object.assign(out, cleaned[0]);
+				mergeSchemaFragment(out, cleaned[0]);
 			}
 			continue;
 		}
@@ -344,7 +398,17 @@ export function sanitizeClaudeViaGeminiSchema(schema: unknown): unknown {
 		}
 
 		if (key === "properties" && isRecord(value)) {
-			out[key] = sanitizeSchemaProperties(value, sanitizeClaudeViaGeminiSchema);
+			const sanitizedProps = sanitizeSchemaProperties(value, sanitizeClaudeViaGeminiSchema);
+			out[key] = mergePropertyMaps(
+				isRecord(out[key]) ? (out[key] as Record<string, unknown>) : undefined,
+				sanitizedProps,
+			);
+			continue;
+		}
+
+		if (key === "required" && Array.isArray(value)) {
+			const existing = Array.isArray(out[key]) ? (out[key] as unknown[]) : [];
+			out[key] = [...new Set([...existing, ...value])];
 			continue;
 		}
 

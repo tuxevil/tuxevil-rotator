@@ -38,7 +38,17 @@ export function resolveTelemetryEndpoint(raw: string | undefined): string {
 	try {
 		const url = new URL(candidate);
 		if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("unsupported protocol");
-		return candidate;
+		const pathname = url.pathname.replace(/\/+$/, "");
+		if (!pathname || pathname === "") {
+			return `${url.origin}/v1/events${url.search}`;
+		}
+		if (pathname.endsWith("/v1/events") || pathname.endsWith("/events")) {
+			return `${url.origin}${pathname}${url.search}`;
+		}
+		if (pathname.endsWith("/v1/notifications")) {
+			return `${url.origin}${pathname.slice(0, -"/v1/notifications".length)}/v1/events${url.search}`;
+		}
+		return `${url.origin}${pathname}/v1/events${url.search}`;
 	} catch {
 		telemetryLogger.log(
 			"warn",
@@ -245,7 +255,7 @@ export interface FlagEventData {
 
 	// What was happening
 	model: string;                           // model key being requested
-	timerType: "fresh" | "5h" | "7d" | "monthly" | "unknown";  // quota window state
+	timerType: "fresh" | "5h" | "7d" | "monthly" | "unknown" | (string & {});  // quota window state
 	accountQuotaPercent: number;             // quota % at time of flag (-1 if unknown)
 
 	// Account state (anonymous — no email)
@@ -387,12 +397,16 @@ export class TelemetryReporter {
 	}
 
 	private async sendPayload(payload: TelemetryPayload | FlagTelemetryPayload): Promise<void> {
-		await fetch(TELEMETRY_ENDPOINT, {
+		const response = await fetch(TELEMETRY_ENDPOINT, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(payload),
 			signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
 		});
+		if (!response.ok) {
+			await response.body?.cancel().catch(() => {});
+			throw new Error(`Telemetry endpoint returned HTTP ${response.status}`);
+		}
 	}
 
 	// ── For testing ──────────────────────────────────────────────────

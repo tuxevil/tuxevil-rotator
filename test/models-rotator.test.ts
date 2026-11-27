@@ -189,10 +189,79 @@ describe("Models page switches in the rotator", () => {
   });
 
   it("refuses to kickstart with a turned-off model", async () => {
-    const rotator = makeRotator({ disabledModels: ["google-antigravity/gemini-3-flash"] });
+    const rotator = makeRotator({ disabledModels: ["google-antigravity/gemini-3.8-flash-tiered"] });
     const result = await rotator.kickstartTimerForAccount(ACCOUNT.email, "gemini", false);
     assert.equal(result.ok, false);
     assert.match(result.error ?? "", /model turned off/);
+  });
+
+  it("uses an active account model when the default kickstart model is off", async () => {
+    dynamicCatalog.reset();
+    const rotator = makeRotator({ disabledModels: ["google-antigravity/gemini-3.8-flash-tiered"] });
+    const accountId = getAccountIdentity(rotator.accounts[0]);
+    dynamicCatalog.updateFromEndpointResponse(
+      { models: { "gemini-pro-agent": {} } },
+      accountId,
+    );
+    rotator.accounts[0].accessToken = "mock-token";
+    rotator.accounts[0].tokenExpires = Date.now() + 60_000;
+    const originalFetch = globalThis.fetch;
+    let requestedModel = "";
+    globalThis.fetch = (async (_input, init) => {
+      requestedModel = (JSON.parse(String(init?.body)) as { model: string }).model;
+      return new Response("", { status: 200 });
+    }) as typeof fetch;
+    try {
+      const result = await rotator.kickstartTimerForAccount(ACCOUNT.email, "gemini", false);
+      assert.equal(result.ok, true);
+      assert.equal(result.upstreamModel, "gemini-pro-agent");
+      assert.equal(requestedModel, "gemini-pro-agent");
+    } finally {
+      globalThis.fetch = originalFetch;
+      dynamicCatalog.reset();
+    }
+  });
+
+  it("kickstarts each independent discovered Gemini quota pool with its own active model", async () => {
+    dynamicCatalog.reset();
+    const rotator = makeRotator();
+    const account = rotator.accounts[0];
+    const accountId = getAccountIdentity(account);
+    dynamicCatalog.updateFromEndpointResponse(
+      {
+        models: {
+          "gemini-3-flash": {},
+          "gemini-4-argon": {},
+        },
+      },
+      accountId,
+      undefined,
+      undefined,
+      new Map([["gemini-4-argon", "gemini-4-argon"]]),
+    );
+    account.accessToken = "mock-token";
+    account.tokenExpires = Date.now() + 60_000;
+    account.quota = [
+      { modelKey: "gemini", displayName: "Gemini Models", providerId: "google-antigravity", percentRemaining: 100, resetTime: null, timerType: "fresh" },
+      { modelKey: "gemini-4-argon", displayName: "Gemini 4 Argon", providerId: "google-antigravity", percentRemaining: 100, resetTime: null, timerType: "fresh" },
+    ];
+    const requestedModels: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input, init) => {
+      if (String(input).includes("streamGenerateContent")) {
+        requestedModels.push((JSON.parse(String(init?.body)) as { model: string }).model);
+      }
+      return new Response("", { status: 200 });
+    }) as typeof fetch;
+    try {
+      const result = await rotator.kickstartAllFreshTimers(ACCOUNT.email);
+      assert.equal(result.ok, true);
+      assert.deepEqual(requestedModels.sort(), ["gemini-3.8-flash-tiered", "gemini-4-argon"].sort());
+      assert.deepEqual(result.results.map((entry: any) => entry.quotaPools).sort(), [["gemini"], ["gemini-4-argon"]].sort());
+    } finally {
+      globalThis.fetch = originalFetch;
+      dynamicCatalog.reset();
+    }
   });
 
   it("skips benchmarks for providers that are turned off", async () => {

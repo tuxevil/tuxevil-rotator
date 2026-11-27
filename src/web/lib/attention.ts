@@ -184,6 +184,25 @@ export function buildAttention(
     }
   }
 
+  const aicodeReauth = accounts.filter((a) => Boolean(a.authWarning));
+  if (aicodeReauth.length > 0) {
+    items.push({
+      id: "aicode-reauth",
+      severity: "warning",
+      title:
+        aicodeReauth.length === 1
+          ? `${name(aicodeReauth[0].email)} needs re-authentication for AICode`
+          : `${aicodeReauth.length} accounts need re-authentication for AICode`,
+      detail: aicodeReauth[0].authWarning!.message,
+      hint: "Google moved these personal accounts to AICode (enable-inference-traffic-migration); they need the aicode OAuth scope.",
+      chips: aicodeReauth.map((a) => ({ label: name(a.email), tone: "neutral" as const })),
+      actions:
+        aicodeReauth.length === 1
+          ? [{ kind: "open-account", email: aicodeReauth[0].email }]
+          : [],
+    });
+  }
+
   const holding = accounts.filter(
     (a) => a.tokenBucket.enabled && a.tokenBucket.tokens < 1 && a.status !== "disabled" && a.status !== "flagged",
   );

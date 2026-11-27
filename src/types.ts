@@ -142,6 +142,19 @@ export interface Config {
   idempotencyWindowMs?: number;
   // Retry upstream failures before any response bytes reach the client. Default: 2.
   streamRecoveryMaxRetries?: number;
+  // Idle interval before writing an SSE `: ping` comment on streaming responses. Default: 15s, 0 disables.
+  sseKeepaliveIntervalMs?: number;
+  // Antigravity single-account / non-rotating retry overrides (defaults match
+  // Antigravity defaultConversationalCascadeConfig: 8 retries, 4s -> 240s, 0.4 jitter).
+  antigravityApiRetry?: {
+    enabled?: boolean;
+    maxRetries?: number;
+    initialSleepDurationMs?: number;
+    maxSleepDurationMs?: number;
+    exponentialMultiplier?: number;
+    jitterRange?: number;
+    maxServerRetryDelayMs?: number;
+  };
   // Prompt compression mode ("off" | "lite" | "rtk" | "rtk+lite").
   compressionMode?: "off" | "lite" | "rtk" | "rtk+lite";
   // Partially override per-model specs used by the compat layer. Keys are model id
@@ -367,20 +380,64 @@ export interface QuotaObservation {
   catalogAccessible?: boolean;
 }
 
+export interface QuotaWindow {
+  /** Upstream bucket id (e.g. "gemini-weekly", "gemini-5h", "gemini-argon-wtu-weekly"). */
+  id: string;
+  /** Upstream window identifier (e.g. "weekly", "5h", "daily", "2h", "monthly"). */
+  window: string;
+  /** Human-readable window label from upstream or normalized dynamically. */
+  label: string;
+  percentRemaining: number;
+  resetTime: string | null;
+  /** Nominal duration in milliseconds used for ordering and timer priority. */
+  durationMs?: number;
+  /** True when the window has started / is actively consuming or exhausted. */
+  active: boolean;
+  description?: string;
+  disabled?: boolean;
+}
+
+export interface GoogleQuotaSummaryBucket {
+  bucketId?: string;
+  displayName?: string;
+  description?: string;
+  window?: string;
+  remainingFraction?: number;
+  remainingAmount?: string | number;
+  disabled?: boolean;
+  resetTime?: string;
+}
+
+export interface GoogleQuotaSummaryGroup {
+  displayName?: string;
+  description?: string;
+  buckets?: GoogleQuotaSummaryBucket[];
+}
+
+export interface GoogleQuotaSummaryResponse {
+  buckets?: GoogleQuotaSummaryBucket[];
+  groups?: GoogleQuotaSummaryGroup[];
+  description?: string;
+}
+
 export interface ModelQuota {
   observation?: QuotaObservation;
   modelKey: string;
   displayName: string;
   /** Owner of this quota pool when the account has several providers. */
   providerId?: string;
+  /** Individual active/reported time windows for this quota group (e.g. weekly, 5h, daily). */
+  windows?: QuotaWindow[];
+  /** Group description reported by upstream (e.g. models in this group or plan note). */
+  groupDescription?: string;
   percentRemaining: number;
   /** Raw usage fraction (0..1) when the provider reports one (Ollama). */
   usageRaw?: number;
   /** Included monthly credits and optional prepaid credits reported by Ollama. */
   credits?: { balanceUsd: number; allowanceUsd: number; purchasedUsd: number };
   resetTime: string | null;
-  // Timer classification based on the provider window.
-  timerType: "fresh" | "5h" | "7d" | "monthly";
+  // Timer classification based on the provider window (supports dynamic windows).
+  timerType: "fresh" | "5h" | "7d" | "monthly" | (string & {});
 }
 
 // Model key mapping for the quota API. One entry per family: all Claude
@@ -521,6 +578,43 @@ export interface AccountRuntime {
     string,
     { accessToken: string | null; tokenExpires: number }
   >;
+  /** Granted OAuth scopes observed on the latest Google token refresh. */
+  tokenScopes?: string[];
+  /** Cached Google AICode eligibility & experiment check per credential generation. */
+  aicodeEligibility?: {
+    credentialGeneration: string;
+    checkedAt: number;
+    personalConsumer: boolean | null;
+    useAicodeMendel: boolean | null;
+    /** `enable-inference-traffic-migration`: gates AICode generation in Antigravity.app. */
+    inferenceTrafficMigration?: boolean | null;
+    /** `dark-launch-aicode-quota-status`: shadow fetchQuotaStatus next to CCPA quota. */
+    darkLaunchAicodeQuotaStatus?: boolean | null;
+    userTierId?: string | null;
+  };
+  /** Cached Google AICode runtime discovery (fetchConfig/fetchLicenses/cooldown). */
+  aicodeState?: {
+    credentialGeneration: string;
+    scopeCooldownUntil?: number;
+    config?: {
+      credentialGeneration: string;
+      fetchedAt: number;
+      experiencesByLowerName: Record<string, string>;
+      experienceNames: string[];
+      experienceMetaByLowerName?: Record<
+        string,
+        { modelId?: string; displayName?: string }
+      >;
+      useAicodeMendel: boolean | null;
+      inferenceTrafficMigration?: boolean | null;
+    };
+    licenses?: {
+      credentialGeneration: string;
+      fetchedAt: number;
+      userTier: string | null;
+      tierDisplayName: string | null;
+    };
+  };
   /** Provider-local auth failures/cooldowns; Google/Ollama remain routable. */
   invalidProviders?: Record<string, string>;
   providerCooldowns?: Record<string, number>;
@@ -724,6 +818,16 @@ export interface StatusResponse {
   hostedOAuthConfigured?: boolean;
 }
 
+export interface AccountAuthWarning {
+  code: "missing-aicode-scope";
+  message: string;
+  rules: {
+    personalConsumer: boolean;
+    inferenceTrafficMigration: boolean;
+    missingAicodeScope: boolean;
+  };
+}
+
 export interface AccountStatus {
   /** Stable account identity for exact Models-page targets; email is a legacy fallback. */
   id?: string;
@@ -775,6 +879,8 @@ export interface AccountStatus {
   };
   allowFreshWindowStartsOverride: boolean;
   effectiveFreshWindowStartsAllowed: boolean;
+  /** Non-blocking auth warning when all re-auth conditions match (e.g. missing AICode scope). */
+  authWarning?: AccountAuthWarning | null;
 }
 
 export interface HealthScoreBreakdown {
@@ -903,6 +1009,7 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
   "gemini-3.1-pro": { inputPer1M: 2.0, outputPer1M: 12.0 },
   "gemini-3.1-pro-low": { inputPer1M: 2.0, outputPer1M: 12.0 },
   "gemini-3.1-pro-high": { inputPer1M: 2.0, outputPer1M: 12.0 },
+  "gemini-3.1-pro-preview-customtools": { inputPer1M: 2.0, outputPer1M: 12.0 },
   "gemini-3-flash": { inputPer1M: 0.5, outputPer1M: 3.0 },
   // Standard introductory rates verified 2026-10-25; double on 2027-01-01.
   // https://ai.google.dev/gemini-api/docs/pricing
@@ -942,6 +1049,10 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
   // these double to: input 1.50, output 7.50, cached input 0.15, cache
   // storage 1.00 (USD per 1M tokens / per 1M tokens/hour) — update this
   // static entry when the introductory period ends.
+  "gemini-3.7-flash": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
+  "gemini-3.7-flash-low": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
+  "gemini-3.7-flash-medium": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
+  "gemini-3.7-flash-high": { inputPer1M: 0.75, outputPer1M: 3.75, cachingPer1M: 0.075, cachingStoragePer1MPerHour: 0.5 },
   "gemini-3.7-flash-tiered": {
     inputPer1M: 0.75,
     outputPer1M: 3.75,
@@ -1303,7 +1414,7 @@ export const ANTIGRAVITY_ENDPOINTS = [
 // from QUOTA_MODEL_KEYS (i.e. "claude" or "gemini"), not an altKey/request model name.
 export const KICKSTART_MODEL_FOR_QUOTA_POOL: Record<string, string> = {
   "claude": "gpt-oss-120b-medium",
-  "gemini": "gemini-3-flash",
+  "gemini": "gemini-3.8-flash-tiered",
 };
 
 // Ordered fallback candidates per Antigravity quota pool (cheapest first; never Opus).
@@ -1322,8 +1433,20 @@ export const KICKSTART_PRO_MODELS_FOR_QUOTA_POOL: Record<string, readonly string
   ],
 };
 
+export const AICODE_SCOPE = "https://www.googleapis.com/auth/aicode";
+
+export const AICODE_ENDPOINTS = [
+  "https://aicode.googleapis.com",
+];
+
 export const QUOTA_API_URL =
   "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
+export const QUOTA_SUMMARY_API_URL =
+  "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
+export const LOAD_CODE_ASSIST_URL =
+  "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
+export const LIST_EXPERIMENTS_URL =
+  "https://daily-cloudcode-pa.googleapis.com/v1internal:listExperiments";
 
 // ── Ollama Cloud endpoints ──────────────────────────────────────────
 export const OLLAMA_API_BASE = "https://ollama.com/api";
@@ -1344,17 +1467,49 @@ export const OLLAMA_USER_AGENT =
 // TTL for the cached /api/tags listing (model catalog refresh).
 export const TAGS_CACHE_TTL_MS = 5 * 60 * 1000;
 export const ANTIGRAVITY_VERSION =
-	rotatorEnv("ANTIGRAVITY_VERSION") ||
-	process.env.PI_AI_ANTIGRAVITY_VERSION ||
-	"2.26.0";
+  rotatorEnv("ANTIGRAVITY_VERSION") ||
+  process.env.PI_AI_ANTIGRAVITY_VERSION ||
+  "2.35.2";
+export const ANTIGRAVITY_BUILD_CL =
+  rotatorEnv("ANTIGRAVITY_BUILD_CL") || "1029311855";
+const ANTIGRAVITY_OS_TYPE =
+  process.platform === "win32" ? "windows" : process.platform;
+const ANTIGRAVITY_ARCH =
+  process.arch === "x64" ? "amd64" : process.arch;
 export const DEFAULT_ANTIGRAVITY_USER_AGENT =
   rotatorEnv("ANTIGRAVITY_USER_AGENT") ||
-  `antigravity/hub/${ANTIGRAVITY_VERSION} (aidev_client; os_type=darwin; arch=arm64)`;
+  `antigravity/hub/${ANTIGRAVITY_VERSION} (os_type=${ANTIGRAVITY_OS_TYPE}; arch=${ANTIGRAVITY_ARCH}; aidev_client; cl=${ANTIGRAVITY_BUILD_CL})`;
 export const QUOTA_USER_AGENT =
-	rotatorEnv("QUOTA_USER_AGENT") ||
-	DEFAULT_ANTIGRAVITY_USER_AGENT;
+  rotatorEnv("QUOTA_USER_AGENT") ||
+  DEFAULT_ANTIGRAVITY_USER_AGENT;
 export const REQUEST_USER_AGENT =
   rotatorEnv("REQUEST_USER_AGENT") || QUOTA_USER_AGENT;
+export function resolveAntigravityProtoPlatform(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): string {
+  if (platform === "darwin") {
+    return arch === "x64" ? "DARWIN_AMD64" : "DARWIN_ARM64";
+  }
+  if (platform === "win32") {
+    return "WINDOWS_AMD64";
+  }
+  return arch === "arm64" ? "LINUX_ARM64" : "LINUX_AMD64";
+}
+export interface AntigravityClientMetadata {
+  ideType: "ANTIGRAVITY";
+  ideVersion: string;
+  platform: string;
+  pluginType: "GEMINI";
+  ideName: "antigravity";
+}
+export const ANTIGRAVITY_CLIENT_METADATA: AntigravityClientMetadata = {
+  ideType: "ANTIGRAVITY",
+  ideVersion: ANTIGRAVITY_VERSION,
+  platform: resolveAntigravityProtoPlatform(),
+  pluginType: "GEMINI",
+  ideName: "antigravity",
+};
 export const REQUEST_GOOG_API_CLIENT =
   rotatorEnv("X_GOOG_API_CLIENT") ||
   "google-cloud-sdk vscode_cloudshelleditor/0.1";
@@ -1365,6 +1520,10 @@ export const REQUEST_CLIENT_METADATA =
     platform: "MACOS",
     pluginType: "GEMINI",
   });
+export const ANTIGRAVITY_IDENTITY_PROMPT =
+  "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.\n" +
+  "You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.\n" +
+  "The USER will send you requests, which you must always prioritize addressing. User requests are enclosed within <USER_REQUEST> tags.";
 
 // ── Virtual Keys & Spend Logging ─────────────────────────────────────
 

@@ -27,7 +27,8 @@ tuxevil-rotator start --config-dir /path/to/config
 | `TUXEVIL_ROTATOR_LOG_RETENTION_DAYS` | Spend log retention in days (default: `30`) |
 | `TYPESAFE_API_KEY` | Optional fallback TypeSafe API key for Jev routing when no configured key is stored in `typesafeRouting` |
 | `TUXEVIL_ROTATOR_QUOTA_USER_AGENT` | Override the User-Agent for quota API fetches |
-| `TUXEVIL_ROTATOR_ANTIGRAVITY_VERSION` | Override the Antigravity version in quota fetch UA (default: `2.11.0`) |
+| `TUXEVIL_ROTATOR_ANTIGRAVITY_VERSION` | Override the Antigravity version in the User-Agent and client metadata (default: `2.35.2`) |
+| `USE_AICODE` | Google AICode endpoint (`aicode.googleapis.com`). Default `auto`: off, and it turns on per account only when Google enables the `enable-inference-traffic-migration` experiment, the same flag Antigravity.app follows. `false`/`off` never uses AICode; `true`/`on` forces it for eligible personal accounts with the `aicode` scope. `TUXEVIL_ROTATOR_USE_AICODE` is accepted as an alias. |
 | `TUXEVIL_ROTATOR_TELEMETRY` | Set to `off`, `false`, or `0` to disable anonymous telemetry |
 | `TUXEVIL_ROTATOR_TELEMETRY_URL` | Custom HTTPS endpoint for telemetry (self-hosted receiver) |
 | `ANTIGRAVITY_CLIENT_ID` | Your Google OAuth client ID (see [OAuth Setup](#oauth-client-credentials)) |
@@ -156,6 +157,7 @@ The main configuration file. Created automatically by the `login` command, and e
   "idempotencyEnabled": true,
   "idempotencyWindowMs": 2000,
   "streamRecoveryMaxRetries": 2,
+  "sseKeepaliveIntervalMs": 15000,
   "compressionMode": "off",
   "typesafeRouting": {
     "enabled": true,
@@ -204,6 +206,7 @@ The main configuration file. Created automatically by the `login` command, and e
 | `idempotencyEnabled` | `true` | Deduplicate identical in-flight requests and short-window retries |
 | `idempotencyWindowMs` | `2000` | Retention window for completed idempotent request results |
 | `streamRecoveryMaxRetries` | `2` | Maximum account rotations for upstream failures before the response is flushed |
+| `sseKeepaliveIntervalMs` | `15000` | After SSE response headers are sent, write a `: ping` comment whenever the stream has been idle this long, so proxies do not drop slow reasoning streams. `0` disables |
 | `compressionMode` | `off` | Prompt compression mode: `off`, `lite`, `rtk`, or `rtk+lite`. Can be overridden by the `X-Rotator-Compression` request header |
 | `typesafeRouting` | absent | Optional Jev semantic router. When enabled, `model: "auto"` selects among currently routable provider/model candidates |
 | `typesafeRouting.shadowMode` | `false` | Ask Jev for recommendations and log model-only decision metadata while continuing to serve the deterministic route |
