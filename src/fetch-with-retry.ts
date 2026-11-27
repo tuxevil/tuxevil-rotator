@@ -25,8 +25,11 @@ export type RequestInitWithDispatcher = RequestInit & { dispatcher?: Dispatcher 
 // Twin to Antigravity utils.RetryableFromErrorDetails & classifyGenAIAPIErrorWithMode:
 // 408, 429, 502, 503, 504 (HTTP 500 is NOT retried identically).
 export const DEFAULT_RETRY_STATUSES = [408, 429, 502, 503, 504] as const;
-// Matches Antigravity ccpahttp.New default stream idle timeout (600s).
-export const DEFAULT_HEADERS_TIMEOUT_MS = 600_000;
+// Default for non-Google providers (Ollama, OpenAI Codex, OpenCode Zen): an
+// upstream that never sends headers must not hold a slot for minutes.
+export const DEFAULT_HEADERS_TIMEOUT_MS = 120_000;
+// Google Antigravity only: matches ccpahttp.New default stream idle timeout (600s).
+export const ANTIGRAVITY_HEADERS_TIMEOUT_MS = 600_000;
 
 /** Matches Antigravity defaultConversationalCascadeConfig ModelAPIRetryConfig + ModelAPIBackoff. */
 export const ANTIGRAVITY_RETRY_CONFIG = {

@@ -3946,7 +3946,7 @@ export class AccountRotator {
     return true;
   }
 
-  /** Takes an account out of rotation after the provider rejected it with 403. */
+  /** Takes the whole account out of rotation after an unequivocal account-level 403 sanction. */
   quarantineAccountAfterForbidden(account: AccountRuntime, reason: string): void {
     account.flagged = true;
     account.lastError = reason;

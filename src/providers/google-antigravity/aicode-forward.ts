@@ -4,6 +4,7 @@
 
 import { getCredentialGeneration } from "../../account-identity.js";
 import {
+  ANTIGRAVITY_HEADERS_TIMEOUT_MS,
   fetchWithHeadersTimeout,
   type RequestInitWithDispatcher,
 } from "../../fetch-with-retry.js";
@@ -27,11 +28,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+export type AicodeMode = "off" | "on" | "auto";
+
+/**
+ * `USE_AICODE` (alias `TUXEVIL_ROTATOR_USE_AICODE`):
+ * - `false`/`0`/`no`/`off`: never use aicode.googleapis.com.
+ * - `true`/`1`/`yes`/`on`: force AICode for eligible personal accounts.
+ * - unset or `auto` (default): off unless Google turns on
+ *   `enable-inference-traffic-migration` for the account, which is when
+ *   Antigravity.app itself moves generation to AICode.
+ */
+export function resolveAicodeMode(): AicodeMode {
+  const raw = (process.env.USE_AICODE ?? process.env.TUXEVIL_ROTATOR_USE_AICODE)
+    ?.trim()
+    .toLowerCase();
+  if (!raw || raw === "auto") return "auto";
+  if (raw === "true" || raw === "1" || raw === "yes" || raw === "on") return "on";
+  if (raw === "false" || raw === "0" || raw === "no" || raw === "off") return "off";
+  return "auto";
+}
+
 function parseUseAicodeEnvOverride(): boolean | null {
-  const raw = process.env.USE_AICODE?.trim().toLowerCase();
-  if (!raw) return null;
-  if (raw === "true" || raw === "1" || raw === "yes") return true;
-  if (raw === "false" || raw === "0" || raw === "no") return false;
+  const mode = resolveAicodeMode();
+  if (mode === "on") return true;
+  if (mode === "off") return false;
   return null;
 }
 
@@ -63,8 +83,8 @@ export function shouldAttemptAicodeRouting(
     return true;
   }
 
-  // Mirrors Antigravity.app useAICodePredictionFlow(): generation follows
-  // `enable-inference-traffic-migration`; `use-aicode-mendel` does not route it.
+  // Default/auto mode stays off until Google enables the same flag that drives
+  // Antigravity.app useAICodePredictionFlow(); `use-aicode-mendel` never routes.
   const migration = elig.inferenceTrafficMigration ?? null;
   return (
     migration === true ||
@@ -238,10 +258,22 @@ export function wrapAicodeSseResponse(response: Response): Response {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   let buffer = "";
+  // A CRLF can be split across chunks: hold a trailing CR until the next
+  // chunk shows whether it starts with LF.
+  let pendingCr = false;
+  const normalizeChunk = (text: string, final: boolean): string => {
+    let input = pendingCr ? `\r${text}` : text;
+    pendingCr = false;
+    if (!final && input.endsWith("\r")) {
+      pendingCr = true;
+      input = input.slice(0, -1);
+    }
+    return input.replace(/\r\n?/g, "\n");
+  };
 
   const transform = new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
-      buffer += decoder.decode(chunk, { stream: true }).replace(/\r\n/g, "\n");
+      buffer += normalizeChunk(decoder.decode(chunk, { stream: true }), false);
       let boundary = buffer.indexOf("\n\n");
       while (boundary !== -1) {
         const block = buffer.slice(0, boundary);
@@ -255,7 +287,16 @@ export function wrapAicodeSseResponse(response: Response): Response {
       }
     },
     flush(controller) {
-      buffer += decoder.decode().replace(/\r\n/g, "\n");
+      buffer += normalizeChunk(decoder.decode(), true);
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary !== -1) {
+        const block = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        if (block.length > 0) {
+          controller.enqueue(encoder.encode(transformSseBlock(block)));
+        }
+        boundary = buffer.indexOf("\n\n");
+      }
       if (buffer.trim().length > 0) {
         controller.enqueue(encoder.encode(transformSseBlock(buffer)));
       }
@@ -296,6 +337,7 @@ export async function forwardAicodeRequestOnce(
     headers: buildAicodeWireHeaders(account, originalHeaders),
     body: JSON.stringify(payload),
     signal,
+    timeoutMs: ANTIGRAVITY_HEADERS_TIMEOUT_MS,
     dispatcher: getAccountProxyDispatcher(account, DEFAULT_PROVIDER),
   } as RequestInitWithDispatcher);
 

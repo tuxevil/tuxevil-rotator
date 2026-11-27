@@ -1299,7 +1299,7 @@ describe("proxy e2e: 401 unauthorized", () => {
 });
 
 describe("proxy e2e: 403 flagged (infringement)", () => {
-	it("quarantines the account with the 'infring' pattern and reports telemetry", async () => {
+	it("invalidates only the failing provider with the 'infring' pattern and reports telemetry", async () => {
 		const upstream = await listen((req, res) => {
 			res.writeHead(403, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({
@@ -1308,7 +1308,7 @@ describe("proxy e2e: 403 flagged (infringement)", () => {
 		});
 		endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
 
-		const tracking = { quarantined: 0, finishRequest: 0 };
+		const tracking = { invalidated: [] as string[], markFlagged: 0, finishRequest: 0 };
 		const rotator = {
 			getActiveAccount: async () => makeAccount("flag@example.com"),
 			rotateToNext: async () => null,
@@ -1327,8 +1327,10 @@ describe("proxy e2e: 403 flagged (infringement)", () => {
 				poolHealthyCount: 4,
 				uptimeSeconds: 600,
 			}),
-			markFlagged: () => {},
-			quarantineAccountAfterForbidden: () => { tracking.quarantined++; },
+			markFlagged: () => { tracking.markFlagged++; },
+			markProviderInvalid: (_account: AccountRuntime, providerId: string) => {
+				tracking.invalidated.push(providerId);
+			},
 			markError: () => {},
 			recordRequest: () => false,
 			recordProxyEvent: () => {},
@@ -1348,7 +1350,8 @@ describe("proxy e2e: 403 flagged (infringement)", () => {
 			if (!outcome.ok) {
 				assert.ok([429, 503].includes(outcome.status));
 			}
-			assert.equal(tracking.quarantined, 1, "flagged 403 should quarantine the account");
+			assert.deepEqual(tracking.invalidated, ["google-antigravity"], "flagged 403 invalidates only the failing provider");
+			assert.equal(tracking.markFlagged, 0, "flagged 403 must not quarantine the whole account");
 			assert.equal(tracking.finishRequest, 1, "flagged 403 should release the account once");
 		} finally {
 			await upstream.close();
@@ -1364,36 +1367,72 @@ describe("proxy e2e: 403 non-flagged", () => {
 		});
 		endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
 		const tracking = { markFlagged: 0, markError: 0, finishRequest: 0 };
-		let quarantined = 0;
+		const invalidated: string[] = [];
 		const rotator = makeRotator(makeAccount(email), tracking);
-		(rotator as unknown as { quarantineAccountAfterForbidden: () => void }).quarantineAccountAfterForbidden = () => { quarantined++; };
+		(rotator as unknown as {
+			markProviderInvalid: (account: AccountRuntime, providerId: string) => void;
+		}).markProviderInvalid = (_account, providerId) => { invalidated.push(providerId); };
 		try {
 			const outcome = await withRotation(rotator, "gemini-3.1-pro", {}, makeBody(), async () => "should-not-reach");
-			return { outcome, tracking, quarantined };
+			return { outcome, tracking, invalidated };
 		} finally {
 			await upstream.close();
 		}
 	}
 
-	it("quarantines the account on any account-level 403", async () => {
-		const { outcome, tracking, quarantined } = await run403(
+	it("invalidates only the failing provider on a generic 403", async () => {
+		const { outcome, tracking, invalidated } = await run403(
 			{ error: { status: "PERMISSION_DENIED", message: "Resource not accessible by integration" } },
 			"forbid@example.com",
 		);
 		assert.equal(outcome.ok, false);
 		if (!outcome.ok) assert.ok([403, 429, 503].includes(outcome.status));
-		assert.equal(quarantined, 1, "a 403 must quarantine the account immediately");
+		assert.deepEqual(invalidated, ["google-antigravity"], "a generic 403 is scoped to the failing provider");
+		assert.equal(tracking.markFlagged, 0, "a generic 403 must not quarantine the whole account");
 		assert.equal(tracking.finishRequest, 1, "403 should release the account once");
 	});
 
-	it("does not quarantine on a model-scoped entitlement 403", async () => {
-		const { outcome, quarantined } = await run403(
+	it("does not invalidate anything on a model-scoped entitlement 403", async () => {
+		const { outcome, invalidated, tracking } = await run403(
 			{ error: { code: "MODEL_NOT_SUPPORTED_FOR_PLAN", message: "Model not available for this plan" } },
 			"entitlement@example.com",
 		);
 		assert.equal(outcome.ok, false);
 		if (!outcome.ok) assert.equal(outcome.status, 403);
-		assert.equal(quarantined, 0, "a plan/entitlement 403 concerns one model, not the account");
+		assert.deepEqual(invalidated, [], "a plan/entitlement 403 concerns one model, not the provider");
+		assert.equal(tracking.markFlagged, 0);
+	});
+
+	it("quarantines the whole account only on the Antigravity Terms of Service sanction", async () => {
+		const upstream = await listen((req, res) => {
+			res.writeHead(403, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({
+				error: {
+					code: 403,
+					message: "This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product.",
+					status: "PERMISSION_DENIED",
+					details: [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "TOS_VIOLATION" }],
+				},
+			}));
+		});
+		endpointOverrides.splice(0, endpointOverrides.length, upstream.url);
+		const tracking = { markFlagged: 0, markError: 0, finishRequest: 0 };
+		const quarantined: string[] = [];
+		const invalidated: string[] = [];
+		const rotator = makeRotator(makeAccount("tos@example.com"), tracking);
+		Object.assign(rotator as object, {
+			quarantineAccountAfterForbidden: (_account: AccountRuntime, reason: string) => { quarantined.push(reason); },
+			markProviderInvalid: (_account: AccountRuntime, providerId: string) => { invalidated.push(providerId); },
+		});
+		try {
+			const outcome = await withRotation(rotator, "gemini-3.1-pro", {}, makeBody(), async () => "should-not-reach");
+			assert.equal(outcome.ok, false);
+			assert.equal(quarantined.length, 1, "ToS sanction must quarantine the account");
+			assert.match(quarantined[0], /^Quarantined after 403 \(flagged\): .*violation of Terms of Service/);
+			assert.deepEqual(invalidated, [], "ToS sanction uses account quarantine, not provider invalidation");
+		} finally {
+			await upstream.close();
+		}
 	});
 });
 

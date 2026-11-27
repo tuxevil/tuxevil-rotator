@@ -14,6 +14,7 @@ import type { TokenUsage } from "../adapter.js";
 import { DEFAULT_PROVIDER, getProviderProjectId } from "../credential-helpers.js";
 import { getAccountProxyDispatcher } from "../proxy-dispatcher.js";
 import {
+  ANTIGRAVITY_HEADERS_TIMEOUT_MS,
   fetchWithHeadersTimeout,
   isRetryableFetchError,
   runWithAntigravityApiRetry,
@@ -423,6 +424,7 @@ async function forwardRequestOnce(
         headers: forwardHeaders,
         body: requestBody,
         signal: requestSignal,
+        timeoutMs: ANTIGRAVITY_HEADERS_TIMEOUT_MS,
         dispatcher: getAccountProxyDispatcher(account, "google-antigravity"),
       } as RequestInitWithDispatcher);
 

@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+	ANTIGRAVITY_HEADERS_TIMEOUT_MS,
 	calculateBackoffMs,
 	DEFAULT_HEADERS_TIMEOUT_MS,
 	fetchWithHeadersTimeout,
@@ -24,8 +25,9 @@ describe("fetchWithRetry", () => {
 		assert.equal(isRetryableFetchError(new Error("bad input")), false);
 	});
 
-	it("defaults upstream headers timeout to 600s matching Antigravity ccpahttp.New", () => {
-		assert.equal(DEFAULT_HEADERS_TIMEOUT_MS, 600_000);
+	it("keeps a 120s default headers timeout and scopes 600s to Antigravity", () => {
+		assert.equal(DEFAULT_HEADERS_TIMEOUT_MS, 120_000);
+		assert.equal(ANTIGRAVITY_HEADERS_TIMEOUT_MS, 600_000);
 	});
 
 	it("bounds time waiting for response headers without timing out the body", async () => {

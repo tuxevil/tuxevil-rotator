@@ -32,7 +32,8 @@ describe("model-scoped 403 entitlement handling (d6106f51)", () => {
 		const addr = upstream.address() as AddressInfo;
 		eps.splice(0, eps.length, `http://127.0.0.1:${addr.port}`);
 
-		let quarantined = 0;
+		let invalidated = 0;
+		let flagged = 0;
 		const account: any = {
 			config: { email: "poc@example.com", projectId: "test-project", refreshToken: "rt", label: "poc@example.com" },
 			accessToken: "token-poc",
@@ -74,9 +75,11 @@ describe("model-scoped 403 entitlement handling (d6106f51)", () => {
 				poolHealthyCount: 4,
 				uptimeSeconds: 600,
 			}),
-			markFlagged: () => {},
-			quarantineAccountAfterForbidden: () => {
-				quarantined++;
+			markFlagged: () => {
+				flagged++;
+			},
+			markProviderInvalid: () => {
+				invalidated++;
 			},
 			markError: () => {},
 			recordRequest: () => false,
@@ -96,7 +99,8 @@ describe("model-scoped 403 entitlement handling (d6106f51)", () => {
 			if (!outcome.ok) {
 				assert.equal(outcome.status, 403);
 			}
-			assert.equal(quarantined, 0);
+			assert.equal(invalidated, 0);
+			assert.equal(flagged, 0);
 		} finally {
 			await new Promise<void>((r) => upstream.close(() => r()));
 		}

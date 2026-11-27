@@ -216,6 +216,32 @@ export function resolveAicodeExperience(
 const inFlightConfigFetches = new Map<string, Promise<AicodeConfigSnapshot | null>>();
 const inFlightLicenseFetches = new Map<string, Promise<AicodeLicenseSnapshot | null>>();
 
+/**
+ * Wait for a coalesced discovery flight while honoring only this caller's
+ * abort signal. The shared fetch itself never uses a caller signal, so one
+ * disconnecting client cannot abort the lookup for concurrent callers.
+ */
+function awaitSharedFlight<T>(flight: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return flight;
+  if (signal.aborted) {
+    return Promise.reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    flight.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
+}
+
 export async function fetchAicodeConfig(
   account: AccountRuntime,
   originalHeaders: Record<string, string> = {},
@@ -238,7 +264,7 @@ export async function fetchAicodeConfig(
   const flightKey = `${getAccountIdentity(account)}:${gen}`;
   const existing = inFlightConfigFetches.get(flightKey);
   if (existing) {
-    return existing;
+    return awaitSharedFlight(existing, signal);
   }
 
   const promise = (async (): Promise<AicodeConfigSnapshot | null> => {
@@ -249,7 +275,6 @@ export async function fetchAicodeConfig(
         headers: buildAicodeWireHeaders(account, originalHeaders),
         timeoutMs: 8000,
         retries: 0,
-        signal,
         dispatcher: getAccountProxyDispatcher(account, DEFAULT_PROVIDER),
       } as RequestInitWithDispatcher);
 
@@ -274,8 +299,7 @@ export async function fetchAicodeConfig(
         ensureAicodeState(account).config = parsed;
       }
       return parsed;
-    } catch (err) {
-      if (signal?.aborted) throw err;
+    } catch {
       return state.config?.credentialGeneration === gen ? state.config : null;
     }
   })().finally(() => {
@@ -283,7 +307,7 @@ export async function fetchAicodeConfig(
   });
 
   inFlightConfigFetches.set(flightKey, promise);
-  return promise;
+  return awaitSharedFlight(promise, signal);
 }
 
 export async function fetchAicodeLicenses(
@@ -308,7 +332,7 @@ export async function fetchAicodeLicenses(
   const flightKey = `${getAccountIdentity(account)}:${gen}`;
   const existing = inFlightLicenseFetches.get(flightKey);
   if (existing) {
-    return existing;
+    return awaitSharedFlight(existing, signal);
   }
 
   const promise = (async (): Promise<AicodeLicenseSnapshot | null> => {
@@ -319,7 +343,6 @@ export async function fetchAicodeLicenses(
         headers: buildAicodeWireHeaders(account, originalHeaders),
         timeoutMs: 8000,
         retries: 0,
-        signal,
         dispatcher: getAccountProxyDispatcher(account, DEFAULT_PROVIDER),
       } as RequestInitWithDispatcher);
 
@@ -344,8 +367,7 @@ export async function fetchAicodeLicenses(
         ensureAicodeState(account).licenses = parsed;
       }
       return parsed;
-    } catch (err) {
-      if (signal?.aborted) throw err;
+    } catch {
       return state.licenses?.credentialGeneration === gen ? state.licenses : null;
     }
   })().finally(() => {
@@ -353,7 +375,7 @@ export async function fetchAicodeLicenses(
   });
 
   inFlightLicenseFetches.set(flightKey, promise);
-  return promise;
+  return awaitSharedFlight(promise, signal);
 }
 
 export interface AicodeQuotaBucket {

@@ -1,6 +1,8 @@
 import { describe, it, before, after, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../src/types.js";
@@ -29,7 +31,8 @@ const { initDb, closeDb } = await import("../src/db-store.js");
 const { setPersistedAdminToken } = await import("../src/admin-auth.js");
 const { getProviderAdapter } = await import("../src/providers/registry.js");
 const { clearCodexQuotaCache, CODEX_UNSTARTED_TIMER_THRESHOLD_SECONDS } = await import("../src/providers/openai-codex/quota.js");
-const { providerAdapterForModel } = await import("../src/proxy.js");
+const { providerAdapterForModel, withRotation } = await import("../src/proxy.js");
+const { ANTIGRAVITY_ENDPOINTS } = await import("../src/types.js");
 
 function makeConfig(): Config {
   return {
@@ -2101,6 +2104,101 @@ describe("v2 routing and status", () => {
     const sessionBest = rotator.pickBestModelAccount("session", now, -1);
     assert.equal(sessionBest?.config.email, "dual@example.com");
     assert.equal(allowed("session"), "dual@example.com");
+  });
+
+  it("keeps the sibling Ollama credential eligible after a Google 403 invalidates only google-antigravity", async () => {
+    const config = makeConfig();
+    config.accounts = [
+      {
+        email: "dual-403@example.com",
+        credentials: [
+          { provider: "google-antigravity", refreshToken: "g", projectId: "pg" },
+          { provider: "ollama", apiKey: "o" },
+        ],
+        tier: "pro",
+      },
+    ];
+    const rotator = new AccountRotator(config) as any;
+    rotator.stopQuotaPolling();
+    advertiseGoogleModelForRotator(rotator, "gemini-3.1-pro");
+    const account = rotator.accounts[0];
+    account.accessToken = "google-access-token";
+    account.tokenExpires = Date.now() + 60_000;
+    account.healthScore = 1;
+    const googlePool = rotator.resolveQuotaModelKeyForDisplay?.("gemini-3.1-pro") ?? "gemini";
+    account.quota = [googlePool, "session"].map((modelKey: string) => ({
+      modelKey,
+      displayName: modelKey,
+      providerId: modelKey === "session" ? "ollama" : "google-antigravity",
+      percentRemaining: 100,
+      resetTime: null,
+      timerType: "7d",
+    }));
+
+    let hits = 0;
+    let tosMode = false;
+    const upstream = createServer((req, res) => {
+      hits++;
+      req.resume();
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        error: {
+          code: 403,
+          status: "PERMISSION_DENIED",
+          message: tosMode
+            ? "This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product."
+            : "Resource not accessible by integration",
+        },
+      }));
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    const { port } = upstream.address() as AddressInfo;
+    const endpoints = ANTIGRAVITY_ENDPOINTS as unknown as string[];
+    const savedEndpoints = [...endpoints];
+    endpoints.splice(0, endpoints.length, `http://127.0.0.1:${port}`);
+
+    try {
+      const now = Date.now();
+      assert.equal(rotator.pickBestModelAccount("session", now, -1)?.config.email, "dual-403@example.com");
+      const outcome = await withRotation(
+        rotator,
+        "gemini-3.1-pro",
+        {},
+        { project: "pg", model: "gemini-3.1-pro", request: {} },
+        async () => "unreachable",
+      );
+      assert.equal(outcome.ok, false);
+      assert.equal(hits, 1, "the Google request reached the upstream once");
+      assert.equal(account.flagged, false, "generic 403 must not quarantine the whole account");
+      assert.ok(account.invalidProviders?.["google-antigravity"], "google-antigravity is invalidated");
+      assert.equal(account.invalidProviders?.ollama, undefined, "ollama credential stays valid");
+      assert.equal(
+        rotator.pickBestModelAccount("session", Date.now(), -1)?.config.email,
+        "dual-403@example.com",
+        "sibling Ollama pool remains eligible",
+      );
+      assert.equal(rotator.pickBestModelAccount(googlePool, Date.now(), -1), null);
+
+      // Antigravity ToS sanction quarantines the whole account (real rotator).
+      tosMode = true;
+      delete account.invalidProviders;
+      account.inFlightRequests = 0;
+      account.inFlightByModel = {};
+      advertiseGoogleModelForRotator(rotator, "gemini-3.1-pro");
+      const tosOutcome = await withRotation(
+        rotator,
+        "gemini-3.1-pro",
+        {},
+        { project: "pg", model: "gemini-3.1-pro", request: {} },
+        async () => "unreachable",
+      );
+      assert.equal(hits, 2, `ToS request reached upstream: ${JSON.stringify(tosOutcome).slice(0, 200)}`);
+      assert.equal(account.flagged, true, "ToS sanction quarantines the account");
+      assert.match(account.lastError ?? "", /^Quarantined after 403 \(flagged\): .*violation of Terms of Service/);
+    } finally {
+      endpoints.splice(0, endpoints.length, ...savedEndpoints);
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    }
   });
 
   it("skips ollama accounts when weekly quota is 0% even if session quota is >0%", () => {

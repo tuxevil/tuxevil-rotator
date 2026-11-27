@@ -14,6 +14,7 @@ import {
 } from "../src/types.js";
 import {
   buildAicodeGenerateContentRequest,
+  resolveAicodeMode,
   resolveAicodeTarget,
   shouldAttemptAicodeRouting,
   shouldShadowAicodeQuotaStatus,
@@ -138,6 +139,7 @@ function makeEligibleAccount(overrides: Partial<AccountRuntime> = {}): AccountRu
 const origAicodeEndpoints = [...AICODE_ENDPOINTS];
 const origCcpaEndpoints = [...ANTIGRAVITY_ENDPOINTS];
 const prevUseAicode = process.env.USE_AICODE;
+const prevTuxevilUseAicode = process.env.TUXEVIL_ROTATOR_USE_AICODE;
 const prevAicodeEndpointUrl = process.env.AICODE_ENDPOINT_URL;
 
 afterEach(() => {
@@ -149,6 +151,8 @@ afterEach(() => {
   );
   if (prevUseAicode === undefined) delete process.env.USE_AICODE;
   else process.env.USE_AICODE = prevUseAicode;
+  if (prevTuxevilUseAicode === undefined) delete process.env.TUXEVIL_ROTATOR_USE_AICODE;
+  else process.env.TUXEVIL_ROTATOR_USE_AICODE = prevTuxevilUseAicode;
   if (prevAicodeEndpointUrl === undefined) delete process.env.AICODE_ENDPOINT_URL;
   else process.env.AICODE_ENDPOINT_URL = prevAicodeEndpointUrl;
 });
@@ -551,6 +555,117 @@ describe("AICode Phase 2 & Phase 3 routing", () => {
     // resolveAicodeTarget returns null when USE_AICODE=false
     process.env.USE_AICODE = "false";
     assert.equal(await resolveAicodeTarget(makeEligibleAccount(), "gemini-3.8-flash-tiered", {}), null);
+  });
+
+  it("defaults USE_AICODE to auto: off until Google enables enable-inference-traffic-migration", () => {
+    delete process.env.USE_AICODE;
+    delete process.env.TUXEVIL_ROTATOR_USE_AICODE;
+    assert.equal(resolveAicodeMode(), "auto");
+
+    // Out of the box (no env), today's Google flags keep every account on CCPA.
+    const today = makeEligibleAccount();
+    today.aicodeEligibility!.useAicodeMendel = true;
+    today.aicodeEligibility!.inferenceTrafficMigration = false;
+    assert.equal(shouldAttemptAicodeRouting(today), false);
+    assert.equal(shouldShadowAicodeQuotaStatus(today), false);
+
+    // Auto-activates when Google flips the migration flag for the account.
+    const migrated = makeEligibleAccount();
+    migrated.aicodeEligibility!.inferenceTrafficMigration = true;
+    assert.equal(shouldAttemptAicodeRouting(migrated), true);
+
+    // An explicit off wins even after Google migrates the account.
+    for (const value of ["false", "0", "no", "off"]) {
+      process.env.USE_AICODE = value;
+      assert.equal(resolveAicodeMode(), "off");
+      assert.equal(shouldAttemptAicodeRouting(migrated), false);
+    }
+    process.env.USE_AICODE = "auto";
+    assert.equal(resolveAicodeMode(), "auto");
+    process.env.USE_AICODE = "on";
+    assert.equal(resolveAicodeMode(), "on");
+    assert.equal(shouldAttemptAicodeRouting(today), true);
+
+    delete process.env.USE_AICODE;
+    process.env.TUXEVIL_ROTATOR_USE_AICODE = "false";
+    assert.equal(resolveAicodeMode(), "off");
+  });
+
+  it("wraps AICode SSE events when the CRLF separator is split across chunks", async () => {
+    const encoder = new TextEncoder();
+    const event = JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text: "split" }] } }] });
+    const chunks = [`data: ${event}\r`, "\n\r", `\ndata: ${event}\r\n\r`, "\n"];
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        controller.close();
+      },
+    });
+    const wrapped = wrapAicodeSseResponse(
+      new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } }),
+    );
+    const text = await wrapped.text();
+    assert.equal(text.includes("\r"), false, "CR must not leak between LF separators");
+    const events = text
+      .split("\n\n")
+      .map((b) => b.trim())
+      .filter((b) => b.startsWith("data:"))
+      .map((b) => JSON.parse(b.slice(5).trim()) as Record<string, unknown>);
+    assert.equal(events.length, 2);
+    for (const e of events) {
+      assert.ok("response" in e, "each event must carry the v1internal { response } wrapper");
+    }
+  });
+
+  it("keeps shared fetchConfig/fetchLicenses flights alive when the first caller aborts", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let configHits = 0;
+    let licenseHits = 0;
+    const stub = await startStubServer((req) => {
+      if (req.url === "/v1alpha:fetchConfig") {
+        configHits += 1;
+        return {
+          status: 200,
+          body: JSON.stringify({
+            availableExperiences: [{ name: "gemini-3.8-flash-tiered", model: { modelId: "gemini-3.8-flash" } }],
+          }),
+        };
+      }
+      licenseHits += 1;
+      return { status: 200, body: JSON.stringify({ licenses: [{ userTier: "g1-pro-tier" }] }) };
+    });
+    AICODE_ENDPOINTS.splice(0, AICODE_ENDPOINTS.length, stub.url);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      await gate;
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    try {
+      const account = makeEligibleAccount();
+      const first = new AbortController();
+      const firstConfig = fetchAicodeConfig(account, {}, first.signal);
+      const secondConfig = fetchAicodeConfig(account, {}, new AbortController().signal);
+      const firstLicenses = fetchAicodeLicenses(account, {}, first.signal);
+      const secondLicenses = fetchAicodeLicenses(account);
+      first.abort();
+      await assert.rejects(firstConfig);
+      await assert.rejects(firstLicenses);
+      release();
+      const cfg = await secondConfig;
+      const lic = await secondLicenses;
+      assert.equal(cfg?.experienceNames[0], "gemini-3.8-flash-tiered");
+      assert.equal(lic?.userTier, "g1-pro-tier");
+      assert.equal(configHits, 1, "callers share one fetchConfig flight");
+      assert.equal(licenseHits, 1, "callers share one fetchLicenses flight");
+    } finally {
+      globalThis.fetch = originalFetch;
+      release();
+      await stopServer(stub.server);
+    }
   });
 
   it("Phase 4: parses fetchQuotaStatus refreshWindowLabel into CCPA summary windows", () => {

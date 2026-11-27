@@ -698,17 +698,41 @@ function isModelScopedForbidden(errorText: string, providerId: string, model: st
   return kind === "entitlement" || kind === "client-restriction";
 }
 
-/** Any account-level 403 quarantines the whole account at once, then rotates. */
-async function quarantineAfterForbidden(
+/**
+ * Google Antigravity's account-level ToS sanction, e.g. "This service has been
+ * disabled in this account for violation of Terms of Service".
+ */
+export function isAntigravityAccountSanction(providerId: string, errorText: string): boolean {
+  return (
+    providerId === DEFAULT_PROVIDER &&
+    /violation of (the )?terms of service/i.test(errorText)
+  );
+}
+
+/**
+ * A provider 403 takes only the failing provider credential out of rotation;
+ * sibling provider credentials on the same account stay eligible. Only an
+ * Antigravity ToS sanction quarantines the whole account.
+ */
+async function invalidateProviderAfterForbidden(
   options: UpstreamActionHandlerOptions,
   cause: "flagged" | "forbidden",
 ): Promise<UpstreamActionDecision> {
-  const { action, rotator, account, label, rotateAndRelease } = options;
+  const { action, provider, rotator, account, label, rotateAndRelease } = options;
   const errorText = "errorText" in action ? action.errorText : "";
-  rotator.quarantineAccountAfterForbidden(
-    account,
-    `Quarantined after 403 (${cause}): ${errorText.slice(0, 300)}`,
-  );
+  const accountSanction = isAntigravityAccountSanction(provider.id, errorText);
+  if (accountSanction) {
+    rotator.quarantineAccountAfterForbidden(
+      account,
+      `Quarantined after 403 (${cause}): ${errorText.slice(0, 300)}`,
+    );
+  } else {
+    rotator.markProviderInvalid(
+      account,
+      provider.id,
+      `Provider ${cause === "flagged" ? "flagged" : "rejected"} (403): ${errorText.slice(0, 300)}`,
+    );
+  }
   if (!options.canRetry) {
     return buildFailureDecision(options, 403, errorText);
   }
@@ -716,7 +740,9 @@ async function quarantineAfterForbidden(
   if (!nextAccount) {
     return buildNoReplacementDecision(
       options,
-      `no replacement account remained after ${label} was quarantined with 403`,
+      accountSanction
+        ? `no replacement account remained after ${label} was quarantined with 403`
+        : `no replacement account remained after ${label} ${provider.id} was invalidated with 403`,
     );
   }
   return { kind: "retry" };
@@ -885,7 +911,7 @@ async function handleUpstreamAccountAction(
       uptimeSeconds: ctx403.uptimeSeconds,
       timeSinceLastFlagSeconds: -1,
     });
-    return quarantineAfterForbidden(options, "flagged");
+    return invalidateProviderAfterForbidden(options, "flagged");
   }
 
   if (action.kind === "forbidden") {
@@ -896,7 +922,7 @@ async function handleUpstreamAccountAction(
     if (isModelScopedForbidden(action.errorText, provider.id, model)) {
       return buildFailureDecision(options, 403, action.errorText);
     }
-    return quarantineAfterForbidden(options, "forbidden");
+    return invalidateProviderAfterForbidden(options, "forbidden");
   }
 
   if (action.kind === "not-found") {

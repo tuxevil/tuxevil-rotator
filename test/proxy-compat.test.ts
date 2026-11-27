@@ -1523,3 +1523,14 @@ describe("effort-based routing endpoint e2e", () => {
 		}
 	});
 });
+
+describe("isAntigravityAccountSanction", () => {
+	it("matches only the Google Antigravity Terms of Service sanction", async () => {
+		const { isAntigravityAccountSanction } = await import("../src/proxy.js");
+		const tos = "This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product.";
+		assert.equal(isAntigravityAccountSanction("google-antigravity", tos), true);
+		assert.equal(isAntigravityAccountSanction("ollama", tos), false);
+		assert.equal(isAntigravityAccountSanction("google-antigravity", "Resource not accessible by integration"), false);
+		assert.equal(isAntigravityAccountSanction("google-antigravity", "Account suspended for policy infringement"), false);
+	});
+});

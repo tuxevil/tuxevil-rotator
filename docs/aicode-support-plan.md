@@ -66,7 +66,7 @@ Valores observados el 2026-11-26 en cuentas personales Pro reautenticadas: `enab
 - `src/providers/google-antigravity/aicode-forward.ts` + `src/providers/google-antigravity/forward.ts`:
   - Traduce `RequestBody` de `v1internal` hacia `google.gca.aicode.v1main.GenerateContentRequest` plano con `aicode: { experience }` y `entitlement: { userTier }` (`model` y `aicode` son `oneof inference` en el proto), omitiendo `project`, `requestId`, `userPromptId`, `requestType` y `userAgent`.
   - Solo enruta a `POST https://aicode.googleapis.com/v1alpha:streamGenerateContent?alt=sse` cuando la cuenta cumple las reglas de la sección 1 (`personalConsumer`, `enable-inference-traffic-migration` o `USE_AICODE=true`, scope `aicode` y sin cooldown) **y** el modelo existe en `fetchConfig.availableExperiences` (modelos exclusivos de CCPA como `gemini-4-hydrogen-high` permanecen en `daily-cloudcode-pa.googleapis.com`).
-  - `USE_AICODE=false` desactiva toda la ruta AICode (generación y shadow de cuota).
+  - `USE_AICODE` vale `auto` por defecto: AICode queda apagado y solo se activa por cuenta cuando Google enciende `enable-inference-traffic-migration`. `USE_AICODE=false` lo desactiva siempre (generación y shadow de cuota); `USE_AICODE=true` lo fuerza.
   - Envuelve los chunks SSE planos de `GenerateContentResponse` en `{ response: ... }` para mantener compatibilidad con `proxy.ts`, `compat.ts` y clientes `v1internal`.
   - Ante `403 ACCESS_TOKEN_SCOPE_INSUFFICIENT`, activa el cooldown de 1h y reintenta inmediatamente la misma petición contra `daily-cloudcode-pa/v1internal`.
   - Pruebas de ruta, conversión, caché y fallback en `test/aicode-routing.test.ts`.

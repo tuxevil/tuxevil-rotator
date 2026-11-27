@@ -16,6 +16,7 @@ import {
 	ANTIGRAVITY_RETRY_CONFIG,
 	calculateBackoffMs,
 	calculateContinuationBackoffMs,
+	ANTIGRAVITY_HEADERS_TIMEOUT_MS,
 	DEFAULT_HEADERS_TIMEOUT_MS,
 	DEFAULT_RETRY_STATUSES,
 	fetchWithRetry,
@@ -340,7 +341,8 @@ describe("Antigravity IDE/CLI twin parity", () => {
 	});
 
 	it("matches Antigravity retry config constants, backoff curves, and continuation jitter", () => {
-		assert.equal(DEFAULT_HEADERS_TIMEOUT_MS, 600_000);
+		assert.equal(ANTIGRAVITY_HEADERS_TIMEOUT_MS, 600_000);
+		assert.equal(DEFAULT_HEADERS_TIMEOUT_MS, 120_000);
 		assert.equal(STREAM_IDLE_TIMEOUT_MS, 600_000);
 		assert.deepEqual([...DEFAULT_RETRY_STATUSES], [408, 429, 502, 503, 504]);
 		assert.equal(MAX_ANTIGRAVITY_RETRY_DELAY_MS, 240_000);
