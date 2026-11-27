@@ -242,6 +242,7 @@ async function onboardUser(accessToken: string, tierId: string): Promise<string 
 				method: "POST",
 				headers,
 				body,
+				retryPolicy: "antigravity",
 			});
 			if (!response.ok) return null;
 			const data = (await response.json()) as Record<string, unknown> | null;
@@ -277,6 +278,7 @@ export async function discoverProject(accessToken: string): Promise<ProjectDisco
 				body: JSON.stringify({
 					metadata: ANTIGRAVITY_CLIENT_METADATA,
 				}),
+				retryPolicy: "antigravity",
 			});
 
 			if (response.ok) {

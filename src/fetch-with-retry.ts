@@ -14,6 +14,12 @@ export interface FetchWithRetryOptions extends RequestInit {
 	jitterRange?: number;
 	maxServerRetryDelayMs?: number;
 	retryStatuses?: number[];
+	/**
+	 * `generic` (default): retry transport errors and 408/429/500/502/503/504
+	 * with short backoff. `antigravity`: Antigravity twin classification for
+	 * Google CCPA calls (no HTTP 500 retry, hard 429 / long retryDelay fail fast).
+	 */
+	retryPolicy?: FetchRetryPolicy;
 	fetchImpl?: typeof fetch;
 	sleepImpl?: (ms: number, signal?: AbortSignal) => Promise<void>;
 	/** Node/Undici dispatcher selected from the account's provider config. */
@@ -22,9 +28,20 @@ export interface FetchWithRetryOptions extends RequestInit {
 
 export type RequestInitWithDispatcher = RequestInit & { dispatcher?: Dispatcher };
 
+export type FetchRetryPolicy = "generic" | "antigravity";
+
+// Generic retry statuses shared by every provider/catalog/quota caller.
+export const DEFAULT_RETRY_STATUSES = [408, 429, 500, 502, 503, 504] as const;
 // Twin to Antigravity utils.RetryableFromErrorDetails & classifyGenAIAPIErrorWithMode:
-// 408, 429, 502, 503, 504 (HTTP 500 is NOT retried identically).
-export const DEFAULT_RETRY_STATUSES = [408, 429, 502, 503, 504] as const;
+// 408, 429, 502, 503, 504 (HTTP 500 is NOT retried). Only for retryPolicy "antigravity".
+export const ANTIGRAVITY_RETRY_STATUSES = [408, 429, 502, 503, 504] as const;
+/** Generic fetchWithRetry backoff: 250ms doubling, capped at 5s. */
+export const GENERIC_RETRY_BACKOFF = {
+	baseDelayMs: 250,
+	maxDelayMs: 5_000,
+	exponentialMultiplier: 2,
+	jitterRange: 0.2,
+} as const;
 // Default for non-Google providers (Ollama, OpenAI Codex, OpenCode Zen): an
 // upstream that never sends headers must not hold a slot for minutes.
 export const DEFAULT_HEADERS_TIMEOUT_MS = 120_000;
@@ -222,22 +239,35 @@ export async function fetchWithHeadersTimeout(
 /**
  * Fetch wrapper for non-streaming calls. Retries only transport failures and explicit retryable statuses.
  * Do not use for streaming responses: retrying streams can duplicate upstream work.
+ * The default `generic` policy applies to every provider; Antigravity twin
+ * classification is opt-in through `retryPolicy: "antigravity"`.
  */
 export async function fetchWithRetry(input: RequestInfo | URL, options: FetchWithRetryOptions = {}): Promise<Response> {
+	const antigravity = options.retryPolicy === "antigravity";
 	const {
 		retries = 2,
 		timeoutMs = 10_000,
-		baseDelayMs = ANTIGRAVITY_RETRY_CONFIG.initialSleepDurationMs,
-		maxDelayMs = ANTIGRAVITY_RETRY_CONFIG.maxSleepDurationMs,
-		exponentialMultiplier = ANTIGRAVITY_RETRY_CONFIG.exponentialMultiplier,
-		jitterRange = ANTIGRAVITY_RETRY_CONFIG.jitterRange,
+		baseDelayMs = antigravity
+			? ANTIGRAVITY_RETRY_CONFIG.initialSleepDurationMs
+			: GENERIC_RETRY_BACKOFF.baseDelayMs,
+		maxDelayMs = antigravity
+			? ANTIGRAVITY_RETRY_CONFIG.maxSleepDurationMs
+			: GENERIC_RETRY_BACKOFF.maxDelayMs,
+		exponentialMultiplier = antigravity
+			? ANTIGRAVITY_RETRY_CONFIG.exponentialMultiplier
+			: GENERIC_RETRY_BACKOFF.exponentialMultiplier,
+		jitterRange = antigravity
+			? ANTIGRAVITY_RETRY_CONFIG.jitterRange
+			: GENERIC_RETRY_BACKOFF.jitterRange,
 		maxServerRetryDelayMs = MAX_ANTIGRAVITY_RETRY_DELAY_MS,
-		retryStatuses = [...DEFAULT_RETRY_STATUSES],
+		retryStatuses = antigravity ? [...ANTIGRAVITY_RETRY_STATUSES] : [...DEFAULT_RETRY_STATUSES],
+		retryPolicy: _retryPolicy,
 		fetchImpl = fetch,
 		sleepImpl = sleep,
 		dispatcher,
 		...init
 	} = options;
+	void _retryPolicy;
 
 	let lastError: unknown;
 	for (let attempt = 0; attempt <= retries; attempt++) {
@@ -257,29 +287,31 @@ export async function fetchWithRetry(input: RequestInfo | URL, options: FetchWit
 				return response;
 			}
 
-			let errorText = "";
-			if (response.status === 429 || response.status === 402 || response.status >= 500) {
-				errorText = await response.clone().text().catch(() => "");
-			}
-			if (init.signal?.aborted) {
-				throw init.signal.reason ?? new DOMException("Aborted", "AbortError");
-			}
-			const serverDelay = extractRetryDelayMs(errorText, response.headers);
-			if (serverDelay !== null) {
-				if (serverDelay > maxServerRetryDelayMs) {
+			if (antigravity) {
+				let errorText = "";
+				if (response.status === 429 || response.status === 402 || response.status >= 500) {
+					errorText = await response.clone().text().catch(() => "");
+				}
+				if (init.signal?.aborted) {
+					throw init.signal.reason ?? new DOMException("Aborted", "AbortError");
+				}
+				const serverDelay = extractRetryDelayMs(errorText, response.headers);
+				if (serverDelay !== null) {
+					if (serverDelay > maxServerRetryDelayMs) {
+						return response;
+					}
+					serverRetryDelayMs = serverDelay;
+				}
+				if (
+					response.status >= 400 &&
+					!isAntigravityRetryableError({
+						status: response.status,
+						errorText,
+						headers: response.headers,
+					})
+				) {
 					return response;
 				}
-				serverRetryDelayMs = serverDelay;
-			}
-			if (
-				response.status >= 400 &&
-				!isAntigravityRetryableError({
-					status: response.status,
-					errorText,
-					headers: response.headers,
-				})
-			) {
-				return response;
 			}
 
 			await response.body?.cancel().catch(() => undefined);

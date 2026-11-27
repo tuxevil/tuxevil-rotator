@@ -831,6 +831,7 @@ export async function fetchProviderQuota(
         project: projectId,
       }),
       timeoutMs: 8000,
+      retryPolicy: "antigravity",
       dispatcher: getAccountProxyDispatcher(account, "google-antigravity"),
     });
     if (!isCurrentGeneration()) return;

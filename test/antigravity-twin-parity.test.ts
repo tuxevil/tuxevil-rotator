@@ -18,6 +18,7 @@ import {
 	calculateContinuationBackoffMs,
 	ANTIGRAVITY_HEADERS_TIMEOUT_MS,
 	DEFAULT_HEADERS_TIMEOUT_MS,
+	ANTIGRAVITY_RETRY_STATUSES,
 	DEFAULT_RETRY_STATUSES,
 	fetchWithRetry,
 	runWithAntigravityApiRetry,
@@ -344,7 +345,8 @@ describe("Antigravity IDE/CLI twin parity", () => {
 		assert.equal(ANTIGRAVITY_HEADERS_TIMEOUT_MS, 600_000);
 		assert.equal(DEFAULT_HEADERS_TIMEOUT_MS, 120_000);
 		assert.equal(STREAM_IDLE_TIMEOUT_MS, 600_000);
-		assert.deepEqual([...DEFAULT_RETRY_STATUSES], [408, 429, 502, 503, 504]);
+		assert.deepEqual([...ANTIGRAVITY_RETRY_STATUSES], [408, 429, 502, 503, 504]);
+		assert.deepEqual([...DEFAULT_RETRY_STATUSES], [408, 429, 500, 502, 503, 504]);
 		assert.equal(MAX_ANTIGRAVITY_RETRY_DELAY_MS, 240_000);
 		assert.equal(MAX_ANTIGRAVITY_CONTINUATION_DELAY_MS, 60_000);
 		assert.deepEqual(ANTIGRAVITY_RETRY_CONFIG, {
@@ -447,7 +449,7 @@ describe("Antigravity IDE/CLI twin parity", () => {
 		assert.equal(classifyRateLimitReason("Request timeout", 408), "server-error");
 	});
 
-	it("runs 9 attempts (maxRetries=8) in runWithAntigravityApiRetry and fast-fails hard stops in fetchWithRetry", async () => {
+	it("runs 9 attempts (maxRetries=8) in runWithAntigravityApiRetry and fast-fails hard stops in the antigravity fetchWithRetry policy", async () => {
 		const recordedSleeps: number[] = [];
 		let attempts = 0;
 		const ok = await runWithAntigravityApiRetry({
@@ -470,6 +472,7 @@ describe("Antigravity IDE/CLI twin parity", () => {
 
 		let status500Calls = 0;
 		const status500 = await fetchWithRetry("https://example.test", {
+			retryPolicy: "antigravity",
 			retries: 3,
 			sleepImpl: async () => {},
 			fetchImpl: async () => {
@@ -482,6 +485,7 @@ describe("Antigravity IDE/CLI twin parity", () => {
 
 		let hard429Calls = 0;
 		const hard429 = await fetchWithRetry("https://example.test", {
+			retryPolicy: "antigravity",
 			retries: 3,
 			sleepImpl: async () => {},
 			fetchImpl: async () => {
@@ -497,6 +501,7 @@ describe("Antigravity IDE/CLI twin parity", () => {
 
 		let slowDelayCalls = 0;
 		const slowDelay = await fetchWithRetry("https://example.test", {
+			retryPolicy: "antigravity",
 			retries: 3,
 			sleepImpl: async () => {},
 			fetchImpl: async () => {
