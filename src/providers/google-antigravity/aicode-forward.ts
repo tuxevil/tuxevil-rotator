@@ -63,10 +63,34 @@ export function shouldAttemptAicodeRouting(
     return true;
   }
 
-  const mendelFlag =
-    elig.useAicodeMendel === true ||
-    (elig.useAicodeMendel !== false && cachedConfig?.useAicodeMendel === true);
-  return mendelFlag;
+  // Mirrors Antigravity.app useAICodePredictionFlow(): generation follows
+  // `enable-inference-traffic-migration`; `use-aicode-mendel` does not route it.
+  const migration = elig.inferenceTrafficMigration ?? null;
+  return (
+    migration === true ||
+    (migration === null && cachedConfig?.inferenceTrafficMigration === true)
+  );
+}
+
+/**
+ * Antigravity.app keeps CCPA `retrieveUserQuotaSummary` as the quota source and
+ * only calls AICode `fetchQuotaStatus` as a shadow eval while
+ * `dark-launch-aicode-quota-status` is on. `USE_AICODE=false` also disables it.
+ */
+export function shouldShadowAicodeQuotaStatus(
+  account: AccountRuntime,
+  now = Date.now(),
+): boolean {
+  if (parseUseAicodeEnvOverride() === false) return false;
+  if (!account.accessToken) return false;
+  if (!hasAicodeScope(account)) return false;
+  if (isInAicodeScopeCooldown(account, now)) return false;
+  const gen = getCredentialGeneration(account, DEFAULT_PROVIDER);
+  const elig =
+    account.aicodeEligibility?.credentialGeneration === gen
+      ? account.aicodeEligibility
+      : undefined;
+  return elig?.personalConsumer === true && elig.darkLaunchAicodeQuotaStatus === true;
 }
 
 export interface ResolvedAicodeTarget {
@@ -92,7 +116,7 @@ export async function resolveAicodeTarget(
   if (!config) return null;
 
   const envOverride = parseUseAicodeEnvOverride();
-  if (envOverride !== true && config.useAicodeMendel === false) {
+  if (envOverride !== true && config.inferenceTrafficMigration === false) {
     return null;
   }
 

@@ -6,13 +6,14 @@ import { getAccountIdentity, getCredentialGeneration } from "../../account-ident
 import { fetchWithRetry, type RequestInitWithDispatcher } from "../../fetch-with-retry.js";
 import { logger } from "../../logger.js";
 import { AICODE_ENDPOINTS, REQUEST_USER_AGENT } from "../../types.js";
-import type {
-  AccountRuntime,
-  GoogleQuotaResponse,
-} from "../../types.js";
+import type { AccountRuntime } from "../../types.js";
 import { DEFAULT_PROVIDER } from "../credential-helpers.js";
 import { getAccountProxyDispatcher } from "../proxy-dispatcher.js";
-import { parseUseAicodeMendel } from "./aicode-eligibility.js";
+import {
+  INFERENCE_TRAFFIC_MIGRATION_FLAG,
+  parseExperimentBoolFlag,
+  parseUseAicodeMendel,
+} from "./aicode-eligibility.js";
 
 const aicodeLogger = logger.child("google-aicode");
 
@@ -154,7 +155,10 @@ export function parseAicodeFetchConfig(
     }
   }
   const useAicodeMendel = isRecord(raw.experimentConfig)
-    ? parseUseAicodeMendel({ flags: raw.experimentConfig.experimentFlags })
+    ? parseUseAicodeMendel(raw.experimentConfig)
+    : null;
+  const inferenceTrafficMigration = isRecord(raw.experimentConfig)
+    ? parseExperimentBoolFlag(raw.experimentConfig, INFERENCE_TRAFFIC_MIGRATION_FLAG)
     : null;
 
   return {
@@ -164,6 +168,7 @@ export function parseAicodeFetchConfig(
     experienceNames,
     experienceMetaByLowerName,
     useAicodeMendel,
+    inferenceTrafficMigration,
   };
 }
 
@@ -448,68 +453,4 @@ export async function fetchAicodeQuotaStatus(
     if (signal?.aborted) throw err;
     return null;
   }
-}
-
-export function mergeAicodeQuotaIntoResponse(
-  data: GoogleQuotaResponse,
-  quotaStatus: AicodeQuotaStatusResult,
-  config?: AicodeConfigSnapshot | null,
-): GoogleQuotaResponse {
-  const bucketByModelId = new Map<string, AicodeQuotaBucket>();
-  for (const bucket of quotaStatus.buckets) {
-    bucketByModelId.set(bucket.modelId.toLowerCase(), bucket);
-  }
-
-  const mergedModels: GoogleQuotaResponse["models"] = { ...data.models };
-  const hasKeyIgnoreCase = (candidate: string): boolean => {
-    const lower = candidate.toLowerCase();
-    return Object.keys(mergedModels).some((k) => k.toLowerCase() === lower);
-  };
-
-  if (config && config.experienceNames.length > 0) {
-    for (const expName of config.experienceNames) {
-      if (hasKeyIgnoreCase(expName)) continue;
-      const meta = config.experienceMetaByLowerName?.[expName.toLowerCase()];
-      const bucket =
-        (meta?.modelId
-          ? bucketByModelId.get(meta.modelId.toLowerCase())
-          : undefined) ?? bucketByModelId.get(expName.toLowerCase());
-      const quotaInfo =
-        bucket && (bucket.remainingFraction !== undefined || bucket.resetTime)
-          ? {
-              ...(bucket.remainingFraction !== undefined
-                ? { remainingFraction: bucket.remainingFraction }
-                : {}),
-              ...(bucket.resetTime ? { resetTime: bucket.resetTime } : {}),
-            }
-          : undefined;
-      const displayName = meta?.displayName || bucket?.displayName;
-      mergedModels[expName] = {
-        ...(displayName ? { displayName } : {}),
-        ...(quotaInfo ? { quotaInfo } : {}),
-      };
-    }
-  } else {
-    for (const bucket of quotaStatus.buckets) {
-      if (hasKeyIgnoreCase(bucket.modelId)) continue;
-      const quotaInfo =
-        bucket.remainingFraction !== undefined || bucket.resetTime
-          ? {
-              ...(bucket.remainingFraction !== undefined
-                ? { remainingFraction: bucket.remainingFraction }
-                : {}),
-              ...(bucket.resetTime ? { resetTime: bucket.resetTime } : {}),
-            }
-          : undefined;
-      mergedModels[bucket.modelId] = {
-        ...(bucket.displayName ? { displayName: bucket.displayName } : {}),
-        ...(quotaInfo ? { quotaInfo } : {}),
-      };
-    }
-  }
-
-  return {
-    ...data,
-    models: mergedModels,
-  };
 }

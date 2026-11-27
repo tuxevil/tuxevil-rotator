@@ -117,10 +117,10 @@ afterEach(() => {
 describe("Antigravity IDE/CLI twin parity", () => {
 	it("matches User-Agent, version, and ProtoJSON platform metadata", () => {
 		if (!process.env.TUXEVIL_ROTATOR_ANTIGRAVITY_VERSION && !process.env.ANTIGRAVITY_VERSION && !process.env.PI_AI_ANTIGRAVITY_VERSION) {
-			assert.equal(ANTIGRAVITY_VERSION, "2.34.0");
+			assert.equal(ANTIGRAVITY_VERSION, "2.35.2");
 		}
 		if (!process.env.TUXEVIL_ROTATOR_ANTIGRAVITY_BUILD_CL && !process.env.ANTIGRAVITY_BUILD_CL) {
-			assert.equal(ANTIGRAVITY_BUILD_CL, "1026637980");
+			assert.equal(ANTIGRAVITY_BUILD_CL, "1029311855");
 		}
 		assert.match(
 			DEFAULT_ANTIGRAVITY_USER_AGENT,

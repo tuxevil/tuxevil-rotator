@@ -64,17 +64,37 @@ export function parseLoadCodeAssistPersonalConsumer(raw: unknown): {
   return { personalConsumer: null, userTierId: null };
 }
 
-export function parseUseAicodeMendel(raw: unknown): boolean | null {
-  if (!isRecord(raw) || !Array.isArray(raw.flags)) {
-    return null;
-  }
-  for (const entry of raw.flags) {
+export const USE_AICODE_MENDEL_FLAG = "use-aicode-mendel";
+// Antigravity.app (2.34.0–2.35.2) only routes generation to AICode when this
+// Mendel flag feeds SetUseAICodePredictionFlow; use-aicode-mendel only moves
+// ListExperiments to fetchConfig.
+export const INFERENCE_TRAFFIC_MIGRATION_FLAG = "enable-inference-traffic-migration";
+export const DARK_LAUNCH_AICODE_QUOTA_STATUS_FLAG = "dark-launch-aicode-quota-status";
+
+/**
+ * Read a boolean experiment flag from a `listExperiments` (`{ flags }`) or
+ * `fetchConfig.experimentConfig` (`{ experimentFlags }`) payload. Returns
+ * null when the payload is not a flag list, false when the flag is absent.
+ */
+export function parseExperimentBoolFlag(raw: unknown, name: string): boolean | null {
+  if (!isRecord(raw)) return null;
+  const flags = Array.isArray(raw.flags)
+    ? raw.flags
+    : Array.isArray(raw.experimentFlags)
+      ? raw.experimentFlags
+      : null;
+  if (!flags) return null;
+  for (const entry of flags) {
     if (!isRecord(entry)) continue;
-    if (entry.name === "use-aicode-mendel" && typeof entry.boolValue === "boolean") {
+    if (entry.name === name && typeof entry.boolValue === "boolean") {
       return entry.boolValue;
     }
   }
   return false;
+}
+
+export function parseUseAicodeMendel(raw: unknown): boolean | null {
+  return parseExperimentBoolFlag(raw, USE_AICODE_MENDEL_FLAG);
 }
 
 export async function refreshAicodeEligibilityIfNeeded(
@@ -100,7 +120,9 @@ export async function refreshAicodeEligibilityIfNeeded(
   const isComplete =
     prev !== undefined &&
     prev.personalConsumer !== null &&
-    prev.useAicodeMendel !== null;
+    prev.useAicodeMendel !== null &&
+    prev.inferenceTrafficMigration !== undefined &&
+    prev.inferenceTrafficMigration !== null;
   const ttl = isComplete ? AICODE_ELIGIBILITY_TTL_MS : AICODE_ELIGIBILITY_RETRY_MS;
   if (prev && now - prev.checkedAt < ttl) {
     return;
@@ -109,6 +131,8 @@ export async function refreshAicodeEligibilityIfNeeded(
   let personalConsumer = prev?.personalConsumer ?? null;
   let userTierId = prev?.userTierId ?? null;
   let useAicodeMendel = prev?.useAicodeMendel ?? null;
+  let inferenceTrafficMigration = prev?.inferenceTrafficMigration ?? null;
+  let darkLaunchAicodeQuotaStatus = prev?.darkLaunchAicodeQuotaStatus ?? null;
   const dispatcher = getAccountProxyDispatcher(account, DEFAULT_PROVIDER);
 
   if (personalConsumer === null || now - (prev?.checkedAt ?? 0) >= AICODE_ELIGIBILITY_TTL_MS) {
@@ -141,7 +165,9 @@ export async function refreshAicodeEligibilityIfNeeded(
   const projectId = getProviderProjectId(account.config, DEFAULT_PROVIDER);
   if (
     projectId &&
-    (useAicodeMendel === null || now - (prev?.checkedAt ?? 0) >= AICODE_ELIGIBILITY_TTL_MS)
+    (useAicodeMendel === null ||
+      inferenceTrafficMigration === null ||
+      now - (prev?.checkedAt ?? 0) >= AICODE_ELIGIBILITY_TTL_MS)
   ) {
     try {
       const expRes = await fetchWithRetry(LIST_EXPERIMENTS_URL, {
@@ -157,9 +183,18 @@ export async function refreshAicodeEligibilityIfNeeded(
       });
       if (!isCurrentGeneration()) return;
       if (expRes.ok) {
-        const parsed = parseUseAicodeMendel(await expRes.json().catch(() => null));
-        if (parsed !== null) {
-          useAicodeMendel = parsed;
+        const raw: unknown = await expRes.json().catch(() => null);
+        const mendel = parseUseAicodeMendel(raw);
+        if (mendel !== null) {
+          useAicodeMendel = mendel;
+        }
+        const migration = parseExperimentBoolFlag(raw, INFERENCE_TRAFFIC_MIGRATION_FLAG);
+        if (migration !== null) {
+          inferenceTrafficMigration = migration;
+        }
+        const darkLaunch = parseExperimentBoolFlag(raw, DARK_LAUNCH_AICODE_QUOTA_STATUS_FLAG);
+        if (darkLaunch !== null) {
+          darkLaunchAicodeQuotaStatus = darkLaunch;
         }
       }
     } catch {
@@ -173,6 +208,8 @@ export async function refreshAicodeEligibilityIfNeeded(
     checkedAt: Date.now(),
     personalConsumer,
     useAicodeMendel,
+    inferenceTrafficMigration,
+    darkLaunchAicodeQuotaStatus,
     userTierId,
   };
 }

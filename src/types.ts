@@ -586,6 +586,10 @@ export interface AccountRuntime {
     checkedAt: number;
     personalConsumer: boolean | null;
     useAicodeMendel: boolean | null;
+    /** `enable-inference-traffic-migration`: gates AICode generation in Antigravity.app. */
+    inferenceTrafficMigration?: boolean | null;
+    /** `dark-launch-aicode-quota-status`: shadow fetchQuotaStatus next to CCPA quota. */
+    darkLaunchAicodeQuotaStatus?: boolean | null;
     userTierId?: string | null;
   };
   /** Cached Google AICode runtime discovery (fetchConfig/fetchLicenses/cooldown). */
@@ -602,6 +606,7 @@ export interface AccountRuntime {
         { modelId?: string; displayName?: string }
       >;
       useAicodeMendel: boolean | null;
+      inferenceTrafficMigration?: boolean | null;
     };
     licenses?: {
       credentialGeneration: string;
@@ -1464,9 +1469,9 @@ export const TAGS_CACHE_TTL_MS = 5 * 60 * 1000;
 export const ANTIGRAVITY_VERSION =
   rotatorEnv("ANTIGRAVITY_VERSION") ||
   process.env.PI_AI_ANTIGRAVITY_VERSION ||
-  "2.34.0";
+  "2.35.2";
 export const ANTIGRAVITY_BUILD_CL =
-  rotatorEnv("ANTIGRAVITY_BUILD_CL") || "1026637980";
+  rotatorEnv("ANTIGRAVITY_BUILD_CL") || "1029311855";
 const ANTIGRAVITY_OS_TYPE =
   process.platform === "win32" ? "windows" : process.platform;
 const ANTIGRAVITY_ARCH =

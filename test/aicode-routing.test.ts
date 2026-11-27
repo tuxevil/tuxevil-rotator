@@ -16,6 +16,7 @@ import {
   buildAicodeGenerateContentRequest,
   resolveAicodeTarget,
   shouldAttemptAicodeRouting,
+  shouldShadowAicodeQuotaStatus,
   wrapAicodeSseResponse,
 } from "../src/providers/google-antigravity/aicode-forward.js";
 import {
@@ -126,6 +127,8 @@ function makeEligibleAccount(overrides: Partial<AccountRuntime> = {}): AccountRu
       checkedAt: Date.now(),
       personalConsumer: true,
       useAicodeMendel: true,
+      inferenceTrafficMigration: true,
+      darkLaunchAicodeQuotaStatus: false,
       userTierId: "g1-pro-tier",
     };
   }
@@ -155,7 +158,10 @@ describe("AICode Phase 2 & Phase 3 routing", () => {
     const cfg = parseAicodeFetchConfig(
       {
         experimentConfig: {
-          experimentFlags: [{ name: "use-aicode-mendel", boolValue: true }],
+          experimentFlags: [
+                { name: "use-aicode-mendel", boolValue: true },
+                { name: "enable-inference-traffic-migration", boolValue: true },
+              ],
         },
         availableExperiences: [
           { name: "gemini-3.8-flash-tiered", model: { modelId: "gemini-3.8-flash" } },
@@ -168,6 +174,7 @@ describe("AICode Phase 2 & Phase 3 routing", () => {
     );
     assert.ok(cfg);
     assert.equal(cfg.useAicodeMendel, true);
+    assert.equal(cfg.inferenceTrafficMigration, true);
     assert.equal(resolveAicodeExperience(cfg, "Gemini-3.8-Flash-Tiered"), "gemini-3.8-flash-tiered");
     assert.equal(resolveAicodeExperience(cfg, "gemini-4-carbon-disabled"), null);
     assert.equal(resolveAicodeExperience(cfg, "gemini-4-hydrogen-high"), null);
@@ -194,7 +201,13 @@ describe("AICode Phase 2 & Phase 3 routing", () => {
       }
       if (url.includes("listExperiments")) {
         return new Response(
-          JSON.stringify({ flags: [{ name: "use-aicode-mendel", boolValue: true }] }),
+          JSON.stringify({
+            flags: [
+              { name: "use-aicode-mendel", boolValue: true },
+              { name: "enable-inference-traffic-migration", boolValue: false },
+              { name: "dark-launch-aicode-quota-status", boolValue: true },
+            ],
+          }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         );
       }
@@ -212,6 +225,8 @@ describe("AICode Phase 2 & Phase 3 routing", () => {
       const eligibility = (acc as AccountRuntime).aicodeEligibility;
       assert.equal(eligibility?.personalConsumer, true);
       assert.equal(eligibility?.useAicodeMendel, true);
+      assert.equal(eligibility?.inferenceTrafficMigration, false);
+      assert.equal(eligibility?.darkLaunchAicodeQuotaStatus, true);
       assert.equal(eligibility?.userTierId, "g1-pro-tier");
     } finally {
       globalThis.fetch = originalFetch;
@@ -229,7 +244,10 @@ describe("AICode Phase 2 & Phase 3 routing", () => {
           status: 200,
           body: JSON.stringify({
             experimentConfig: {
-              experimentFlags: [{ name: "use-aicode-mendel", boolValue: true }],
+              experimentFlags: [
+                { name: "use-aicode-mendel", boolValue: true },
+                { name: "enable-inference-traffic-migration", boolValue: true },
+              ],
             },
             availableExperiences: [
               { name: "gemini-3.8-flash-tiered", model: { modelId: "gemini-3.8-flash" } },
@@ -359,7 +377,10 @@ describe("AICode Phase 2 & Phase 3 routing", () => {
           status: 200,
           body: JSON.stringify({
             experimentConfig: {
-              experimentFlags: [{ name: "use-aicode-mendel", boolValue: true }],
+              experimentFlags: [
+                { name: "use-aicode-mendel", boolValue: true },
+                { name: "enable-inference-traffic-migration", boolValue: true },
+              ],
             },
             availableExperiences: [
               { name: "gemini-3.8-flash-tiered", model: { modelId: "gemini-3.8-flash" } },
@@ -444,14 +465,29 @@ describe("AICode Phase 2 & Phase 3 routing", () => {
     }
   });
 
-  it("skips AICode for enterprise accounts, missing mendel flag, or USE_AICODE=false", async () => {
+  it("skips AICode for enterprise accounts, migration flag off, or USE_AICODE=false", async () => {
     const enterprise = makeEligibleAccount();
     enterprise.aicodeEligibility!.personalConsumer = false;
     assert.equal(shouldAttemptAicodeRouting(enterprise), false);
 
+    // Antigravity.app: use-aicode-mendel=true does not move generation to AICode.
+    const mendelOnly = makeEligibleAccount();
+    mendelOnly.aicodeEligibility!.useAicodeMendel = true;
+    mendelOnly.aicodeEligibility!.inferenceTrafficMigration = false;
+    assert.equal(shouldAttemptAicodeRouting(mendelOnly), false);
+
+    const unknownMigration = makeEligibleAccount();
+    unknownMigration.aicodeEligibility!.inferenceTrafficMigration = null;
+    assert.equal(shouldAttemptAicodeRouting(unknownMigration), false);
+
+    // USE_AICODE=true forces the prediction flow like the official client.
+    process.env.USE_AICODE = "true";
+    assert.equal(shouldAttemptAicodeRouting(mendelOnly), true);
+    delete process.env.USE_AICODE;
+
     const noMendel = makeEligibleAccount();
     noMendel.aicodeEligibility!.useAicodeMendel = false;
-    assert.equal(shouldAttemptAicodeRouting(noMendel), false);
+    assert.equal(shouldAttemptAicodeRouting(noMendel), true);
 
     const eligible = makeEligibleAccount();
     assert.equal(shouldAttemptAicodeRouting(eligible), true);
@@ -517,7 +553,7 @@ describe("AICode Phase 2 & Phase 3 routing", () => {
     assert.equal(await resolveAicodeTarget(makeEligibleAccount(), "gemini-3.8-flash-tiered", {}), null);
   });
 
-  it("Phase 4: parses fetchQuotaStatus refreshWindowLabel and merges AICode models without dropping CCPA models", async () => {
+  it("Phase 4: parses fetchQuotaStatus refreshWindowLabel into CCPA summary windows", () => {
     const summary = parseGoogleQuotaSummaryResponse({
       groups: [
         {
@@ -538,44 +574,19 @@ describe("AICode Phase 2 & Phase 3 routing", () => {
             },
           ],
         },
-        {
-          displayName: "Claude and GPT models",
-          description: "Models within this group: Claude Opus, Claude Sonnet, GPT-OSS",
-          buckets: [
-            { bucketId: "3p-weekly", refreshWindowLabel: "weekly", remainingFraction: 1 },
-            { bucketId: "3p-5h", refreshWindowLabel: "5h", remainingFraction: 1 },
-          ],
-        },
       ],
     });
     assert.ok(summary);
     assert.equal(summary.groups?.[0]?.buckets?.[0]?.window, "weekly");
     assert.equal(summary.groups?.[0]?.buckets?.[1]?.window, "5h");
+  });
 
+  it("Phase 4: keeps CCPA retrieveUserQuotaSummary as quota source and only shadows fetchQuotaStatus under dark-launch", async () => {
     const originalFetch = globalThis.fetch;
     let ccpaSummaryCalls = 0;
     let aicodeQuotaCalls = 0;
+    let aicodeOtherCalls = 0;
     const aicodeStub = await startStubServer((req) => {
-      if (req.url === "/v1alpha:fetchConfig") {
-        return {
-          status: 200,
-          body: JSON.stringify({
-            experimentConfig: {
-              experimentFlags: [{ name: "use-aicode-mendel", boolValue: true }],
-            },
-            availableExperiences: [
-              {
-                name: "claude-opus-5-5-high",
-                model: { modelId: "claude-opus-5-5", displayName: "Claude Opus 5.5 (High)" },
-              },
-              {
-                name: "gemini-3.8-flash-tiered",
-                model: { modelId: "gemini-3.8-flash", displayName: "Gemini 3.8 Flash" },
-              },
-            ],
-          }),
-        };
-      }
       if (req.url === "/v1alpha:fetchQuotaStatus") {
         aicodeQuotaCalls += 1;
         return {
@@ -583,13 +594,7 @@ describe("AICode Phase 2 & Phase 3 routing", () => {
           body: JSON.stringify({
             buckets: [
               {
-                remainingFraction: 0.9,
-                resetTime: "2026-11-27T00:00:00Z",
-                model: { modelId: "claude-opus-5-5", displayName: "Claude Opus 5.5" },
-              },
-              {
-                remainingFraction: 0.4,
-                resetTime: "2026-11-26T22:00:00Z",
+                remainingFraction: 0.1,
                 model: { modelId: "gemini-3.8-flash", displayName: "Gemini 3.8 Flash" },
               },
             ],
@@ -597,39 +602,18 @@ describe("AICode Phase 2 & Phase 3 routing", () => {
               groups: [
                 {
                   displayName: "Gemini Models",
-                  description: "Models within this group: Gemini Flash, Gemini Pro",
-                  buckets: [
-                    {
-                      bucketId: "gemini-weekly",
-                      refreshWindowLabel: "weekly",
-                      remainingFraction: 0.75,
-                      resetTime: "2026-12-03T12:00:00Z",
-                    },
-                    {
-                      bucketId: "gemini-5h",
-                      refreshWindowLabel: "5h",
-                      remainingFraction: 0.4,
-                      resetTime: "2026-11-26T22:00:00Z",
-                    },
-                  ],
-                },
-                {
-                  displayName: "Claude and GPT models",
-                  description: "Models within this group: Claude Opus, Claude Sonnet, GPT-OSS",
-                  buckets: [
-                    { bucketId: "3p-weekly", refreshWindowLabel: "weekly", remainingFraction: 0.9 },
-                    { bucketId: "3p-5h", refreshWindowLabel: "5h", remainingFraction: 0.9 },
-                  ],
+                  buckets: [{ bucketId: "gemini-5h", refreshWindowLabel: "5h", remainingFraction: 0.1 }],
                 },
               ],
             },
           }),
         };
       }
+      aicodeOtherCalls += 1;
       return { status: 404, body: "{}" };
     });
-
     AICODE_ENDPOINTS.splice(0, AICODE_ENDPOINTS.length, aicodeStub.url);
+
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("fetchAvailableModels")) {
@@ -645,34 +629,44 @@ describe("AICode Phase 2 & Phase 3 routing", () => {
       }
       if (url.includes("retrieveUserQuotaSummary")) {
         ccpaSummaryCalls += 1;
-        return new Response(JSON.stringify({ groups: [] }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+        return new Response(
+          JSON.stringify({
+            groups: [
+              {
+                displayName: "Gemini Models",
+                buckets: [{ bucketId: "gemini-5h", window: "5h", remainingFraction: 0.55 }],
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
       }
       return originalFetch(input, init);
     }) as typeof fetch;
 
+    const ctx = { log: () => {}, markFlagged: () => {}, reportQuotaPollFlag: () => {} };
     try {
+      // Migration on, dark-launch off: no AICode management calls at all.
       const acc = makeEligibleAccount();
-      await fetchProviderQuota(acc, {
-        log: () => {},
-        markFlagged: () => {},
-        reportQuotaPollFlag: () => {},
-      });
+      assert.equal(shouldShadowAicodeQuotaStatus(acc), false);
+      await fetchProviderQuota(acc, ctx);
+      assert.equal(aicodeQuotaCalls, 0);
+      assert.equal(aicodeOtherCalls, 0);
+      assert.equal(ccpaSummaryCalls, 1);
+      assert.equal(acc.quota.find((q) => q.modelKey === "gemini")?.percentRemaining, 55);
+
+      // Dark-launch on: fetchQuotaStatus runs as shadow; CCPA still decides quota.
+      const shadow = makeEligibleAccount();
+      shadow.aicodeEligibility!.darkLaunchAicodeQuotaStatus = true;
+      assert.equal(shouldShadowAicodeQuotaStatus(shadow), true);
+      await fetchProviderQuota(shadow, ctx);
       assert.equal(aicodeQuotaCalls, 1);
-      assert.equal(ccpaSummaryCalls, 0, "should use AICode fetchQuotaStatus instead of CCPA summary");
-      const geminiQuota = acc.quota.find((q) => q.modelKey === "gemini");
-      const claudeQuota = acc.quota.find((q) => q.modelKey === "claude");
-      assert.equal(geminiQuota?.percentRemaining, 40);
-      assert.equal(claudeQuota?.percentRemaining, 90);
-      const snapshot = dynamicCatalog.getAccountSnapshot(
-        getAccountIdentity(acc),
-        getCredentialGeneration(acc, "google-antigravity"),
-      );
-      const modelIds = snapshot?.models ?? [];
-      assert.ok(modelIds.includes("gemini-4-hydrogen-high"), "keeps CCPA-only models");
-      assert.ok(modelIds.includes("claude-opus-5-5-high"), "adds AICode experiences");
+      assert.equal(ccpaSummaryCalls, 2);
+      assert.equal(shadow.quota.find((q) => q.modelKey === "gemini")?.percentRemaining, 55);
+
+      // USE_AICODE=false disables the shadow call too.
+      process.env.USE_AICODE = "false";
+      assert.equal(shouldShadowAicodeQuotaStatus(shadow), false);
     } finally {
       dynamicCatalog.reset();
       globalThis.fetch = originalFetch;
@@ -680,7 +674,7 @@ describe("AICode Phase 2 & Phase 3 routing", () => {
     }
   });
 
-  it("Phase 4: falls back to retrieveUserQuotaSummary on 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT in fetchQuotaStatus", async () => {
+  it("Phase 4: shadow fetchQuotaStatus 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT enters cooldown without flagging", async () => {
     const originalFetch = globalThis.fetch;
     let ccpaSummaryCalls = 0;
     const aicodeStub = await startStubServer(() => ({
@@ -718,6 +712,7 @@ describe("AICode Phase 2 & Phase 3 routing", () => {
 
     try {
       const acc = makeEligibleAccount();
+      acc.aicodeEligibility!.darkLaunchAicodeQuotaStatus = true;
       let flagged = false;
       await fetchProviderQuota(acc, {
         log: () => {},
@@ -731,6 +726,7 @@ describe("AICode Phase 2 & Phase 3 routing", () => {
       assert.equal(ccpaSummaryCalls, 1);
       assert.equal(acc.quota.find((q) => q.modelKey === "gemini")?.percentRemaining, 55);
     } finally {
+      dynamicCatalog.reset();
       globalThis.fetch = originalFetch;
       await stopServer(aicodeStub.server);
     }

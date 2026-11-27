@@ -40,12 +40,8 @@ import {
   parseGoogleQuotaResponse,
 } from "./dynamic-catalog.js";
 import { refreshAicodeEligibilityIfNeeded } from "./aicode-eligibility.js";
-import {
-  fetchAicodeConfig,
-  fetchAicodeQuotaStatus,
-  mergeAicodeQuotaIntoResponse,
-} from "./aicode.js";
-import { shouldAttemptAicodeRouting } from "./aicode-forward.js";
+import { fetchAicodeQuotaStatus } from "./aicode.js";
+import { shouldShadowAicodeQuotaStatus } from "./aicode-forward.js";
 
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -860,7 +856,7 @@ export async function fetchProviderQuota(
 
     const rawData = await response.json();
     if (!isCurrentGeneration()) return;
-    let data = parseGoogleQuotaResponse(rawData);
+    const data = parseGoogleQuotaResponse(rawData);
     if (!data) return;
 
     await refreshAicodeEligibilityIfNeeded(
@@ -872,24 +868,13 @@ export async function fetchProviderQuota(
 
     const hasModels = Object.keys(data.models).length > 0;
     let summary: GoogleQuotaSummaryResponse | null = null;
-    if (shouldAttemptAicodeRouting(account)) {
-      try {
-        const [aicodeQuota, aicodeConfig] = await Promise.all([
-          fetchAicodeQuotaStatus(account, quotaHeaders),
-          fetchAicodeConfig(account, quotaHeaders),
-        ]);
-        if (!isCurrentGeneration()) return;
-        if (aicodeQuota) {
-          summary = parseGoogleQuotaSummaryResponse(aicodeQuota.quotaSummary);
-          data = mergeAicodeQuotaIntoResponse(data, aicodeQuota, aicodeConfig);
-        }
-      } catch {
-        // Fall back to CCPA retrieveUserQuotaSummary when AICode quota status fails.
-      }
+    if (shouldShadowAicodeQuotaStatus(account)) {
+      // Shadow-only, like Antigravity.app: the result never replaces CCPA quota.
+      await fetchAicodeQuotaStatus(account, quotaHeaders).catch(() => null);
       if (!isCurrentGeneration()) return;
     }
 
-    if (!summary && hasModels) {
+    if (hasModels) {
       try {
         const summaryResponse = await fetchWithRetry(QUOTA_SUMMARY_API_URL, {
           method: "POST",
